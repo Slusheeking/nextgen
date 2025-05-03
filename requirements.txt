@@ -1,0 +1,47 @@
+# FinGPT AI Day Trading System Requirements
+# Consolidated from all component requirements
+
+# Core dependencies
+pandas>=1.5.0                      # Data processing
+numpy>=1.20.0                      # Numerical operations
+requests>=2.28.0                   # HTTP requests
+
+# Environment and configuration
+python-dotenv>=0.21.0              # Loading environment variables
+pyyaml>=6.0                        # YAML parsing for configuration
+
+# API clients
+alpaca-py>=0.8.0                   # Alpaca trading API
+websockets>=10.4                   # WebSocket connections for Polygon.io
+praw>=7.7.0                        # Reddit API wrapper
+yfinance>=0.2.12                   # Yahoo Finance data API
+
+# Machine learning and NLP
+torch>=2.0.0                       # PyTorch for deep learning
+transformers>=4.28.0               # Hugging Face transformers
+datasets>=2.11.0                   # Data handling for ML
+scikit-learn>=1.2.2                # Traditional ML algorithms
+nltk>=3.8.1                        # Natural language toolkit
+
+# Large Language Models
+openai>=1.3.0                      # OpenAI API client
+anthropic>=0.5.0                   # Anthropic Claude API client
+
+# Infrastructure
+redis>=4.5.0                       # Redis client for caching and pub/sub
+influxdb>=5.3.1                    # InfluxDB client
+influxdb-client>=1.36.0            # Modern InfluxDB client
+prometheus-client>=0.16.0          # Prometheus monitoring client
+python-logging-loki>=1.0.0         # Loki logging client
+
+# Utilities
+aiohttp>=3.8.4                     # Async HTTP client
+asyncio>=3.4.3                     # Async IO support
+backtrader>=1.9.76                 # Backtesting framework
+plotly>=5.13.0                     # Interactive plotting
+tqdm>=4.65.0                       # Progress bars
+
+# Financial analysis
+ta>=0.10.2                         # Technical analysis
+yfinance>=0.2.12                   # Yahoo Finance data
+pyfolio>=0.9.2                     # Portfolio analysis

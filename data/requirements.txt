@@ -1,0 +1,24 @@
+# Core data processing
+pandas>=1.5.0
+
+# API clients
+praw>=7.7.0                  # Reddit API wrapper
+requests>=2.28.0             # HTTP requests
+websockets>=10.4             # WebSocket connections for Polygon.io
+yfinance>=0.2.12             # Yahoo Finance data API
+
+# Environment and configuration
+python-dotenv>=0.21.0        # Loading environment variables
+
+# Monitoring and observability
+prometheus-client>=0.16.0     # Metrics collection
+python-logging-loki>=0.3.1    # Loki logging integration
+pyyaml>=6.0                   # YAML parsing for configuration
+
+# For additional APIs
+influxdb-client>=1.36.0       # For time series data storage
+redis>=4.5.0                  # For caching and pub/sub
+
+# Utilities 
+aiohttp>=3.8.4                # Async HTTP requests
+asyncio>=3.4.3                # Async IO support

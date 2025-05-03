@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+virtualenv/
+ENV/
+.env
+.venv
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.~*
+
+# Project specific
+.env
+*.log
+logs/
+*.pkl
+*.model
+*.bin
+*.h5
+*.pb
+*.onnx
+*.pt
+*.pth
+*.gz
+*.zip
+*.tar
+*.db
+*.sqlite
+
+# Data files
+data/raw/
+data/processed/
+*.csv
+*.json
+*.parquet
+*.feather
+*.hdf5
+*.xlsx
+*.xls
+
+# Specific to FinGPT system
+model_checkpoints/
+backtest_results/
+trading_history/
+tmp/
+model_cache/
+huggingface_cache/
+
+# Keep .env.example
+!.env.example
+
+# Prometheus & monitoring
+prometheus/data/
+loki/data/
+grafana/data/
