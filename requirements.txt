@@ -33,6 +33,10 @@ influxdb>=5.3.1                    # InfluxDB client
 influxdb-client>=1.36.0            # Modern InfluxDB client
 prometheus-client>=0.16.0          # Prometheus monitoring client
 python-logging-loki>=1.0.0         # Loki logging client
+psutil>=5.9.0                      # System metrics collection
+gputil>=1.4.0                      # GPU metrics (optional)
+py3nvml>=0.2.7                     # NVIDIA Management Library Python 3 bindings
+pynvml>=11.5.0                     # NVIDIA Management Library Python bindings
 
 # Utilities
 aiohttp>=3.8.4                     # Async HTTP client
