@@ -47,10 +47,6 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Regulatory filings and corporate disclosures
 - **Federal Reserve Economic Data (FRED)**: https://fred.stlouisfed.org/
   - Macroeconomic indicators and financial data
-- **Financial News APIs**:
-  - Bloomberg: https://www.bloomberg.com/professional/product/api/
-  - Reuters: https://www.reuters.com/
-  - Financial Times: https://developer.ft.com/
 
 ## Core Components
 

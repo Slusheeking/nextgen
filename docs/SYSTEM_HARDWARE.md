@@ -1,4 +1,4 @@
-# System Hardware Specifications
+push# System Hardware Specifications
 
 ## GPU Information
 
