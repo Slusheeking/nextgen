@@ -33,8 +33,6 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
 - **Polygon.io**: https://polygon.io/
   - Historical and real-time market data via REST and WebSocket APIs
   - Options data and market indicators
-- **Alpha Vantage**: https://www.alphavantage.co/
-  - Fundamental data and alternative datasets
 - **Yahoo Finance**: https://finance.yahoo.com/
   - Earnings reports, analyst recommendations, news
 - **Unusual Whales**: https://unusualwhales.com/

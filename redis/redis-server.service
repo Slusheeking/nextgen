@@ -1,0 +1,28 @@
+[Unit]
+Description=NextGen FinGPT Redis Server with Loki and Prometheus integration
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/usr/bin/python3 /home/ubuntu/nextgen/redis/start_redis_server.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Environment variables can be set here or loaded from .env file in the script
+# Environment=REDIS_HOST=localhost
+# Environment=REDIS_PORT=6379
+# Environment=REDIS_DB=0
+# Environment=REDIS_PASSWORD=your_redis_password
+# Environment=LOKI_URL=http://loki:3100
+# Environment=PROMETHEUS_METRICS_PORT=8010
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,519 @@
+"""
+Peak Detection MCP Server
+
+This module implements a Model Context Protocol (MCP) server for detecting price peaks,
+valleys, support/resistance levels, and breakout patterns in financial data.
+"""
+
+import os
+import logging
+import json
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Any, Optional, Union, Tuple
+from datetime import datetime, timedelta
+
+from mcp_tools.base_mcp_server import BaseMCPServer
+
+class PeakDetectionMCP(BaseMCPServer):
+    """
+    MCP server for price peak/valley detection and pattern recognition.
+    
+    This server provides tools for identifying significant price levels,
+    breakout patterns, and support/resistance zones.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the Peak Detection MCP server.
+        
+        Args:
+            config: Optional configuration dictionary
+        """
+        super().__init__(name="peak_detection_mcp", config=config)
+        
+        # Initialize endpoint definitions
+        self.endpoints = self._initialize_endpoints()
+        
+        # Register specific tools
+        self._register_specific_tools()
+        
+        self.logger.info("PeakDetectionMCP initialized")
+    
+    def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Initialize available endpoints.
+        
+        Returns:
+            Dictionary mapping endpoint names to their configurations
+        """
+        return {
+            "detect_peaks": {
+                "description": "Detect price peaks and valleys",
+                "category": "pattern_recognition",
+                "required_params": ["prices"],
+                "optional_params": ["window_size", "prominence", "width", "distance"],
+                "handler": self._handle_detect_peaks
+            },
+            "detect_support_resistance": {
+                "description": "Identify support and resistance levels",
+                "category": "pattern_recognition",
+                "required_params": ["prices", "volumes"],
+                "optional_params": ["window_size", "num_levels", "price_threshold"],
+                "handler": self._handle_detect_support_resistance
+            },
+            "detect_breakout": {
+                "description": "Detect breakout patterns",
+                "category": "pattern_recognition",
+                "required_params": ["prices", "volumes"],
+                "optional_params": ["lookback_period", "volume_factor", "price_threshold"],
+                "handler": self._handle_detect_breakout
+            },
+            "detect_consolidation": {
+                "description": "Detect price consolidation patterns",
+                "category": "pattern_recognition",
+                "required_params": ["prices"],
+                "optional_params": ["window_size", "volatility_threshold"],
+                "handler": self._handle_detect_consolidation
+            }
+        }
+    
+    def _register_specific_tools(self):
+        """Register tools specific to Peak Detection MCP."""
+        self.register_tool(self.detect_peaks)
+        self.register_tool(self.detect_support_resistance)
+        self.register_tool(self.detect_breakout)
+        self.register_tool(self.detect_consolidation)
+    
+    # Handler methods for specific endpoints
+    
+    def _handle_detect_peaks(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle detect_peaks endpoint."""
+        prices = params.get("prices", [])
+        window_size = params.get("window_size", 5)
+        prominence = params.get("prominence", 0.5)
+        width = params.get("width", 1)
+        distance = params.get("distance", 3)
+        
+        if not prices or len(prices) < window_size * 2:
+            return {"error": "Insufficient price data"}
+        
+        try:
+            # Convert to numpy array if needed
+            if not isinstance(prices, np.ndarray):
+                prices = np.array(prices)
+            
+            # Find peaks
+            peaks = self._find_peaks(prices, window_size, prominence, width, distance)
+            
+            # Find valleys (peaks in negative prices)
+            valleys = self._find_peaks(-prices, window_size, prominence, width, distance)
+            
+            return {
+                "peaks": peaks,
+                "valleys": valleys,
+                "count_peaks": len(peaks),
+                "count_valleys": len(valleys)
+            }
+        except Exception as e:
+            self.logger.error(f"Error detecting peaks: {e}")
+            return {"error": f"Failed to detect peaks: {str(e)}"}
+    
+    def _handle_detect_support_resistance(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle detect_support_resistance endpoint."""
+        prices = params.get("prices", [])
+        volumes = params.get("volumes", [])
+        window_size = params.get("window_size", 10)
+        num_levels = params.get("num_levels", 3)
+        price_threshold = params.get("price_threshold", 0.01)
+        
+        if not prices or len(prices) < window_size * 2:
+            return {"error": "Insufficient price data"}
+        
+        try:
+            # Convert to numpy arrays if needed
+            if not isinstance(prices, np.ndarray):
+                prices = np.array(prices)
+            if not isinstance(volumes, np.ndarray) and volumes:
+                volumes = np.array(volumes)
+            
+            # Find support and resistance levels
+            support_levels, resistance_levels = self._find_support_resistance(
+                prices, volumes, window_size, num_levels, price_threshold
+            )
+            
+            return {
+                "support_levels": support_levels,
+                "resistance_levels": resistance_levels,
+                "current_price": prices[-1] if len(prices) > 0 else None
+            }
+        except Exception as e:
+            self.logger.error(f"Error detecting support/resistance: {e}")
+            return {"error": f"Failed to detect support/resistance: {str(e)}"}
+    
+    def _handle_detect_breakout(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle detect_breakout endpoint."""
+        prices = params.get("prices", [])
+        volumes = params.get("volumes", [])
+        lookback_period = params.get("lookback_period", 20)
+        volume_factor = params.get("volume_factor", 1.5)
+        price_threshold = params.get("price_threshold", 0.02)
+        
+        if not prices or len(prices) < lookback_period:
+            return {"error": "Insufficient price data"}
+        
+        try:
+            # Convert to numpy arrays if needed
+            if not isinstance(prices, np.ndarray):
+                prices = np.array(prices)
+            if not isinstance(volumes, np.ndarray) and volumes:
+                volumes = np.array(volumes)
+            
+            # Detect breakout
+            breakout_result = self._detect_breakout_pattern(
+                prices, volumes, lookback_period, volume_factor, price_threshold
+            )
+            
+            return breakout_result
+        except Exception as e:
+            self.logger.error(f"Error detecting breakout: {e}")
+            return {"error": f"Failed to detect breakout: {str(e)}"}
+    
+    def _handle_detect_consolidation(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle detect_consolidation endpoint."""
+        prices = params.get("prices", [])
+        window_size = params.get("window_size", 10)
+        volatility_threshold = params.get("volatility_threshold", 0.01)
+        
+        if not prices or len(prices) < window_size * 2:
+            return {"error": "Insufficient price data"}
+        
+        try:
+            # Convert to numpy array if needed
+            if not isinstance(prices, np.ndarray):
+                prices = np.array(prices)
+            
+            # Detect consolidation
+            consolidation_result = self._detect_consolidation_pattern(
+                prices, window_size, volatility_threshold
+            )
+            
+            return consolidation_result
+        except Exception as e:
+            self.logger.error(f"Error detecting consolidation: {e}")
+            return {"error": f"Failed to detect consolidation: {str(e)}"}
+    
+    # Core analysis methods
+    
+    def _find_peaks(self, prices: np.ndarray, window_size: int = 5, 
+                   prominence: float = 0.5, width: int = 1, 
+                   distance: int = 3) -> List[Dict[str, Any]]:
+        """
+        Find peaks in price data.
+        
+        Args:
+            prices: Array of price data
+            window_size: Window size for peak detection
+            prominence: Minimum prominence of peaks
+            width: Minimum width of peaks
+            distance: Minimum distance between peaks
+            
+        Returns:
+            List of peak dictionaries with index and price
+        """
+        peaks = []
+        
+        # Simple peak detection algorithm
+        for i in range(window_size, len(prices) - window_size):
+            is_peak = True
+            for j in range(1, window_size + 1):
+                if prices[i] <= prices[i - j] or prices[i] <= prices[i + j]:
+                    is_peak = False
+                    break
+            
+            if is_peak:
+                # Check if it's far enough from previous peak
+                if not peaks or i - peaks[-1]["index"] >= distance:
+                    # Check prominence
+                    left_min = min(prices[i - window_size:i])
+                    right_min = min(prices[i + 1:i + window_size + 1])
+                    base = max(left_min, right_min)
+                    peak_prominence = prices[i] - base
+                    
+                    if peak_prominence >= prominence:
+                        peaks.append({
+                            "index": i,
+                            "price": float(prices[i]),
+                            "prominence": float(peak_prominence)
+                        })
+        
+        return peaks
+    
+    def _find_support_resistance(self, prices: np.ndarray, volumes: np.ndarray = None,
+                                window_size: int = 10, num_levels: int = 3,
+                                price_threshold: float = 0.01) -> Tuple[List[float], List[float]]:
+        """
+        Find support and resistance levels.
+        
+        Args:
+            prices: Array of price data
+            volumes: Array of volume data (optional)
+            window_size: Window size for level detection
+            num_levels: Number of levels to return
+            price_threshold: Minimum price difference between levels
+            
+        Returns:
+            Tuple of (support_levels, resistance_levels)
+        """
+        # Find peaks and valleys
+        peaks = self._find_peaks(prices, window_size)
+        valleys = self._find_peaks(-prices, window_size)
+        
+        # Extract prices
+        peak_prices = [p["price"] for p in peaks]
+        valley_prices = [prices[v["index"]] for v in valleys]
+        
+        # Group similar price levels
+        resistance_levels = self._cluster_price_levels(peak_prices, price_threshold)
+        support_levels = self._cluster_price_levels(valley_prices, price_threshold)
+        
+        # Sort by strength (frequency) and limit to num_levels
+        resistance_levels = sorted(resistance_levels, key=lambda x: x["strength"], reverse=True)[:num_levels]
+        support_levels = sorted(support_levels, key=lambda x: x["strength"], reverse=True)[:num_levels]
+        
+        # Extract just the price levels
+        resistance_prices = [level["price"] for level in resistance_levels]
+        support_prices = [level["price"] for level in support_levels]
+        
+        return support_prices, resistance_prices
+    
+    def _cluster_price_levels(self, prices: List[float], threshold: float) -> List[Dict[str, Any]]:
+        """
+        Cluster similar price levels.
+        
+        Args:
+            prices: List of price points
+            threshold: Relative threshold for clustering
+            
+        Returns:
+            List of clustered price levels with strength
+        """
+        if not prices:
+            return []
+        
+        # Sort prices
+        sorted_prices = sorted(prices)
+        
+        # Initialize clusters
+        clusters = []
+        current_cluster = [sorted_prices[0]]
+        
+        # Cluster similar prices
+        for i in range(1, len(sorted_prices)):
+            if (sorted_prices[i] - current_cluster[0]) / current_cluster[0] <= threshold:
+                current_cluster.append(sorted_prices[i])
+            else:
+                # Save current cluster and start a new one
+                avg_price = sum(current_cluster) / len(current_cluster)
+                clusters.append({
+                    "price": avg_price,
+                    "strength": len(current_cluster)
+                })
+                current_cluster = [sorted_prices[i]]
+        
+        # Add the last cluster
+        if current_cluster:
+            avg_price = sum(current_cluster) / len(current_cluster)
+            clusters.append({
+                "price": avg_price,
+                "strength": len(current_cluster)
+            })
+        
+        return clusters
+    
+    def _detect_breakout_pattern(self, prices: np.ndarray, volumes: np.ndarray = None,
+                               lookback_period: int = 20, volume_factor: float = 1.5,
+                               price_threshold: float = 0.02) -> Dict[str, Any]:
+        """
+        Detect breakout patterns.
+        
+        Args:
+            prices: Array of price data
+            volumes: Array of volume data (optional)
+            lookback_period: Period to look back for range
+            volume_factor: Volume increase factor for confirmation
+            price_threshold: Price movement threshold
+            
+        Returns:
+            Breakout detection results
+        """
+        if len(prices) < lookback_period:
+            return {"breakout_detected": False, "reason": "Insufficient data"}
+        
+        # Get recent price range
+        recent_prices = prices[-lookback_period:-1]
+        recent_high = np.max(recent_prices)
+        recent_low = np.min(recent_prices)
+        recent_range = recent_high - recent_low
+        
+        # Current price
+        current_price = prices[-1]
+        
+        # Check volume if available
+        volume_confirmation = False
+        if volumes is not None and len(volumes) >= lookback_period:
+            recent_avg_volume = np.mean(volumes[-lookback_period:-1])
+            current_volume = volumes[-1]
+            volume_confirmation = current_volume > (recent_avg_volume * volume_factor)
+        
+        # Check for breakout
+        breakout_up = current_price > recent_high and (current_price - recent_high) / recent_high > price_threshold
+        breakout_down = current_price < recent_low and (recent_low - current_price) / recent_low > price_threshold
+        
+        if breakout_up:
+            return {
+                "breakout_detected": True,
+                "direction": "up",
+                "price": float(current_price),
+                "breakout_level": float(recent_high),
+                "breakout_percentage": float((current_price - recent_high) / recent_high * 100),
+                "volume_confirmation": volume_confirmation
+            }
+        elif breakout_down:
+            return {
+                "breakout_detected": True,
+                "direction": "down",
+                "price": float(current_price),
+                "breakout_level": float(recent_low),
+                "breakout_percentage": float((recent_low - current_price) / recent_low * 100),
+                "volume_confirmation": volume_confirmation
+            }
+        else:
+            return {
+                "breakout_detected": False,
+                "price": float(current_price),
+                "recent_high": float(recent_high),
+                "recent_low": float(recent_low)
+            }
+    
+    def _detect_consolidation_pattern(self, prices: np.ndarray, window_size: int = 10,
+                                    volatility_threshold: float = 0.01) -> Dict[str, Any]:
+        """
+        Detect price consolidation patterns.
+        
+        Args:
+            prices: Array of price data
+            window_size: Window size for volatility calculation
+            volatility_threshold: Maximum volatility for consolidation
+            
+        Returns:
+            Consolidation detection results
+        """
+        if len(prices) < window_size * 2:
+            return {"consolidation_detected": False, "reason": "Insufficient data"}
+        
+        # Calculate recent volatility
+        recent_prices = prices[-window_size:]
+        recent_returns = np.diff(recent_prices) / recent_prices[:-1]
+        recent_volatility = np.std(recent_returns)
+        
+        # Calculate previous volatility
+        previous_prices = prices[-window_size*2:-window_size]
+        previous_returns = np.diff(previous_prices) / previous_prices[:-1]
+        previous_volatility = np.std(previous_returns)
+        
+        # Check for consolidation
+        consolidation_detected = recent_volatility < volatility_threshold
+        volatility_reduction = previous_volatility > 0 and recent_volatility < previous_volatility
+        
+        return {
+            "consolidation_detected": consolidation_detected,
+            "recent_volatility": float(recent_volatility),
+            "previous_volatility": float(previous_volatility),
+            "volatility_reduction": volatility_reduction,
+            "price_range": {
+                "min": float(np.min(recent_prices)),
+                "max": float(np.max(recent_prices)),
+                "current": float(prices[-1])
+            }
+        }
+    
+    # Public API methods
+    
+    def detect_peaks(self, prices: List[float], window_size: int = 5, 
+                    prominence: float = 0.5) -> Dict[str, Any]:
+        """
+        Detect price peaks and valleys.
+        
+        Args:
+            prices: List of price data points
+            window_size: Window size for peak detection
+            prominence: Minimum prominence of peaks
+            
+        Returns:
+            Dictionary with peaks and valleys
+        """
+        params = {
+            "prices": prices,
+            "window_size": window_size,
+            "prominence": prominence
+        }
+        return self.call_endpoint("detect_peaks", params)
+    
+    def detect_support_resistance(self, prices: List[float], volumes: List[float] = None,
+                                 num_levels: int = 3) -> Dict[str, Any]:
+        """
+        Identify support and resistance levels.
+        
+        Args:
+            prices: List of price data points
+            volumes: List of volume data points (optional)
+            num_levels: Number of levels to return
+            
+        Returns:
+            Dictionary with support and resistance levels
+        """
+        params = {
+            "prices": prices,
+            "volumes": volumes if volumes else [],
+            "num_levels": num_levels
+        }
+        return self.call_endpoint("detect_support_resistance", params)
+    
+    def detect_breakout(self, prices: List[float], volumes: List[float] = None,
+                       lookback_period: int = 20) -> Dict[str, Any]:
+        """
+        Detect breakout patterns.
+        
+        Args:
+            prices: List of price data points
+            volumes: List of volume data points (optional)
+            lookback_period: Period to look back for range
+            
+        Returns:
+            Dictionary with breakout detection results
+        """
+        params = {
+            "prices": prices,
+            "volumes": volumes if volumes else [],
+            "lookback_period": lookback_period
+        }
+        return self.call_endpoint("detect_breakout", params)
+    
+    def detect_consolidation(self, prices: List[float], 
+                            window_size: int = 10) -> Dict[str, Any]:
+        """
+        Detect price consolidation patterns.
+        
+        Args:
+            prices: List of price data points
+            window_size: Window size for volatility calculation
+            
+        Returns:
+            Dictionary with consolidation detection results
+        """
+        params = {
+            "prices": prices,
+            "window_size": window_size
+        }
+        return self.call_endpoint("detect_consolidation", params)

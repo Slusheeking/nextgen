@@ -1,0 +1,20 @@
+[Unit]
+Description=NextGen FinGPT System Metrics Collector
+After=network.target prometheus.service loki.service
+Wants=prometheus.service loki.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/usr/bin/python3 -m prometheus.system_metrics
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
