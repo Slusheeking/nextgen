@@ -6,30 +6,30 @@ WebSocket API, providing access to real-time market data streams.
 """
 
 import os
-import logging
-import time
+from dotenv import load_dotenv
+load_dotenv()
 import json
 import asyncio
-from typing import Dict, List, Any, Optional, Union, Callable
-import pandas as pd
+from typing import Dict, List, Any, Optional, Union
 import websockets
 from uuid import uuid4
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
 
 class PolygonWsMCP(BaseDataMCP):
     """
     MCP server for Polygon.io WebSocket API.
-    
+
     This server provides access to real-time market data streams through Polygon.io
     WebSocket API with dynamic channel selection and management of connections.
     """
-    
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initialize the Polygon.io WebSocket MCP server.
-        
+
         Args:
             config: Optional configuration dictionary. May contain:
                 - api_key: Polygon.io API key (overrides environment variable)
@@ -40,72 +40,81 @@ class PolygonWsMCP(BaseDataMCP):
                 - cache_ttl: Time-to-live for cached data in seconds (default: 300)
         """
         super().__init__(name="polygon_ws_mcp", config=config)
-        
+
         # Initialize monitoring
-        self.monitor, self.metrics = setup_monitoring(
-            service_name="polygon-ws-mcp",
-            enable_prometheus=True,
-            enable_loki=True,
-            default_labels={"component": "polygon_ws_mcp"}
+        self.monitor = MonitoringManager(
+            service_name="polygon-ws-mcp"
         )
-        if self.monitor:
-            self.monitor.log_info("PolygonWsMCP initialized", component="polygon_ws_mcp", action="initialization")
-        
+        self.monitor.log_info(
+            "PolygonWsMCP initialized",
+            component="polygon_ws_mcp",
+            action="initialization",
+        )
+
         # Initialize the WS client
         self.ws_client = self._initialize_client()
-        
+
         # Initialize endpoint definitions
         self.endpoints = self._initialize_endpoints()
-        
+
         # Active connections tracking
         self.active_connections = {}
         self.connection_tasks = {}
-        
+
         # WebSocket connection settings
         self.max_connections = self.config.get("max_connections", 5)
         self.ping_interval = self.config.get("ping_interval", 30)
-        
+
         # Data buffers for each subscription
         self.data_buffers = {}
         self.buffer_limit = self.config.get("buffer_limit", 1000)
-        
+
         # Register specific tools
         self._register_specific_tools()
-        
-        self.logger.info("PolygonWsMCP initialized with %d stream types", len(self.endpoints))
-        if self.monitor:
-            self.monitor.log_info(f"PolygonWsMCP initialized with {len(self.endpoints)} stream types", component="polygon_ws_mcp", action="init_endpoints")
-    
+
+        self.logger.info(
+            "PolygonWsMCP initialized with %d stream types", len(self.endpoints)
+        )
+        self.monitor.log_info(
+            f"PolygonWsMCP initialized with {len(self.endpoints)} stream types",
+            component="polygon_ws_mcp",
+            action="init_endpoints",
+        )
+
     def _initialize_client(self) -> Dict[str, Any]:
         """
         Initialize the Polygon WebSocket client configuration.
-        
+
         Returns:
             Client configuration dictionary or None if initialization fails
         """
         try:
             api_key = self.config.get("api_key") or os.environ.get("POLYGON_API_KEY")
             ws_url = self.config.get("ws_url", "wss://socket.polygon.io/stocks")
-            
+
             if not api_key:
-                self.logger.warning("No Polygon API key provided - WebSocket connections will fail")
-            
+                self.logger.warning(
+                    "No Polygon API key provided - WebSocket connections will fail"
+                )
+
             # Return the configuration directly
-            return {
-                "api_key": api_key,
-                "ws_url": ws_url
-            }
-            
+            return {"api_key": api_key, "ws_url": ws_url}
+
         except Exception as e:
             self.logger.error(f"Failed to initialize Polygon WebSocket client: {e}")
             if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(f"Failed to initialize Polygon WebSocket client: {e}", component="polygon_ws_mcp", action="client_init_error", error=str(e))
+                self.monitor.log_error(
+                    f"Failed to initialize Polygon WebSocket client: {e}",
+                    component="polygon_ws_mcp",
+                    action="client_init_error",
+                    error=str(e),
+                )
             return None
-    
+
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
         """
         Initialize available stream types for Polygon.io WebSocket API.
-        
+
         Returns:
             Dictionary mapping stream types to their configurations
         """
@@ -116,10 +125,8 @@ class PolygonWsMCP(BaseDataMCP):
                 "category": "market_data",
                 "required_params": ["symbols"],
                 "optional_params": ["buffer_size"],
-                "default_values": {
-                    "buffer_size": "100"
-                },
-                "handler": self._handle_trades_stream
+                "default_values": {"buffer_size": "100"},
+                "handler": self._handle_trades_stream,
             },
             "quotes": {
                 "channel_prefix": "Q.",
@@ -127,10 +134,8 @@ class PolygonWsMCP(BaseDataMCP):
                 "category": "market_data",
                 "required_params": ["symbols"],
                 "optional_params": ["buffer_size"],
-                "default_values": {
-                    "buffer_size": "100"
-                },
-                "handler": self._handle_quotes_stream
+                "default_values": {"buffer_size": "100"},
+                "handler": self._handle_quotes_stream,
             },
             "minute_bars": {
                 "channel_prefix": "AM.",
@@ -138,10 +143,8 @@ class PolygonWsMCP(BaseDataMCP):
                 "category": "market_data",
                 "required_params": ["symbols"],
                 "optional_params": ["buffer_size"],
-                "default_values": {
-                    "buffer_size": "100"
-                },
-                "handler": self._handle_minute_bars_stream
+                "default_values": {"buffer_size": "100"},
+                "handler": self._handle_minute_bars_stream,
             },
             "second_bars": {
                 "channel_prefix": "A.",
@@ -149,10 +152,8 @@ class PolygonWsMCP(BaseDataMCP):
                 "category": "market_data",
                 "required_params": ["symbols"],
                 "optional_params": ["buffer_size"],
-                "default_values": {
-                    "buffer_size": "100"
-                },
-                "handler": self._handle_second_bars_stream
+                "default_values": {"buffer_size": "100"},
+                "handler": self._handle_second_bars_stream,
             },
             "status": {
                 "channel_prefix": "status",
@@ -160,13 +161,11 @@ class PolygonWsMCP(BaseDataMCP):
                 "category": "system",
                 "required_params": [],
                 "optional_params": ["buffer_size"],
-                "default_values": {
-                    "buffer_size": "10"
-                },
-                "handler": self._handle_status_stream
-            }
+                "default_values": {"buffer_size": "10"},
+                "handler": self._handle_status_stream,
+            },
         }
-    
+
     def _register_specific_tools(self):
         """Register tools specific to Polygon WebSocket API."""
         self.register_tool(self.subscribe_to_stream)
@@ -177,21 +176,23 @@ class PolygonWsMCP(BaseDataMCP):
         self.register_tool(self.get_latest_minute_bars)
         self.register_tool(self.get_latest_second_bars)
         self.register_tool(self.get_connection_status)
-    
-    def _execute_endpoint_fetch(self, endpoint_config: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _execute_endpoint_fetch(
+        self, endpoint_config: Dict[str, Any], params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Execute the WebSocket stream operation based on endpoint configuration.
-        
+
         For WebSocket, this doesn't immediately fetch data but rather sets up
         a subscription that will receive data over time.
-        
+
         Args:
             endpoint_config: Configuration for the stream
             params: Parameters for the subscription
-            
+
         Returns:
             Status information about the subscription
-            
+
         Raises:
             Exception: If the subscription setup fails
         """
@@ -199,26 +200,31 @@ class PolygonWsMCP(BaseDataMCP):
         handler = endpoint_config.get("handler")
         if handler and callable(handler):
             return handler(params)
-        
+
         # Default handling if no specific handler
         stream_type = endpoint_config.get("stream_type")
         if not stream_type:
-            raise ValueError(f"No stream_type specified for endpoint")
-        
+            raise ValueError("No stream_type specified for endpoint")
+
         # Check if symbols are required and provided
-        if "symbols" in endpoint_config.get("required_params", []) and "symbols" not in params:
-            raise ValueError(f"Required parameter 'symbols' not provided")
-        
+        if (
+            "symbols" in endpoint_config.get("required_params", [])
+            and "symbols" not in params
+        ):
+            raise ValueError("Required parameter 'symbols' not provided")
+
         # Generate a subscription ID
         subscription_id = f"{stream_type}_{uuid4().hex[:8]}"
-        
+
         # Create a new subscription
         return self._create_subscription(subscription_id, stream_type, params)
-    
-    async def _connect_and_subscribe(self, subscription_id: str, stream_type: str, symbols: List[str]):
+
+    async def _connect_and_subscribe(
+        self, subscription_id: str, stream_type: str, symbols: List[str]
+    ):
         """
         Establish WebSocket connection and subscribe to channels.
-        
+
         Args:
             subscription_id: Unique ID for this subscription
             stream_type: Type of data stream
@@ -230,16 +236,16 @@ class PolygonWsMCP(BaseDataMCP):
                 self.ws_url,
                 ping_interval=self.ping_interval,
                 ping_timeout=10,
-                close_timeout=5
+                close_timeout=5,
             )
-            
+
             # Keep track of this connection
             self.active_connections[subscription_id] = ws
-            
+
             # Authenticate
             await ws.send(json.dumps({"action": "auth", "params": self.api_key}))
             auth_response = await ws.recv()
-            
+
             # Parse authentication response
             auth_data = json.loads(auth_response)
             if not self._is_auth_successful(auth_data):
@@ -247,7 +253,7 @@ class PolygonWsMCP(BaseDataMCP):
                 await ws.close()
                 del self.active_connections[subscription_id]
                 return
-            
+
             # Subscribe to channels
             endpoint_config = self.endpoints.get(stream_type)
             if not endpoint_config:
@@ -255,29 +261,29 @@ class PolygonWsMCP(BaseDataMCP):
                 await ws.close()
                 del self.active_connections[subscription_id]
                 return
-            
+
             prefix = endpoint_config.get("channel_prefix", "")
             channels = [f"{prefix}{symbol}" for symbol in symbols]
-            
+
             for channel in channels:
                 await ws.send(json.dumps({"action": "subscribe", "params": channel}))
-            
+
             # Start message handler
             self.data_buffers[subscription_id] = []
             asyncio.create_task(self._handle_messages(ws, subscription_id, stream_type))
-            
+
             self.logger.info(f"Subscribed to {len(channels)} {stream_type} channels")
-            
+
         except Exception as e:
             self.logger.error(f"Error in WebSocket connection: {e}")
             if subscription_id in self.active_connections:
                 await self.active_connections[subscription_id].close()
                 del self.active_connections[subscription_id]
-    
+
     async def _handle_messages(self, ws, subscription_id: str, stream_type: str):
         """
         Process messages from a WebSocket connection.
-        
+
         Args:
             ws: WebSocket connection
             subscription_id: Unique ID for this subscription
@@ -285,16 +291,16 @@ class PolygonWsMCP(BaseDataMCP):
         """
         buffer = self.data_buffers.get(subscription_id, [])
         buffer_limit = int(self.config.get("buffer_limit", 1000))
-        
+
         try:
             while True:
                 try:
                     # Wait for a message with timeout
                     message = await asyncio.wait_for(ws.recv(), timeout=60)
-                    
+
                     # Parse and process the message
                     data = json.loads(message)
-                    
+
                     # Process message based on type
                     if isinstance(data, list):
                         for item in data:
@@ -307,18 +313,20 @@ class PolygonWsMCP(BaseDataMCP):
                         buffer.append(data)
                         if len(buffer) > buffer_limit:
                             buffer.pop(0)
-                    
+
                 except asyncio.TimeoutError:
-                    # No message in timeout period, send ping to check connection
+                    #
+                    # No message in timeout period, send ping to check
+                    # connection
                     self.logger.debug("No message received in 60 seconds, sending ping")
                     pong = await ws.ping()
                     await asyncio.wait_for(pong, timeout=10)
                     self.logger.debug("Received pong response, connection still active")
-                
+
                 except websockets.ConnectionClosed as e:
                     self.logger.warning(f"WebSocket connection closed: {e}")
                     break
-            
+
         except Exception as e:
             self.logger.error(f"Error in message handling: {e}")
         finally:
@@ -327,14 +335,16 @@ class PolygonWsMCP(BaseDataMCP):
                 await ws.close()
                 del self.active_connections[subscription_id]
                 self.logger.info(f"Closed WebSocket connection for {subscription_id}")
-    
-    def _is_auth_successful(self, auth_data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
+
+    def _is_auth_successful(
+        self, auth_data: Union[Dict[str, Any], List[Dict[str, Any]]]
+    ) -> bool:
         """
         Check if authentication was successful.
-        
+
         Args:
             auth_data: Authentication response data
-            
+
         Returns:
             Whether authentication was successful
         """
@@ -343,19 +353,24 @@ class PolygonWsMCP(BaseDataMCP):
                 if msg.get("ev") == "status" and msg.get("status") == "auth_success":
                     return True
         elif isinstance(auth_data, dict):
-            if auth_data.get("ev") == "status" and auth_data.get("status") == "auth_success":
+            if (
+                auth_data.get("ev") == "status"
+                and auth_data.get("status") == "auth_success"
+            ):
                 return True
         return False
-    
-    def _create_subscription(self, subscription_id: str, stream_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _create_subscription(
+        self, subscription_id: str, stream_type: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Create a new subscription to a data stream.
-        
+
         Args:
             subscription_id: Unique ID for this subscription
             stream_type: Type of data stream
             params: Parameters for the subscription
-            
+
         Returns:
             Status information about the subscription
         """
@@ -363,70 +378,71 @@ class PolygonWsMCP(BaseDataMCP):
         symbols = params.get("symbols", [])
         if isinstance(symbols, str):
             symbols = [sym.strip() for sym in symbols.split(",")]
-        
+
         # Check connection limit
         if len(self.active_connections) >= self.max_connections:
-            self.logger.warning(f"Maximum WebSocket connections reached ({self.max_connections})")
+            self.logger.warning(
+                f"Maximum WebSocket connections reached ({self.max_connections})"
+            )
             return {"error": f"Maximum connections reached ({self.max_connections})"}
-        
+
         # Start connection in background
         loop = asyncio.get_event_loop()
-        task = loop.create_task(self._connect_and_subscribe(subscription_id, stream_type, symbols))
+        task = loop.create_task(
+            self._connect_and_subscribe(subscription_id, stream_type, symbols)
+        )
         self.connection_tasks[subscription_id] = task
-        
+
         # Return subscription information
         return {
             "subscription_id": subscription_id,
             "stream_type": stream_type,
             "symbols": symbols,
             "status": "connecting",
-            "message": f"Establishing WebSocket connection for {stream_type} data"
+            "message": f"Establishing WebSocket connection for {stream_type} data",
         }
-    
+
     # Handler methods for specific stream types
-    
+
     def _handle_trades_stream(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle trades stream subscription."""
         # Generate subscription ID
         subscription_id = f"trades_{uuid4().hex[:8]}"
         return self._create_subscription(subscription_id, "trades", params)
-    
+
     def _handle_quotes_stream(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle quotes stream subscription."""
         subscription_id = f"quotes_{uuid4().hex[:8]}"
         return self._create_subscription(subscription_id, "quotes", params)
-    
+
     def _handle_minute_bars_stream(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle minute bars stream subscription."""
         subscription_id = f"minute_bars_{uuid4().hex[:8]}"
         return self._create_subscription(subscription_id, "minute_bars", params)
-    
+
     def _handle_second_bars_stream(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle second bars stream subscription."""
         subscription_id = f"second_bars_{uuid4().hex[:8]}"
         return self._create_subscription(subscription_id, "second_bars", params)
-    
+
     def _handle_status_stream(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle status stream subscription."""
         subscription_id = f"status_{uuid4().hex[:8]}"
         return self._create_subscription(subscription_id, "status", params)
-    
+
     # Public API methods for models to use directly
-    
+
     def subscribe_to_stream(
-        self, 
-        stream_type: str, 
-        symbols: Union[str, List[str]], 
-        buffer_size: int = 100
+        self, stream_type: str, symbols: Union[str, List[str]], buffer_size: int = 100
     ) -> Dict[str, Any]:
         """
         Subscribe to a real-time data stream.
-        
+
         Args:
             stream_type: Type of stream ("trades", "quotes", "minute_bars", "second_bars")
             symbols: Symbol or list of symbols to subscribe to
             buffer_size: Size of the data buffer
-            
+
         Returns:
             Subscription information
         """
@@ -437,67 +453,66 @@ class PolygonWsMCP(BaseDataMCP):
                 symbols = [sym.strip() for sym in symbols.split(",")]
             else:
                 symbols = [symbols]
-        
+
         # Check stream type
         if stream_type not in self.endpoints:
             self.logger.error(f"Invalid stream type: {stream_type}")
             return {
                 "error": f"Invalid stream type: {stream_type}",
-                "available_stream_types": list(self.endpoints.keys())
+                "available_stream_types": list(self.endpoints.keys()),
             }
-        
+
         # Make subscription
-        return self.fetch_data(stream_type, {"symbols": symbols, "buffer_size": buffer_size})
-    
+        return self.fetch_data(
+            stream_type, {"symbols": symbols, "buffer_size": buffer_size}
+        )
+
     def unsubscribe_from_stream(self, subscription_id: str) -> Dict[str, Any]:
         """
         Unsubscribe from a data stream.
-        
+
         Args:
             subscription_id: ID of the subscription to cancel
-            
+
         Returns:
             Status information
         """
         if subscription_id not in self.active_connections:
             return {"error": f"Subscription not found: {subscription_id}"}
-        
+
         # Schedule connection closure
         loop = asyncio.get_event_loop()
         loop.create_task(self._close_subscription(subscription_id))
-        
+
         return {"status": "closing", "subscription_id": subscription_id}
-    
+
     async def _close_subscription(self, subscription_id: str):
         """Close a WebSocket subscription."""
         if subscription_id in self.active_connections:
             ws = self.active_connections[subscription_id]
             await ws.close()
             del self.active_connections[subscription_id]
-            
+
             # Clean up related data
             if subscription_id in self.data_buffers:
                 del self.data_buffers[subscription_id]
             if subscription_id in self.connection_tasks:
                 del self.connection_tasks[subscription_id]
-            
+
             self.logger.info(f"Closed subscription: {subscription_id}")
-    
+
     def get_latest_trades(
-        self, 
-        subscription_id: str = None, 
-        symbol: str = None,
-        limit: int = 10
+        self, subscription_id: str = None, symbol: str = None, limit: int = 10
     ) -> Dict[str, Any]:
         """
         Get latest trades from a subscription.
-        
+
         Args:
             subscription_id: Specific subscription to get data from,
                           if not provided, will search for any trade subscription
             symbol: Filter by symbol
             limit: Maximum number of trades to return
-            
+
         Returns:
             Latest trade data
         """
@@ -508,44 +523,41 @@ class PolygonWsMCP(BaseDataMCP):
                 if sub_id.startswith("trades_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id is None:
             # Find any trades subscription
             for sub_id, ws in self.active_connections.items():
                 if sub_id.startswith("trades_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id not in self.data_buffers:
             return {"error": "No active trades subscription found"}
-        
+
         # Get trade data from buffer
         buffer = self.data_buffers[subscription_id]
-        
+
         # Filter by symbol if requested
         if symbol is not None:
             trades = [t for t in buffer if t.get("sym") == symbol]
         else:
             trades = buffer
-        
+
         # Return limited number of trades
         return {"trades": trades[-limit:], "subscription_id": subscription_id}
-    
+
     def get_latest_quotes(
-        self, 
-        subscription_id: str = None, 
-        symbol: str = None,
-        limit: int = 10
+        self, subscription_id: str = None, symbol: str = None, limit: int = 10
     ) -> Dict[str, Any]:
         """
         Get latest quotes from a subscription.
-        
+
         Args:
             subscription_id: Specific subscription to get data from,
                           if not provided, will search for any quote subscription
             symbol: Filter by symbol
             limit: Maximum number of quotes to return
-            
+
         Returns:
             Latest quote data
         """
@@ -556,43 +568,43 @@ class PolygonWsMCP(BaseDataMCP):
                 if sub_id.startswith("quotes_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id is None:
             # Find any quotes subscription
             for sub_id, ws in self.active_connections.items():
                 if sub_id.startswith("quotes_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id not in self.data_buffers:
             return {"error": "No active quotes subscription found"}
-        
+
         # Get quote data from buffer
         buffer = self.data_buffers[subscription_id]
-        
+
         # Filter by symbol if requested
         if symbol is not None:
             quotes = [q for q in buffer if q.get("sym") == symbol]
         else:
             quotes = buffer
-        
+
         # Return limited number of quotes
         return {"quotes": quotes[-limit:], "subscription_id": subscription_id}
-    
+
     def get_active_subscriptions(self) -> Dict[str, Any]:
         """
         Get information about active subscriptions.
-        
+
         Returns:
             Dictionary with active subscription information
         """
         subscriptions = []
-        
+
         for sub_id, ws in self.active_connections.items():
             # Determine stream type from subscription ID
             stream_type = "unknown"
             if sub_id.startswith("trades_"):
-                stream_type = "trades"
+                   stream_type = "trades"
             elif sub_id.startswith("quotes_"):
                 stream_type = "quotes"
             elif sub_id.startswith("minute_bars_"):
@@ -601,35 +613,33 @@ class PolygonWsMCP(BaseDataMCP):
                 stream_type = "second_bars"
             elif sub_id.startswith("status_"):
                 stream_type = "status"
-            
+
             # Get buffer size
             buffer_size = len(self.data_buffers.get(sub_id, []))
-            
-            subscriptions.append({
-                "subscription_id": sub_id,
-                "stream_type": stream_type,
-                "buffer_size": buffer_size,
-                "status": "active"
-            })
-        
+
+            subscriptions.append(
+                {
+                    "subscription_id": sub_id,
+                    "stream_type": stream_type,
+                    "buffer_size": buffer_size,
+                    "status": "active",
+                }
+            )
+
         return {"subscriptions": subscriptions, "count": len(subscriptions)}
 
-
     def get_latest_minute_bars(
-        self,
-        subscription_id: str = None,
-        symbol: str = None,
-        limit: int = 10
+        self, subscription_id: str = None, symbol: str = None, limit: int = 10
     ) -> Dict[str, Any]:
         """
         Get latest minute bars from a subscription.
-        
+
         Args:
             subscription_id: Specific subscription to get data from,
                           if not provided, will search for any minute bars subscription
             symbol: Filter by symbol
             limit: Maximum number of bars to return
-            
+
         Returns:
             Latest minute bars data
         """
@@ -640,44 +650,41 @@ class PolygonWsMCP(BaseDataMCP):
                 if sub_id.startswith("minute_bars_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id is None:
             # Find any minute bars subscription
             for sub_id, ws in self.active_connections.items():
                 if sub_id.startswith("minute_bars_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id not in self.data_buffers:
             return {"error": "No active minute bars subscription found"}
-        
+
         # Get minute bars data from buffer
         buffer = self.data_buffers[subscription_id]
-        
+
         # Filter by symbol if requested
         if symbol is not None:
             bars = [b for b in buffer if b.get("sym") == symbol]
         else:
             bars = buffer
-        
+
         # Return limited number of bars
         return {"minute_bars": bars[-limit:], "subscription_id": subscription_id}
-    
+
     def get_latest_second_bars(
-        self,
-        subscription_id: str = None,
-        symbol: str = None,
-        limit: int = 10
+        self, subscription_id: str = None, symbol: str = None, limit: int = 10
     ) -> Dict[str, Any]:
         """
         Get latest second bars from a subscription.
-        
+
         Args:
             subscription_id: Specific subscription to get data from,
                           if not provided, will search for any second bars subscription
             symbol: Filter by symbol
             limit: Maximum number of bars to return
-            
+
         Returns:
             Latest second bars data
         """
@@ -688,38 +695,38 @@ class PolygonWsMCP(BaseDataMCP):
                 if sub_id.startswith("second_bars_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id is None:
             # Find any second bars subscription
             for sub_id, ws in self.active_connections.items():
                 if sub_id.startswith("second_bars_"):
                     subscription_id = sub_id
                     break
-        
+
         if subscription_id not in self.data_buffers:
             return {"error": "No active second bars subscription found"}
-        
+
         # Get second bars data from buffer
         buffer = self.data_buffers[subscription_id]
-        
+
         # Filter by symbol if requested
         if symbol is not None:
             bars = [b for b in buffer if b.get("sym") == symbol]
         else:
             bars = buffer
-        
+
         # Return limited number of bars
         return {"second_bars": bars[-limit:], "subscription_id": subscription_id}
-    
+
     def get_connection_status(self) -> Dict[str, Any]:
         """
         Get status of all WebSocket connections.
-        
+
         Returns:
             Dictionary with connection status information
         """
         connections = []
-        
+
         for sub_id, ws in self.active_connections.items():
             # Determine stream type from subscription ID
             stream_type = "unknown"
@@ -733,23 +740,25 @@ class PolygonWsMCP(BaseDataMCP):
                 stream_type = "second_bars"
             elif sub_id.startswith("status_"):
                 stream_type = "status"
-            
+
             # Get connection state
             state = "connected"
             if ws.closed:
                 state = "closed"
-            
-            connections.append({
-                "subscription_id": sub_id,
-                "stream_type": stream_type,
-                "state": state,
-                "buffer_size": len(self.data_buffers.get(sub_id, []))
-            })
-        
+
+            connections.append(
+                {
+                    "subscription_id": sub_id,
+                    "stream_type": stream_type,
+                    "state": state,
+                    "buffer_size": len(self.data_buffers.get(sub_id, [])),
+                }
+            )
+
         return {
             "connections": connections,
             "count": len(connections),
-            "max_connections": self.max_connections
+            "max_connections": self.max_connections,
         }
 
     @property
@@ -758,7 +767,7 @@ class PolygonWsMCP(BaseDataMCP):
         if not self.ws_client:
             return ""
         return self.ws_client.get("api_key", "")
-    
+
     @property
     def ws_url(self) -> str:
         """Get the WebSocket URL from the client configuration."""

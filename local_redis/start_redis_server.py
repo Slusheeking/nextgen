@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Import the Redis server
 from local_redis.redis_server import RedisServer
+# Import monitoring utilities
+from monitoring import setup_monitoring
+
 
 # Configure logging
 logging.basicConfig(
@@ -25,35 +28,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger("redis_starter")
 
+
+
+# Set up monitoring
+monitor, metrics = setup_monitoring(
+    service_name="local_redis-start-redis-server",
+    enable_prometheus=True,
+    enable_loki=True,
+    default_labels={"component": "local_redis/local_redis"}
+)
+
+
 def handle_signal(signum, frame):
     """Handle termination signals."""
     logger.info(f"Received signal {signum}, shutting down...")
     sys.exit(0)
+
 
 def main():
     """Main entry point for the Redis server starter."""
     # Register signal handlers
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
-    
+
     logger.info("Starting Redis server with Loki and Prometheus integration...")
-    
+
     try:
         # Get Redis server instance
         redis_server = RedisServer.get_instance()
-        
+
         # Get Redis client
         redis_client = redis_server.get_client()
-        
+
         if redis_client:
             # Test connection
             redis_client.ping()
             logger.info("Redis server started successfully")
-            
+
             # Keep the server running
             while True:
                 time.sleep(10)
-                
+
                 # Periodically check if Redis is still running
                 try:
                     redis_client.ping()
@@ -63,7 +78,7 @@ def main():
         else:
             logger.error("Failed to get Redis client")
             sys.exit(1)
-            
+
     except Exception as e:
         logger.error(f"Error starting Redis server: {e}")
         sys.exit(1)

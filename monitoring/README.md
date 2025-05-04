@@ -1,125 +1,86 @@
-# NextGen FinGPT Monitoring Module
+# NextGen Monitoring Module
 
-This module provides comprehensive monitoring capabilities for the NextGen FinGPT project, including Prometheus metrics collection, Loki logging, and system metrics monitoring.
+This module provides a simplified, unified monitoring solution for the NextGen FinGPT project, supporting Prometheus metrics and Loki logging with minimal setup.
 
 ## Features
 
-- **Unified Monitoring Interface**: A single interface for both Prometheus metrics and Loki logging
-- **System Metrics Collection**: Automatic collection of system metrics (CPU, memory, disk, GPU, etc.)
-- **Alerting**: Configurable alerting based on metric thresholds
-- **Frontend Integration**: HTTP endpoints for metrics that can be consumed by frontend dashboards
-- **Compatibility Layer**: Backward compatibility with existing code
+- Unified MonitoringManager for Prometheus metrics and Loki logging
+- Basic SystemMetricsCollector for CPU, memory, and disk metrics
+- Minimal, robust API for easy integration
 
 ## Installation
 
-The monitoring module is included as part of the NextGen FinGPT project. To install the required dependencies:
+Install the required dependencies:
 
 ```bash
-pip install prometheus_client psutil python-dotenv logging-loki
-```
-
-For GPU monitoring (optional):
-
-```bash
-pip install gputil py3nvml pynvml
+pip install prometheus_client python-logging-loki psutil
 ```
 
 ## Usage
 
-### Basic Usage
+### Basic Example
 
 ```python
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager, SystemMetricsCollector
 
-# Set up monitoring for a service
-monitor, metrics = setup_monitoring(
-    service_name="my-service",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"environment": "production"}
-)
+# Initialize monitoring
+monitor = MonitoringManager(service_name="my-service")
 
 # Log messages
-monitor.log_info("Service started", component="main")
-monitor.log_warning("Resource usage high", component="resource_monitor", usage=85)
+monitor.log_info("Service started")
+monitor.log_warning("Resource usage high", usage=85)
 
 # Update metrics
-monitor.increment_counter("requests_total", 1, method="GET", endpoint="/api/data", status="200")
-monitor.set_gauge("active_connections", 42, server="primary")
-monitor.observe_histogram("response_time_seconds", 0.2, method="GET", endpoint="/api/data")
+monitor.increment_counter("requests_total", method="GET", endpoint="/api/data", status="200")
+
+# Start system metrics collection (optional)
+collector = SystemMetricsCollector(monitor)
+collector.start()
 ```
 
-### Frontend Integration
+### Exposed Metrics
 
-The monitoring module exposes metrics via HTTP endpoints that can be consumed by frontend dashboards:
+Prometheus metrics are exposed on port 8010 by default:
 
-1. **Prometheus Metrics Endpoint**: By default, metrics are exposed on port 8010 (configurable via environment variable `PROMETHEUS_METRICS_PORT`).
-
-   ```
-   http://your-server:8010/metrics
-   ```
-
-2. **Grafana Integration**: You can configure Grafana to use Prometheus as a data source and create dashboards to visualize the metrics.
-
-3. **Loki Logs**: Logs are sent to Loki (configurable via environment variable `LOKI_URL`), which can also be visualized in Grafana.
-
-### System Metrics Collector
-
-The module includes a standalone system metrics collector that can be run as a service:
-
-```bash
-# Install as a systemd service
-sudo ./monitoring/setup_system_metrics.sh
-
-# Or run directly
-python -m monitoring.system_metrics
+```
+http://localhost:8010/
 ```
 
-## Configuration
+You can configure the port via the `metrics_port` argument to `MonitoringManager`.
 
-Configuration is done via environment variables:
+### Loki Logging
 
-- `PROMETHEUS_METRICS_PORT`: Port to expose Prometheus metrics on (default: 8010)
-- `LOKI_URL`: URL of the Loki server (default: http://localhost:3100)
-- `LOKI_USERNAME`: Username for Loki authentication (optional)
-- `LOKI_PASSWORD`: Password for Loki authentication (optional)
-- `METRICS_INTERVAL`: Interval for collecting system metrics in seconds (default: 5)
-- `METRICS_SERVICE_NAME`: Name of the system metrics service (default: system_metrics)
-- `METRICS_ENABLE_LOKI`: Whether to enable Loki logging for system metrics (default: true)
+Logs are sent to Loki at `http://localhost:3100/loki/api/v1/push` by default. You can configure the URL via the `loki_url` argument to `MonitoringManager`.
 
 ## API Reference
 
 ### MonitoringManager
 
-The main class for unified monitoring:
-
 - `log_info(message, **labels)`: Log an info message
 - `log_warning(message, **labels)`: Log a warning message
 - `log_error(message, **labels)`: Log an error message
 - `log_critical(message, **labels)`: Log a critical message
-- `increment_counter(name, value=1, **labels)`: Increment a counter
-- `set_gauge(name, value, **labels)`: Set a gauge value
-- `observe_histogram(name, value, **labels)`: Observe a value in a histogram
+- `log_debug(message, **labels)`: Log a debug message
+- `increment_counter(name, value=1, **labels)`: Increment a counter metric
+- `set_gauge(name, value, **labels)`: Set a gauge metric
 
-### PrometheusManager
+### SystemMetricsCollector
 
-For direct Prometheus metrics management:
+- `start()`: Start collecting system metrics (CPU, memory, disk)
+- `stop()`: Stop collecting system metrics
 
-- `create_counter(name, description, labels=None)`: Create a counter
-- `create_gauge(name, description, labels=None)`: Create a gauge
-- `create_histogram(name, description, labels=None, buckets=None)`: Create a histogram
-- `create_summary(name, description, labels=None)`: Create a summary
+## Configuration
 
-### LokiManager
+You can configure the monitoring system via arguments to `MonitoringManager` or environment variables:
 
-For direct Loki logging:
+- `metrics_port`: Port to expose Prometheus metrics (default: 8010)
+- `loki_url`: URL for Loki logging (default: http://localhost:3100/loki/api/v1/push)
 
-- `info(message, **labels)`: Log an info message
-- `warning(message, **labels)`: Log a warning message
-- `error(message, **labels)`: Log an error message
-- `critical(message, **labels)`: Log a critical message
-- `debug(message, **labels)`: Log a debug message
+## Notes
+
+- Only core system metrics (CPU, memory, disk) are collected by default.
+- For additional metrics or logging customization, extend `system_monitor.py` as needed.
 
 ## Contributing
 
-Contributions to the monitoring module are welcome. Please follow the project's contribution guidelines.
+Contributions are welcome. Please follow the project's contribution guidelines.

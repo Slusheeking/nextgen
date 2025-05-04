@@ -1,0 +1,37 @@
+[Unit]
+Description=NextGen Vector Database Server with Loki and Prometheus integration
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/usr/bin/python3 /home/ubuntu/nextgen/local_vectordb/start_vectordb_server.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Environment variables can be set here or loaded from .env file in the script
+# Environment=VECTORDB_PATH=/home/ubuntu/nextgen/local_vectordb/vector_db_storage
+# Environment=VECTORDB_HOST=localhost
+# Environment=VECTORDB_PORT=8000
+# Environment=VECTORDB_USE_HTTP_SERVER=False
+# Environment=LOKI_URL=http://loki:3100
+# Environment=PROMETHEUS_METRICS_PORT=8011
+
+# Memory management to prevent OOM issues
+MemoryAccounting=true
+MemoryHigh=500M
+MemoryMax=1G
+
+# CPU limits
+CPUAccounting=true
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
