@@ -1,86 +1,139 @@
-# NextGen Monitoring Module
+# NextGen Monitoring System
 
-This module provides a simplified, unified monitoring solution for the NextGen FinGPT project, supporting Prometheus metrics and Loki logging with minimal setup.
+This directory contains a complete monitoring setup for the NextGen platform using:
+- **Prometheus**: For metrics collection and storage
+- **File-based Logging**: For log aggregation and storage
+- **Log API Server**: For accessing logs via a REST API
 
-## Features
+Both services run as systemd services that start automatically on boot and run 24/7.
 
-- Unified MonitoringManager for Prometheus metrics and Loki logging
-- Basic SystemMetricsCollector for CPU, memory, and disk metrics
-- Minimal, robust API for easy integration
+## Setup
 
-## Installation
-
-Install the required dependencies:
+To install both Prometheus and the Log API Server, simply run:
 
 ```bash
-pip install prometheus_client python-logging-loki psutil
+./setup_monitoring_system.sh
 ```
 
-## Usage
+This script will:
+1. Download and install Prometheus
+2. Set up the Log API Server
+3. Configure them with the provided configuration files
+4. Set up systemd services to run them 24/7
+5. Start the services
 
-### Basic Example
+## Services
+
+### Prometheus
+- **Port**: 9090
+- **UI URL**: http://localhost:9090
+- **Service control**: `sudo systemctl [start|stop|restart|status] prometheus`
+- **Configuration**: `monitoring/prometheus/prometheus.yml`
+
+### Log API Server
+- **Port**: 8011
+- **API URL**: http://localhost:8011
+- **Service control**: `sudo systemctl [start|stop|restart|status] log-server`
+- **Log files**: `logs/` directory
+
+## Integration with system_monitor.py
+
+The `system_monitor.py` module is already configured to work with Prometheus and file-based logging:
+
+- It exposes metrics on port 8010 for Prometheus to scrape
+- It writes logs to files in the `logs/` directory
+- It writes to a master log file (`logs/master.log`) for centralized logging
+
+Example usage:
 
 ```python
 from monitoring.system_monitor import MonitoringManager, SystemMetricsCollector
 
-# Initialize monitoring
+# Initialize the monitoring manager
 monitor = MonitoringManager(service_name="my-service")
 
-# Log messages
-monitor.log_info("Service started")
-monitor.log_warning("Resource usage high", usage=85)
+# Log something (goes to log files)
+monitor.log_info("Service started", component="service", action="startup")
 
-# Update metrics
-monitor.increment_counter("requests_total", method="GET", endpoint="/api/data", status="200")
+# Update a metric (available to Prometheus)
+monitor.set_gauge("active_connections", 5)
 
-# Start system metrics collection (optional)
+# Start system metrics collection (CPU, memory, disk)
 collector = SystemMetricsCollector(monitor)
 collector.start()
 ```
 
-### Exposed Metrics
+## Checking Logs and Metrics
 
-Prometheus metrics are exposed on port 8010 by default:
+### View Metrics in Prometheus
+1. Open http://localhost:9090 in a browser
+2. Use the query interface to explore available metrics
+3. Example queries:
+   - `my_service_cpu_percent` - CPU usage
+   - `my_service_memory_percent` - Memory usage
+   - `my_service_uptime_seconds` - Service uptime
 
+### View Logs via API
+
+The Log API Server provides several endpoints for accessing logs:
+
+- `GET /logs` - Get a list of available log files
+- `GET /logs/{filename}` - Get the content of a specific log file
+- `GET /logs/{filename}/stream` - Stream updates to a log file using Server-Sent Events (SSE)
+- `GET /logs/master` - Get the content of the master log file
+- `GET /logs/master/stream` - Stream updates to the master log file
+
+Example usage:
+
+```javascript
+// Get a list of log files
+fetch('http://localhost:8011/logs')
+  .then(response => response.json())
+  .then(data => console.log(data));
+
+// Get the content of the master log file
+fetch('http://localhost:8011/logs/master')
+  .then(response => response.json())
+  .then(data => console.log(data.content));
+
+// Stream updates to the master log file
+const eventSource = new EventSource('http://localhost:8011/logs/master/stream');
+eventSource.onmessage = event => {
+  const data = JSON.parse(event.data);
+  console.log(data.line);
+};
 ```
-http://localhost:8010/
+
+### View Logs Directly
+
+You can also view the log files directly in the `logs/` directory:
+
+```bash
+# View the master log file
+cat logs/master.log
+
+# View a specific service's log file
+cat logs/my-service.log
+
+# Tail the master log file
+tail -f logs/master.log
 ```
 
-You can configure the port via the `metrics_port` argument to `MonitoringManager`.
+## File Structure
 
-### Loki Logging
+- `prometheus/`
+  - `prometheus.yml` - Prometheus configuration
+  - `prometheus.service` - Systemd service file
+- `log_api.py` - Log API Server implementation
+- `start_log_server.py` - Script to start the Log API Server
+- `log-server.service` - Systemd service file for the Log API Server
+- `setup_log_server.sh` - Log API Server installation script
+- `setup_prometheus.sh` - Prometheus installation script
+- `setup_monitoring_system.sh` - Master setup script
+- `system_monitor.py` - NextGen monitoring library
+- `fix_loki_endpoint.py` - Script to remove Loki handlers (transitional)
+- `LOGGING.md` - Detailed documentation on the logging system
 
-Logs are sent to Loki at `http://localhost:3100/loki/api/v1/push` by default. You can configure the URL via the `loki_url` argument to `MonitoringManager`.
+## Additional Documentation
 
-## API Reference
-
-### MonitoringManager
-
-- `log_info(message, **labels)`: Log an info message
-- `log_warning(message, **labels)`: Log a warning message
-- `log_error(message, **labels)`: Log an error message
-- `log_critical(message, **labels)`: Log a critical message
-- `log_debug(message, **labels)`: Log a debug message
-- `increment_counter(name, value=1, **labels)`: Increment a counter metric
-- `set_gauge(name, value, **labels)`: Set a gauge metric
-
-### SystemMetricsCollector
-
-- `start()`: Start collecting system metrics (CPU, memory, disk)
-- `stop()`: Stop collecting system metrics
-
-## Configuration
-
-You can configure the monitoring system via arguments to `MonitoringManager` or environment variables:
-
-- `metrics_port`: Port to expose Prometheus metrics (default: 8010)
-- `loki_url`: URL for Loki logging (default: http://localhost:3100/loki/api/v1/push)
-
-## Notes
-
-- Only core system metrics (CPU, memory, disk) are collected by default.
-- For additional metrics or logging customization, extend `system_monitor.py` as needed.
-
-## Contributing
-
-Contributions are welcome. Please follow the project's contribution guidelines.
+For more detailed information about the logging system, see [LOGGING.md](LOGGING.md).

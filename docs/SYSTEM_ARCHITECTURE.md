@@ -1,55 +1,51 @@
-# FinGPT AI Day Trading System
+# NextGen AI Trading System
 
-A comprehensive AI-powered trading system orchestrated by language models, built on the FinGPT framework for financial market analysis and trading execution.
+A comprehensive AI-powered trading system orchestrated by language models, built on a modular architecture using MCP (Model Context Protocol) for efficient tool integration and AutoGen for agent orchestration.
 
 ## System Architecture
 
-The FinGPT AI Day Trading System is organized as a modular, event-driven architecture with several key components:
+The NextGen AI Trading System is organized as a modular, event-driven architecture with several key components:
 
-1. **Data Ingestion Layer**: Collects market data from multiple sources
+1. **Data Ingestion Layer**: Collects market data from multiple sources through MCP data tools
 2. **Stock Selection Layer**: Identifies trading candidates through multi-tier filtering
-3. **Analysis Layer**: Processes data through specialized components (NLP, forecasting, RAG)
+3. **Analysis Layer**: Processes data through specialized components and MCP analysis tools
 4. **Decision Layer**: Orchestrates analysis results into actionable trading decisions
-5. **Execution Layer**: Implements trades with dynamic position sizing
+5. **Execution Layer**: Implements trades with dynamic position sizing via Alpaca MCP
 6. **Monitoring Layer**: Tracks performance and system health
 
 ## Model Sources and Data Providers
 
-### FinGPT Models
-- **FinGPT Base Models**: https://github.com/AI4Finance-Foundation/FinGPT
-  - FinGPT-v3-llama2-7b: https://huggingface.co/financial-llm/finllama-7b
-  - FinGPT-RAG: https://huggingface.co/FinGPT/fingpt-rag_llama2-7b 
-  - FinGPT-Forecaster: https://huggingface.co/FinGPT/fingpt-forecaster_llama2-13b
-
-### External LLM Providers
-- **OpenAI API**: https://platform.openai.com/
-  - GPT-4 and GPT-3.5 Turbo for high-complexity financial analysis
-- **Anthropic Claude API**: https://www.anthropic.com/claude
-  - Claude 3 Opus for in-depth financial document analysis
-- **Mistral AI**: https://mistral.ai/
-  - Mistral Large for additional financial analysis capabilities
+### LLM Providers
+- **OpenRouter API**: https://openrouter.ai/
+  - Anthropic Claude 3 Opus for in-depth financial document analysis
+  - Meta Llama 3 70B for complex financial reasoning
+  - Google Gemini Pro for additional financial analysis capabilities
 
 ### Market Data Sources
 - **Polygon.io**: https://polygon.io/
   - Historical and real-time market data via REST and WebSocket APIs
-  - Options data and market indicators
+  - Options data and market indicators via polygon_rest_mcp and polygon_ws_mcp
 - **Yahoo Finance**: https://finance.yahoo.com/
-  - Earnings reports, analyst recommendations, news
+  - Earnings reports, analyst recommendations, news via yahoo_finance_mcp
 - **Unusual Whales**: https://unusualwhales.com/
-  - Options flow and unusual activity detection
-- **Reddit API**: https://www.reddit.com/dev/api/
-  - Social sentiment and retail investor activity
+  - Options flow and unusual activity detection via unusual_whales_mcp
+- **Reddit**: https://www.reddit.com/
+  - Social sentiment and retail investor activity via reddit_mcp
 
-### Financial Knowledge Sources
-- **SEC EDGAR**: https://www.sec.gov/edgar
-  - Regulatory filings and corporate disclosures
-- **Federal Reserve Economic Data (FRED)**: https://fred.stlouisfed.org/
-  - Macroeconomic indicators and financial data
+### Trading Integration
+- **Alpaca Markets**: https://alpaca.markets/
+  - Order execution and position management via alpaca_mcp
+
+### Data Storage
+- **Redis**: In-memory data store for real-time data and coordination
+  - Integrated via redis_mcp for caching and messaging
+- **Vector Database**: Local vectordb for embeddings storage
+  - Enables efficient similarity search for financial data
 
 ## Core Components
 
-### 1. fingpt/fingpt_orchestrator/orchestrator_model.py
-- **Purpose**: Central brain of the entire system
+### 1. nextgen_models/autogen_orchestrator/autogen_model.py
+- **Purpose**: Central brain of the entire system using Microsoft's AutoGen framework
 - **Functions**:
   - Coordinate all other components
   - Manage the overall trading workflow
@@ -57,17 +53,19 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Maintain global state awareness
   - Adapt to changing market conditions
   - Make high-level strategic decisions
+  - Register specialized agents for different tasks
+  - Proxy MCP tool access to agents
 
-### 2. fingpt/fingpt_selection/selection_model.py
+### 2. nextgen_models/nextgen_select/select_model.py
 - **Purpose**: Identify potential trading candidates
 - **Functions**:
   - Initial universe generation
   - Multi-tier stock screening
   - Apply technical and fundamental filters
-  - Integrate with backtrader for screening
+  - Integrate with technical indicators via MCP
   - Produce final list of stocks for analysis
 
-### 3. fingpt/fingpt_forcaster/forcaster_model.py
+### 3. nextgen_models/nextgen_market_analysis/market_analysis_model.py
 - **Purpose**: Time series forecasting and price prediction
 - **Functions**:
   - Analyze price trends and patterns
@@ -76,7 +74,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Detect trend strength and direction
   - Predict potential breakouts/breakdowns
 
-### 4. fingpt/fingpt_finnlp/finnlp_model.py
+### 4. nextgen_models/nextgen_sentiment_analysis/sentiment_analysis_model.py
 - **Purpose**: Comprehensive financial text processing and analysis
 - **Functions**:
   - Process news articles and social media
@@ -86,11 +84,8 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Correlate sentiment with price action
   - Extract structured data from financial documents
   - Process earnings reports and SEC filings
-  - Identify key financial metrics from text
-  - Extract entity relationships
-  - Process financial news and research
 
-### 5. fingpt/fingpt_rag/rag_model.py
+### 5. nextgen_models/nextgen_context_model/context_model.py
 - **Purpose**: Retrieval-augmented generation for financial context
 - **Functions**:
   - Access knowledge bases for context
@@ -99,48 +94,57 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Integrate domain knowledge into analysis
   - Connect current conditions with historical context
 
-### 6. fingpt/fingpt_execution/execution_model.py
+### 6. nextgen_models/nextgen_trader/trade_model.py
 - **Purpose**: Intelligent trade execution
 - **Functions**:
   - Determine optimal execution strategy
   - Implement dynamic position sizing
   - Manage execution timing
   - Minimize market impact
-  - Connect with Alpaca for execution
+  - Connect with Alpaca MCP for execution
   - Monitor execution quality
+  - Track positions and order status
+  - Implement risk management logic
 
-### 7. fingpt/fingpt_order/order_managment_model.py
-- **Purpose**: Manage active orders and positions
+### 7. nextgen_models/nextgen_risk_assessment/risk_assessment_model.py
+- **Purpose**: Assess and manage risk at position and portfolio levels
 - **Functions**:
-  - Track open positions and orders
-  - Implement stop-loss and take-profit logic
-  - Monitor position performance
-  - Handle order lifecycle management
-  - Calculate portfolio metrics
+  - Calculate position-level risk metrics
+  - Evaluate portfolio risk exposure
   - Implement risk limits and checks
+  - Monitor drawdown and volatility
+  - Recommend position sizing based on risk
 
-### 8. fingpt/fingpt_bench/bench_model.py
-- **Purpose**: Benchmark and evaluate system performance
+### 8. nextgen_models/nextgen_decision/decision_model.py
+- **Purpose**: Make final trading decisions
 - **Functions**:
-  - Track performance metrics
-  - Evaluate strategy effectiveness
-  - Compare against baselines
-  - Generate performance reports
-  - Identify improvement opportunities
-  - Validate model predictions
+  - Integrate analysis from all components
+  - Apply risk management constraints
+  - Determine trade direction and confidence
+  - Prioritize opportunities
+  - Implement decision rules
+  - Generate final trade decisions
 
-### 9. fingpt/fingpt_lora/lora_model.py
-- **Purpose**: Low-rank adaptation for LLMs
+### 9. nextgen_models/nextgen_fundamental_analysis/fundamental_analysis_model.py
+- **Purpose**: Analyze company fundamentals
 - **Functions**:
-  - Fine-tune base LLMs for financial tasks
-  - Adapt models with minimal compute resources
-  - Maintain specialized financial adaptations
-  - Enable efficient model updates
-  - Store and manage LoRA weights
+  - Evaluate financial statements
+  - Calculate financial ratios
+  - Assess growth metrics
+  - Compare sector performance
+  - Analyze earnings and guidance
 
-## Data Sources and Processing
+## MCP Tools and Data Integration
 
-### 10. data/polygon_rest.py
+### 10. mcp_tools/data_mcp/base_data_mcp.py
+- **Purpose**: Base class for data MCP integrations
+- **Functions**:
+  - Provide common interface for data sources
+  - Handle connection management
+  - Implement caching and rate limiting
+  - Define tool registration patterns
+
+### 11. mcp_tools/data_mcp/polygon_rest_mcp.py
 - **Purpose**: Interface with Polygon.io REST API
 - **Functions**:
   - Fetch historical market data
@@ -149,7 +153,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Access market indices and indicators
   - Handle API rate limiting and pagination
 
-### 11. data/polygon_ws.py
+### 12. mcp_tools/data_mcp/polygon_ws_mcp.py
 - **Purpose**: Interface with Polygon.io WebSocket API
 - **Functions**:
   - Stream real-time market data
@@ -158,7 +162,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Handle reconnection logic
   - Buffer and process streaming data
 
-### 12. data/yahoo_finance.py
+### 13. mcp_tools/data_mcp/yahoo_finance_mcp.py
 - **Purpose**: Interface with Yahoo Finance
 - **Functions**:
   - Access fundamental company data
@@ -167,7 +171,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Access financial statements
   - Fetch analyst recommendations
 
-### 13. data/reddit.py
+### 14. mcp_tools/data_mcp/reddit_mcp.py
 - **Purpose**: Interface with Reddit for sentiment data
 - **Functions**:
   - Monitor financial subreddits
@@ -176,7 +180,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Identify emerging narratives
   - Detect unusual activity spikes
 
-### 14. data/unusual_whales.py
+### 15. mcp_tools/data_mcp/unusual_whales_mcp.py
 - **Purpose**: Interface with Unusual Whales API
 - **Functions**:
   - Track unusual options activity
@@ -185,19 +189,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Identify unusual volume patterns
   - Track institutional money flow
 
-### 15. data/data_preprocessor.py
-- **Purpose**: Process and prepare data for analysis
-- **Functions**:
-  - Clean and normalize market data
-  - Calculate technical indicators
-  - Standardize data formats
-  - Handle missing data
-  - Prepare time series for models
-  - Transform data for model inputs
-
-## Trading Integration
-
-### 16. alpaca/alpaca_api.py
+### 16. mcp_tools/alpaca_mcp/alpaca_mcp.py
 - **Purpose**: Interface with Alpaca trading platform
 - **Functions**:
   - Execute buy/sell orders
@@ -207,10 +199,8 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Handle authentication and API limits
   - Process execution reports
 
-## Infrastructure Components
-
-### 17. local_redis/redis_manager.py
-- **Purpose**: Manage Redis for caching and messaging
+### 17. mcp_tools/db_mcp/redis_mcp.py
+- **Purpose**: Interface with Redis for caching and messaging
 - **Functions**:
   - Cache frequently used data
   - Implement pub/sub for event distribution
@@ -219,39 +209,70 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Implement distributed locking
   - Enable fast data access
 
-### 18. influxdb/influxdb_manager.py
-- **Purpose**: Manage time series data storage
-- **Functions**:
-  - Store historical market data
-  - Track system performance metrics
-  - Enable time series analytics
-  - Support visualization dashboards
-  - Implement data retention policies
-  - Handle time-based aggregations
+## Analysis MCP Tools
 
-### 19. loki/loki_manager.py
-- **Purpose**: Centralized logging
+### 18. mcp_tools/analysis_mcp/peak_detection_mcp.py
+- **Purpose**: Detect peaks and troughs in price series
 - **Functions**:
-  - Collect logs from all components
-  - Enable structured logging
-  - Support log querying and analysis
-  - Implement log retention policies
-  - Alert on error patterns
-  - Track system health
+  - Identify local maxima and minima
+  - Calculate prominence and width
+  - Filter based on significance
+  - Detect potential reversal points
 
-### 20. prometheus/prometheus_manager.py
-- **Purpose**: Metrics collection and monitoring
+### 19. mcp_tools/analysis_mcp/drift_detection_mcp.py
+- **Purpose**: Detect statistical drift in price or other metrics
 - **Functions**:
-  - Track system performance metrics
-  - Monitor resource utilization
-  - Implement alerting based on thresholds
-  - Support metrics visualization
-  - Enable system health monitoring
-  - Provide performance insights
+  - Identify regime changes
+  - Detect distribution shifts
+  - Signal potential trend changes
+  - Monitor for statistical anomalies
+
+### 20. mcp_tools/analysis_mcp/slippage_analysis_mcp.py
+- **Purpose**: Analyze execution quality and slippage
+- **Functions**:
+  - Calculate price impact of trades
+  - Compare execution price to arrival price
+  - Measure implementation shortfall
+  - Recommend optimal execution strategies
+
+### 21. mcp_tools/analysis_mcp/technical_indicators_mcp.py
+- **Purpose**: Calculate technical indicators
+- **Functions**:
+  - Compute moving averages, oscillators, and trend indicators
+  - Generate signals based on technical patterns
+  - Provide relative strength measurements
+  - Calculate volatility metrics
+
+## Infrastructure Components
+
+### 22. local_redis/redis_server.py
+- **Purpose**: Manage local Redis server
+- **Functions**:
+  - Start and configure Redis instance
+  - Set up persistence
+  - Configure memory limits
+  - Manage connections
+
+### 23. local_vectordb/vectordb_server.py
+- **Purpose**: Manage local vector database
+- **Functions**:
+  - Store and retrieve embeddings
+  - Enable similarity search
+  - Manage vector collections
+  - Handle persistence
+
+### 24. monitoring/system_monitor.py
+- **Purpose**: Monitor system health and performance
+- **Functions**:
+  - Track resource utilization
+  - Collect performance metrics
+  - Log system events
+  - Send alerts for critical issues
+  - Provide performance visualizations
 
 ## Configuration and Environment
 
-### 21. .env and .env.example
+### 25. .env and .env.example
 - **Purpose**: Store environment configuration
 - **Functions**:
   - Manage API keys and credentials
@@ -260,44 +281,36 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
   - Specify environment-specific settings
   - Control debugging options
 
-### 22. systemd/requirements.txt
-- **Purpose**: Define systemd service dependencies
-- **Functions**:
-  - Support system service management
-  - Enable auto-restart functionality
-  - Provide system-level logging
-  - Support startup sequencing
-  - Handle dependency management
-
 ## System Workflow
 
 The system operates through an event-driven architecture with the following key workflow:
 
-1. **Stock Discovery**: The stock selection component identifies potential trading candidates through multi-tier filtering
-2. **Data Gathering**: Data connectors collect relevant information for the selected stocks
+1. **Stock Discovery**: The selection component identifies potential trading candidates through multi-tier filtering
+2. **Data Gathering**: MCP data connectors collect relevant information for the selected stocks
 3. **Analysis**: Multiple analysis components process the gathered data:
-   - FinNLP analyzes news, social media, and financial documents
-   - Forecaster generates price predictions and identifies patterns
-   - RAG provides historical context and precedents
-4. **Decision Making**: The orchestrator integrates all analysis and makes trading decisions
-5. **Execution**: The execution component implements trades with dynamic sizing
-6. **Position Management**: The order management component tracks and manages active positions
-7. **Performance Analysis**: The benchmarking component measures strategy effectiveness and provides feedback
+   - Sentiment Analysis analyzes news, social media, and financial documents
+   - Market Analysis generates price predictions and identifies patterns
+   - Context Model provides historical context and precedents
+   - Fundamental Analysis evaluates company financials
+4. **Risk Assessment**: The risk model evaluates position and portfolio-level risk
+5. **Decision Making**: The decision model integrates all analysis and makes trading decisions
+6. **Execution**: The trade model implements trades via Alpaca MCP
+7. **Monitoring**: The system monitor tracks performance and system health
 
 ## Integration Points
 
 - **Redis** serves as the primary message bus and caching layer
-- **InfluxDB** provides time-series storage for market data and performance metrics
-- **Prometheus** and **Loki** handle monitoring and logging
-- **Alpaca** serves as the execution endpoint for trades
+- **Vector Database** provides efficient storage and retrieval of embeddings
+- **MCP Tools** provide standardized interfaces to external services
+- **AutoGen Orchestrator** coordinates specialized agents
 
 ## Dependencies
 
-- **FinGPT Framework**: AI4Finance Foundation's financial LLM framework
-- **LLM Models**: Large language models for financial text analysis and decision making
+- **AutoGen Framework**: Microsoft's framework for agent orchestration
+- **LLM Models**: Large language models accessed via OpenRouter
 - **Market Data Providers**: Polygon.io, Yahoo Finance, Reddit, Unusual Whales
-- **Execution Brokers**: Alpaca
-- **Infrastructure**: Redis, InfluxDB, Loki, Prometheus
+- **Execution Broker**: Alpaca
+- **Infrastructure**: Redis, Vector Database, Monitoring
 
 ## Development and Deployment
 

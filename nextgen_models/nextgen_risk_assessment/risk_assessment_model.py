@@ -39,9 +39,12 @@ from autogen import (
 class RiskAssessmentModel:
     """
     Evaluates portfolio risk using scenario generation, risk attribution, and stress testing.
-
-    This model integrates with ScenarioGenerationMCP, RiskAttributionMCP, and other MCP tools
-    to provide comprehensive risk analysis for investment portfolios.
+    
+    Acts as a central processing hub that:
+    1. Collects and analyzes reports from all processing models
+    2. Integrates data into comprehensive risk-assessed packages
+    3. Provides consolidated reports to the Decision Model
+    4. Coordinates with MCP tools to evaluate portfolio and position risk
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -105,8 +108,9 @@ class RiskAssessmentModel:
         )  # 20 trading days (approx. 1 month)
         self.risk_data_ttl = self.config.get("risk_data_ttl", 86400)  # Default: 1 day
 
-        # Redis keys for data storage
+        # Redis keys for data storage and model interactions
         self.redis_keys = {
+            # Risk model internal keys
             "portfolio_risk": "risk:portfolio:",  # Prefix for portfolio risk data
             "scenario_results": "risk:scenarios:",  # Prefix for scenario results
             "risk_attribution": "risk:attribution:",  # Prefix for risk attribution data
@@ -115,6 +119,21 @@ class RiskAssessmentModel:
             "latest_analysis": "risk:latest_analysis",  # Latest analysis timestamp
             "risk_limits": "risk:limits:",  # Prefix for risk limits
             "risk_alerts": "risk:alerts",  # Risk alerts
+            
+            # Keys for accessing other model reports
+            "sentiment_data": "sentiment:data",  # Sentiment analysis reports
+            "fundamental_data": "fundamental:data:",  # Prefix for fundamental data per symbol
+            "technical_data": "technical:data",  # Technical analysis reports
+            "market_data": "market:data",  # Market data reports
+            "selection_data": "selection:data",  # Selection Model data
+            
+            # Keys for storing consolidated packages
+            "consolidated_package": "risk:consolidated_package:",  # Prefix for consolidated risk packages
+            "package_history": "risk:package_history",  # History of package IDs
+            
+            # Trade model interaction keys
+            "trade_events": "trade:events",  # Trade event stream
+            "capital_available": "trade:capital_available",  # Available capital
         }
 
         # Initialize AutoGen integration
@@ -884,6 +903,473 @@ class RiskAssessmentModel:
             self.logger.error(f"Error retrieving risk analysis: {e}")
             return {"status": "error", "portfolio_id": portfolio_id, "error": str(e)}
 
+    async def collect_model_reports(self, symbols: List[str]) -> Dict[str, Any]:
+        """
+        Collect reports from all processing models for the specified symbols.
+        
+        Args:
+            symbols: List of symbols to collect reports for
+            
+        Returns:
+            Dictionary containing all collected reports
+        """
+        self.logger.info(f"Collecting model reports for {len(symbols)} symbols")
+        
+        start_time = time.time()
+        collected_reports = {
+            "timestamp": datetime.now().isoformat(),
+            "symbols_requested": symbols,
+            "model_reports": {},
+        }
+        
+        try:
+            # Collect Sentiment Analysis reports
+            sentiment_data = self.redis_mcp.get_json(self.redis_keys["sentiment_data"]) or {}
+            if sentiment_data and "symbols" in sentiment_data:
+                collected_reports["model_reports"]["sentiment"] = {
+                    "model_id": "sentiment_model",
+                    "timestamp": sentiment_data.get("timestamp", datetime.now().isoformat()),
+                    "symbols": {
+                        symbol: data 
+                        for symbol, data in sentiment_data["symbols"].items()
+                        if symbol in symbols
+                    }
+                }
+            
+            # Collect Technical Analysis reports
+            technical_data = self.redis_mcp.get_json(self.redis_keys["technical_data"]) or {}
+            if technical_data and "symbols" in technical_data:
+                collected_reports["model_reports"]["technical"] = {
+                    "model_id": "technical_model",
+                    "timestamp": technical_data.get("timestamp", datetime.now().isoformat()),
+                    "symbols": {
+                        symbol: data 
+                        for symbol, data in technical_data["symbols"].items()
+                        if symbol in symbols
+                    }
+                }
+            
+            # Collect Fundamental Analysis reports
+            fundamental_reports = {}
+            for symbol in symbols:
+                key = f"{self.redis_keys['fundamental_data']}{symbol}"
+                symbol_data = self.redis_mcp.get_json(key)
+                if symbol_data:
+                    fundamental_reports[symbol] = symbol_data
+            
+            if fundamental_reports:
+                collected_reports["model_reports"]["fundamental"] = {
+                    "model_id": "fundamental_model",
+                    "timestamp": datetime.now().isoformat(),
+                    "symbols": fundamental_reports
+                }
+            
+            # Collect Market Data reports
+            market_data = self.redis_mcp.get_json(self.redis_keys["market_data"]) or {}
+            if market_data:
+                collected_reports["model_reports"]["market"] = {
+                    "model_id": "market_data",
+                    "timestamp": market_data.get("timestamp", datetime.now().isoformat()),
+                    "data": market_data
+                }
+            
+            # Add processing time
+            collected_reports["processing_time"] = time.time() - start_time
+            collected_reports["symbols_found"] = list(set(
+                symbol for model in collected_reports["model_reports"].values() 
+                for symbol in model.get("symbols", {}).keys()
+            ))
+            
+            return collected_reports
+            
+        except Exception as e:
+            self.logger.error(f"Error collecting model reports: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat(),
+                "symbols_requested": symbols
+            }
+    
+    async def create_consolidated_package(
+        self, 
+        symbols: List[str], 
+        request_id: Optional[str] = None,
+        available_capital: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a consolidated package of reports for the Decision Model.
+        
+        This is the central function that:
+        1. Collects reports from all processing models
+        2. Performs risk assessment for each symbol
+        3. Adds position sizing recommendations
+        4. Creates a package with market context
+        
+        Args:
+            symbols: List of symbols to analyze
+            request_id: Optional request identifier
+            available_capital: Optional amount of available capital
+            
+        Returns:
+            Consolidated package with all analysis
+        """
+        self.logger.info(f"Creating consolidated package for {len(symbols)} symbols")
+        
+        if not request_id:
+            request_id = f"req_{int(time.time())}"
+            
+        package_id = f"risk_pkg_{int(time.time())}"
+        start_time = time.time()
+        
+        try:
+            # 1. Collect all model reports
+            reports = await self.collect_model_reports(symbols)
+            
+            if "error" in reports:
+                return {"error": reports["error"], "request_id": request_id}
+                
+            # 2. Get market conditions
+            market_context = {}
+            if "market" in reports["model_reports"]:
+                market_context = reports["model_reports"]["market"].get("data", {})
+            
+            # 3. Process each symbol
+            symbols_analysis = {}
+            for symbol in symbols:
+                symbol_analysis = await self.process_symbol_for_decision(
+                    symbol, 
+                    reports["model_reports"],
+                    available_capital
+                )
+                if symbol_analysis:
+                    symbols_analysis[symbol] = symbol_analysis
+            
+            # 4. Create the consolidated package
+            package = {
+                "package_id": package_id,
+                "request_id": request_id,
+                "timestamp": datetime.now().isoformat(),
+                "symbols": symbols_analysis,
+                "market_context": {
+                    "volatility_regime": market_context.get("volatility_state", "normal"),
+                    "liquidity_conditions": market_context.get("liquidity_state", "normal"),
+                    "correlation_regime": market_context.get("correlation_state", "normal"),
+                    "is_market_open": market_context.get("is_market_open", True),
+                },
+                "available_capital": available_capital,
+                "processing_time": time.time() - start_time
+            }
+            
+            # 5. Store the package in Redis
+            package_key = f"{self.redis_keys['consolidated_package']}{package_id}"
+            self.redis_mcp.set_json(package_key, package, ex=self.risk_data_ttl)
+            
+            # 6. Add to package history
+            self.redis_mcp.add_to_sorted_set(
+                self.redis_keys["package_history"], 
+                package_id, 
+                int(time.time())
+            )
+            
+            self.logger.info(f"Created consolidated package {package_id} with {len(symbols_analysis)} symbols")
+            return package
+            
+        except Exception as e:
+            self.logger.error(f"Error creating consolidated package: {e}")
+            return {
+                "error": str(e),
+                "request_id": request_id,
+                "package_id": package_id,
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def process_symbol_for_decision(
+        self, 
+        symbol: str, 
+        model_reports: Dict[str, Any],
+        available_capital: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Process all data for a single symbol to prepare it for decision-making.
+        
+        Args:
+            symbol: Stock symbol to process
+            model_reports: Dictionary of reports from all models
+            available_capital: Optional amount of available capital
+            
+        Returns:
+            Dictionary with comprehensive symbol analysis
+        """
+        self.logger.info(f"Processing symbol {symbol} for decision")
+        
+        try:
+            # Extract all reports for this symbol
+            symbol_data = {
+                "model_reports": {},
+                "risk_assessment": {},
+                "position_recommendation": {},
+                "portfolio_impact": {}
+            }
+            
+            # Extract data from each model's report
+            for model_name, model_report in model_reports.items():
+                if model_name == "market":
+                    continue  # Market data is handled separately
+                    
+                if "symbols" in model_report and symbol in model_report["symbols"]:
+                    symbol_data["model_reports"][model_name] = model_report["symbols"][symbol]
+            
+            # If we have no data for this symbol, skip it
+            if not symbol_data["model_reports"]:
+                self.logger.warning(f"No model reports found for symbol {symbol}")
+                return None
+            
+            # Calculate risk assessment
+            risk_score = 0.5  # Default neutral risk score
+            volatility_risk = 0.5
+            correlation_risk = 0.5
+            liquidity_risk = 0.5
+            
+            # If we have technical data, use it for volatility risk
+            if "technical" in symbol_data["model_reports"]:
+                tech_data = symbol_data["model_reports"]["technical"]
+                if "volatility" in tech_data:
+                    volatility = tech_data["volatility"]
+                    # Higher volatility = higher risk (0-1 scale)
+                    volatility_risk = min(1.0, volatility / 0.3)  # Normalize: 30% annualized vol = 1.0 risk
+            
+            # If we have fundamental data, adjust risk score
+            if "fundamental" in symbol_data["model_reports"]:
+                fund_data = symbol_data["model_reports"]["fundamental"]
+                if "health_score" in fund_data:
+                    # Higher health score = lower risk (0-1 scale, inverted)
+                    liquidity_risk = 1.0 - fund_data["health_score"]
+            
+            # Calculate overall risk score (weighted average)
+            risk_score = (0.4 * volatility_risk) + (0.3 * correlation_risk) + (0.3 * liquidity_risk)
+            
+            # Add risk assessment to symbol data
+            symbol_data["risk_assessment"] = {
+                "overall_risk_score": risk_score,
+                "volatility_risk": volatility_risk,
+                "correlation_risk": correlation_risk,
+                "liquidity_risk": liquidity_risk
+            }
+            
+            # Calculate position recommendation if capital is available
+            if available_capital and available_capital > 0:
+                # Base size on risk score - lower risk allows larger position
+                risk_factor = 1.0 - risk_score  # Invert risk score: higher = better
+                
+                # Determine confidence score from model reports
+                confidence_score = 0.5  # Default neutral confidence
+                
+                # If we have sentiment data, use it for confidence adjustment
+                if "sentiment" in symbol_data["model_reports"]:
+                    sent_data = symbol_data["model_reports"]["sentiment"]
+                    if "overall_score" in sent_data:
+                        # Sentiment score directly contributes to confidence
+                        confidence_score = sent_data["overall_score"]
+                
+                # If we have technical data, use it for confidence adjustment
+                if "technical" in symbol_data["model_reports"]:
+                    tech_data = symbol_data["model_reports"]["technical"]
+                    if "signal_strength" in tech_data:
+                        # Technical signals contribute to confidence
+                        tech_confidence = tech_data["signal_strength"]
+                        # Combine with existing confidence (weighted average)
+                        confidence_score = (0.6 * confidence_score) + (0.4 * tech_confidence)
+                
+                # Calculate position size based on confidence and risk
+                max_position_size = min(available_capital * 0.1, 25000)  # Max 10% of capital or $25k
+                recommended_size = max_position_size * confidence_score * risk_factor
+                
+                # Add position recommendation to symbol data
+                symbol_data["position_recommendation"] = {
+                    "max_position_size": float(max_position_size),
+                    "recommended_size": float(recommended_size),
+                    "sizing_confidence": float(confidence_score * risk_factor)
+                }
+                
+                # Add portfolio impact assessment
+                symbol_data["portfolio_impact"] = {
+                    "diversification_impact": 0.15,  # Placeholder
+                    "var_contribution": 0.08  # Placeholder
+                }
+            
+            return symbol_data
+            
+        except Exception as e:
+            self.logger.error(f"Error processing symbol {symbol} for decision: {e}")
+            return {
+                "error": str(e),
+                "symbol": symbol
+            }
+    
+    async def notify_decision_model(self, package_id: str) -> Dict[str, Any]:
+        """
+        Notify the Decision Model about a new consolidated package.
+        
+        Args:
+            package_id: ID of the consolidated package
+            
+        Returns:
+            Status of the notification
+        """
+        try:
+            # Get the package
+            package_key = f"{self.redis_keys['consolidated_package']}{package_id}"
+            package = self.redis_mcp.get_json(package_key)
+            
+            if not package:
+                return {
+                    "status": "error",
+                    "message": f"Package {package_id} not found"
+                }
+            
+            # Create notification
+            notification = {
+                "notification_type": "risk_package_ready",
+                "package_id": package_id,
+                "timestamp": datetime.now().isoformat(),
+                "symbol_count": len(package.get("symbols", {})),
+                "request_id": package.get("request_id")
+            }
+            
+            # Store in Redis stream for Decision Model
+            stream_key = "decision:notifications"
+            self.redis_mcp.add_to_stream(stream_key, notification)
+            
+            self.logger.info(f"Notified Decision Model about package {package_id}")
+            return {
+                "status": "success",
+                "notification": notification
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error notifying Decision Model: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+    
+    async def monitor_selection_responses(self) -> Dict[str, Any]:
+        """
+        Monitor for new selection responses and process them.
+        
+        This method:
+        1. Checks the selection:responses stream for new responses
+        2. Creates consolidated packages for each response
+        3. Notifies the Decision Model about the packages
+        
+        Returns:
+            Status of the monitoring operation
+        """
+        try:
+            # Read from the selection responses stream
+            stream_key = "selection:responses"
+            responses = self.redis_mcp.read_from_stream(stream_key, count=5)
+            
+            if not responses:
+                return {"status": "no_responses"}
+            
+            results = []
+            for response_id, response_data in responses:
+                self.logger.info(f"Processing selection response: {response_data.get('request_id')}")
+                
+                # Only process successful responses
+                if response_data.get("status") == "success":
+                    # Get candidate symbols
+                    candidates = response_data.get("candidates", [])
+                    symbols = [c.get("symbol") for c in candidates if c.get("symbol")]
+                    
+                    # Get available capital
+                    available_capital = response_data.get("available_capital")
+                    
+                    if symbols:
+                        # Create consolidated package
+                        package = await self.create_consolidated_package(
+                            symbols=symbols,
+                            request_id=response_data.get("request_id"),
+                            available_capital=available_capital
+                        )
+                        
+                        # Notify Decision Model
+                        if package and "error" not in package:
+                            notification = await self.notify_decision_model(package["package_id"])
+                            results.append({
+                                "request_id": response_data.get("request_id"),
+                                "package_id": package["package_id"],
+                                "notification": notification.get("status")
+                            })
+                
+                # Acknowledge the message
+                self.redis_mcp.acknowledge_from_stream(stream_key, response_id)
+            
+            return {
+                "status": "success",
+                "processed_count": len(results),
+                "results": results
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error monitoring selection responses: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+    
+    async def monitor_trade_events(self) -> Dict[str, Any]:
+        """
+        Monitor trade events stream for position updates and capital availability.
+        
+        Returns:
+            Status of the monitoring operation
+        """
+        try:
+            # Read from the trade events stream
+            stream_key = self.redis_keys["trade_events"]
+            events = self.redis_mcp.read_from_stream(stream_key, count=5)
+            
+            if not events:
+                return {"status": "no_events"}
+            
+            results = []
+            for event_id, event_data in events:
+                event_type = event_data.get("event_type")
+                
+                # Process capital available events
+                if event_type == "capital_available":
+                    amount = event_data.get("event_data", {}).get("amount", 0.0)
+                    
+                    # Store capital available information
+                    self.redis_mcp.set_value(
+                        self.redis_keys["capital_available"],
+                        str(amount)
+                    )
+                    
+                    results.append({
+                        "event_type": event_type,
+                        "amount": amount,
+                        "action": "capital_recorded"
+                    })
+                
+                # Acknowledge the message
+                self.redis_mcp.acknowledge_from_stream(stream_key, event_id)
+            
+            return {
+                "status": "success",
+                "processed_count": len(results),
+                "results": results
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error monitoring trade events: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+    
     def run_risk_analysis_agent(self, query: str) -> Dict[str, Any]:
         """
         Run risk analysis using AutoGen agents.
@@ -928,8 +1414,3 @@ class RiskAssessmentModel:
         except Exception as e:
             self.logger.error(f"Error during AutoGen chat: {e}")
             return {"error": str(e)}
-
-
-# Note: The example usage block (main function and __main__ guard)
-# has been removed to ensure this file contains only production code.
-# Testing should be done via separate test scripts or integration tests.

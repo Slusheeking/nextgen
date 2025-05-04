@@ -1,0 +1,17 @@
+[Unit]
+Description=NextGen Log API Server
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/home/ubuntu/miniconda/bin/python /home/ubuntu/nextgen/monitoring/start_log_server.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=log-server
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

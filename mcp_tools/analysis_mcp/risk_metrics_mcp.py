@@ -12,19 +12,19 @@ import pandas as pd
 import time
 from typing import Dict, List, Any, Optional
 from scipy.stats import norm
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Import monitoring utilities
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis-mcp-risk-metrics",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
+# Set up monitoring (Prometheus + Python logging only)
+monitor = MonitoringManager(service_name="analysis-mcp-risk-metrics")
+metrics = monitor.metrics
 
 
 class RiskMetricsMCP(BaseMCPServer):

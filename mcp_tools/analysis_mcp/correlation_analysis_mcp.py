@@ -19,15 +19,11 @@ load_dotenv()
 from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Import monitoring utilities
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis-mcp-correlation-analysis",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
+# Set up monitoring (Prometheus + Python logging only)
+monitor = MonitoringManager(service_name="analysis-mcp-correlation-analysis")
+metrics = monitor.metrics
 
 
 class CorrelationAnalysisMCP(BaseMCPServer):

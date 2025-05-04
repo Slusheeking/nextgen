@@ -6,7 +6,22 @@ price drift, trend changes, and momentum shifts in financial data.
 """
 
 import numpy as np
+import json
+import os
 from typing import Dict, List, Any, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Load configuration
+CONFIG_PATH = os.path.join("config", "analysis_mcp", "drift_detection_config.json")
+try:
+    with open(CONFIG_PATH, 'r') as f:
+        CONFIG = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    print(f"Warning: Could not load config from {CONFIG_PATH}: {e}")
+    CONFIG = {}
 
 # GPU acceleration imports
 try:
@@ -22,16 +37,11 @@ except ImportError:
 from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Import monitoring utilities
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
-
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis_mcp-drift-detection-mcp",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
+# Set up monitoring (Prometheus + Python logging only)
+monitor = MonitoringManager(service_name="analysis_mcp-drift-detection-mcp")
+metrics = monitor.metrics
 
 
 class DriftDetectionMCP(BaseMCPServer):
@@ -57,8 +67,17 @@ class DriftDetectionMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
+        # Load configuration from file, with fallback to provided config
+        file_config = CONFIG.copy() if CONFIG else {}
+        
+        # Merge provided config with file config, with provided config taking precedence
+        if config:
+            for key, value in config.items():
+                file_config[key] = value
+        
         # GPU configuration
-        self.use_gpu = config.get("use_gpu", True) if config else True
+        self.use_gpu = file_config.get("use_gpu", True)
+        gpu_device = file_config.get("gpu_device", 0)
 
         # Check if we have GPU and whether we should use it
         self.gpu_available = HAVE_GPU and self.use_gpu
@@ -67,28 +86,26 @@ class DriftDetectionMCP(BaseMCPServer):
         self.has_a100 = False
         if self.gpu_available:
             try:
-                gpu_info = cp.cuda.runtime.getDeviceProperties(0)
+                gpu_info = cp.cuda.runtime.getDeviceProperties(gpu_device)
                 gpu_name = gpu_info["name"].decode("utf-8")
                 self.has_a100 = "A100" in gpu_name
                 self.logger.info(f"GPU detected: {gpu_name}")
 
                 # Set GPU-specific parameters
-                if self.has_a100:
-                    #
-                    # A100 is more efficient with GPU computation even for
-                    # smaller datasets
-                    self.min_gpu_data_size = 500  # Lower threshold for A100
+                if self.has_a100 and file_config.get("a100_optimizations", {}).get("enabled", True):
+                    # A100 is more efficient with GPU computation even for smaller datasets
+                    self.min_gpu_data_size = file_config.get("a100_optimizations", {}).get("min_gpu_data_size", 500)
                     self.logger.info(
-                        "A100 GPU detected - optimizing for high throughput"
+                        f"A100 GPU detected - optimizing for high throughput (min_gpu_data_size: {self.min_gpu_data_size})"
                     )
                 else:
-                    self.min_gpu_data_size = 1000  # Default threshold for other GPUs
-                    self.logger.info("Standard GPU detected")
+                    self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
+                    self.logger.info(f"Standard GPU detected (min_gpu_data_size: {self.min_gpu_data_size})")
             except Exception as e:
                 self.logger.warning(f"Failed to detect GPU type: {e}")
-                self.min_gpu_data_size = 1000  # Default threshold
+                self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
         else:
-            self.min_gpu_data_size = 1000  # Default threshold when not using GPU
+            self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
 
         # Initialize execution tracking
         self.execution_stats = {
@@ -159,9 +176,17 @@ class DriftDetectionMCP(BaseMCPServer):
     def _handle_detect_ma_drift(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle detect_ma_drift endpoint."""
         prices = params.get("prices", [])
-        short_window = params.get("short_window", 5)
-        long_window = params.get("long_window", 20)
-        drift_threshold = params.get("drift_threshold", 0.02)
+        
+        # Get default values from config
+        ma_drift_config = CONFIG.get("ma_drift", {})
+        default_short_window = ma_drift_config.get("default_short_window", 5)
+        default_long_window = ma_drift_config.get("default_long_window", 20)
+        default_drift_threshold = ma_drift_config.get("default_drift_threshold", 0.02)
+        
+        # Use provided values or fall back to config defaults
+        short_window = params.get("short_window", default_short_window)
+        long_window = params.get("long_window", default_long_window)
+        drift_threshold = params.get("drift_threshold", default_drift_threshold)
 
         if not prices or len(prices) < long_window:
             return {"error": "Insufficient price data"}
@@ -188,8 +213,15 @@ class DriftDetectionMCP(BaseMCPServer):
     def _handle_detect_trend_change(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle detect_trend_change endpoint."""
         prices = params.get("prices", [])
-        window_size = params.get("window_size", 10)
-        change_threshold = params.get("change_threshold", 0.03)
+        
+        # Get default values from config
+        trend_change_config = CONFIG.get("trend_change", {})
+        default_window_size = trend_change_config.get("default_window_size", 10)
+        default_change_threshold = trend_change_config.get("default_change_threshold", 0.03)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        change_threshold = params.get("change_threshold", default_change_threshold)
 
         if not prices or len(prices) < window_size * 2:
             return {"error": "Insufficient price data"}
@@ -212,8 +244,15 @@ class DriftDetectionMCP(BaseMCPServer):
     def _handle_analyze_momentum(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle analyze_momentum endpoint."""
         prices = params.get("prices", [])
-        window_size = params.get("window_size", 14)
-        momentum_threshold = params.get("momentum_threshold", 0.1)
+        
+        # Get default values from config
+        momentum_config = CONFIG.get("momentum", {})
+        default_window_size = momentum_config.get("default_window_size", 14)
+        default_momentum_threshold = momentum_config.get("default_momentum_threshold", 0.1)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        momentum_threshold = params.get("momentum_threshold", default_momentum_threshold)
 
         if not prices or len(prices) < window_size:
             return {"error": "Insufficient price data"}
@@ -236,8 +275,15 @@ class DriftDetectionMCP(BaseMCPServer):
     def _handle_detect_volatility_shift(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle detect_volatility_shift endpoint."""
         prices = params.get("prices", [])
-        window_size = params.get("window_size", 10)
-        shift_threshold = params.get("shift_threshold", 0.5)
+        
+        # Get default values from config
+        volatility_config = CONFIG.get("volatility", {})
+        default_window_size = volatility_config.get("default_window_size", 10)
+        default_shift_threshold = volatility_config.get("default_shift_threshold", 0.5)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        shift_threshold = params.get("shift_threshold", default_shift_threshold)
 
         if not prices or len(prices) < window_size * 2:
             return {"error": "Insufficient price data"}
@@ -320,7 +366,8 @@ class DriftDetectionMCP(BaseMCPServer):
         self.execution_stats["cpu_executions"] += 1
 
         # Calculate moving average
-        ma = np.zeros_like(prices)
+        # Ensure the array is created with float data type to support NaN values
+        ma = np.zeros_like(prices, dtype=float)
 
         # Vectorized implementation for CPU
         # Much faster than the original loop-based approach

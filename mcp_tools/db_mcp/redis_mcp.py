@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
 
 class RedisMCP(BaseMCPServer):
@@ -284,43 +285,23 @@ class RedisMCP(BaseMCPServer):
         """
         try:
             # Get configuration from environment variables or config
-            enable_prometheus = self.config.get("enable_prometheus", True)
-            enable_loki = self.config.get("enable_loki", True)
-            metrics_port = self.config.get("metrics_port") or os.getenv(
-                "PROMETHEUS_METRICS_PORT"
-            )
-
-            # Use a different port than Redis server if not specified
-            if not metrics_port:
-                metrics_port = 8012
-                self.logger.warning(
-                    f"PROMETHEUS_METRICS_PORT not set, using default port {metrics_port}"
-                )
-
-            # Set up monitoring
-            monitor, metrics = setup_monitoring(
-                service_name="redis-mcp",
-                enable_prometheus=enable_prometheus,
-                enable_loki=enable_loki,
-                default_labels={"component": "redis_mcp"},
-                metrics_port=int(metrics_port),
-            )
-
-            # Register metrics
-            if "redis_operations_total" not in metrics:
-                metrics["redis_operations_total"] = monitor.create_counter(
-                    "redis_operations_total",
-                    "Total number of Redis operations",
-                    ["operation", "status"],
-                )
-
-            if "redis_operation_duration_seconds" not in metrics:
-                metrics["redis_operation_duration_seconds"] = monitor.create_histogram(
-                    "redis_operation_duration_seconds",
-                    "Duration of Redis operations in seconds",
-                    ["operation"],
-                )
-
+            enable_prometheus = self.config.get("enable_prometheus", False)  # Default to False to avoid port conflicts
+            
+            # Set up monitoring using the new monitoring system
+            monitor = MonitoringManager(service_name="redis_mcp")
+            
+            # Create a metrics dictionary for compatibility with existing code
+            metrics = {}
+            
+            # Only try to register custom metrics if Prometheus is enabled
+            if enable_prometheus:
+                try:
+                    # Use valid metric names (no hyphens)
+                    metrics["redis_operations_total"] = "redis_operations_total"
+                    metrics["redis_operation_duration_seconds"] = "redis_operation_duration_seconds"
+                except Exception as e:
+                    self.logger.warning(f"Could not register custom metrics: {e}")
+            
             self.logger.info("Monitoring initialized successfully")
             return monitor, metrics
         except Exception as e:

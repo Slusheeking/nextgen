@@ -6,8 +6,23 @@ valleys, support/resistance levels, and breakout patterns in financial data.
 """
 
 import numpy as np
+import json
+import os
 from typing import Dict, List, Any, Optional, Tuple
 from scipy import signal
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Load configuration
+CONFIG_PATH = os.path.join("config", "analysis_mcp", "peak_detection_config.json")
+try:
+    with open(CONFIG_PATH, 'r') as f:
+        CONFIG = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    print(f"Warning: Could not load config from {CONFIG_PATH}: {e}")
+    CONFIG = {}
 
 # GPU acceleration imports
 try:
@@ -23,16 +38,11 @@ except ImportError:
 from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Import monitoring utilities
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
-
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis_mcp-peak-detection-mcp",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
+# Set up monitoring (Prometheus + Python logging only)
+monitor = MonitoringManager(service_name="analysis_mcp-peak-detection-mcp")
+metrics = monitor.metrics
 
 
 class PeakDetectionMCP(BaseMCPServer):
@@ -58,12 +68,20 @@ class PeakDetectionMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
+        # Load configuration from file, with fallback to provided config
+        file_config = CONFIG.copy() if CONFIG else {}
+        
+        # Merge provided config with file config, with provided config taking precedence
+        if config:
+            for key, value in config.items():
+                file_config[key] = value
+        
         # Configure GPU usage
-        self.use_gpu = self.config.get("use_gpu", HAVE_GPU)
-        self.min_data_size_for_gpu = self.config.get("min_data_size_for_gpu", 1000)
+        self.use_gpu = file_config.get("use_gpu", HAVE_GPU)
+        self.min_data_size_for_gpu = file_config.get("min_data_size_for_gpu", 1000)
 
         if self.use_gpu and HAVE_GPU:
-            gpu_device = self.config.get("gpu_device", 0)
+            gpu_device = file_config.get("gpu_device", 0)
             try:
                 # Set the active CUDA device
                 cp.cuda.Device(gpu_device).use()
@@ -148,10 +166,19 @@ class PeakDetectionMCP(BaseMCPServer):
     def _handle_detect_peaks(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle detect_peaks endpoint."""
         prices = params.get("prices", [])
-        window_size = params.get("window_size", 5)
-        prominence = params.get("prominence", 0.5)
-        width = params.get("width", 1)
-        distance = params.get("distance", 3)
+        
+        # Get default values from config
+        peak_detection_config = CONFIG.get("peak_detection", {})
+        default_window_size = peak_detection_config.get("default_window_size", 5)
+        default_prominence = peak_detection_config.get("default_prominence", 0.5)
+        default_width = peak_detection_config.get("default_width", 1)
+        default_distance = peak_detection_config.get("default_distance", 3)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        prominence = params.get("prominence", default_prominence)
+        width = params.get("width", default_width)
+        distance = params.get("distance", default_distance)
 
         if not prices or len(prices) < window_size * 2:
             return {"error": "Insufficient price data"}
@@ -185,9 +212,17 @@ class PeakDetectionMCP(BaseMCPServer):
         """Handle detect_support_resistance endpoint."""
         prices = params.get("prices", [])
         volumes = params.get("volumes", [])
-        window_size = params.get("window_size", 10)
-        num_levels = params.get("num_levels", 3)
-        price_threshold = params.get("price_threshold", 0.01)
+        
+        # Get default values from config
+        support_resistance_config = CONFIG.get("support_resistance", {})
+        default_window_size = support_resistance_config.get("default_window_size", 10)
+        default_num_levels = support_resistance_config.get("default_num_levels", 3)
+        default_price_threshold = support_resistance_config.get("default_price_threshold", 0.01)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        num_levels = params.get("num_levels", default_num_levels)
+        price_threshold = params.get("price_threshold", default_price_threshold)
 
         if not prices or len(prices) < window_size * 2:
             return {"error": "Insufficient price data"}
@@ -217,9 +252,17 @@ class PeakDetectionMCP(BaseMCPServer):
         """Handle detect_breakout endpoint."""
         prices = params.get("prices", [])
         volumes = params.get("volumes", [])
-        lookback_period = params.get("lookback_period", 20)
-        volume_factor = params.get("volume_factor", 1.5)
-        price_threshold = params.get("price_threshold", 0.02)
+        
+        # Get default values from config
+        breakout_config = CONFIG.get("breakout", {})
+        default_lookback_period = breakout_config.get("default_lookback_period", 20)
+        default_volume_factor = breakout_config.get("default_volume_factor", 1.5)
+        default_price_threshold = breakout_config.get("default_price_threshold", 0.02)
+        
+        # Use provided values or fall back to config defaults
+        lookback_period = params.get("lookback_period", default_lookback_period)
+        volume_factor = params.get("volume_factor", default_volume_factor)
+        price_threshold = params.get("price_threshold", default_price_threshold)
 
         if not prices or len(prices) < lookback_period:
             return {"error": "Insufficient price data"}
@@ -244,8 +287,15 @@ class PeakDetectionMCP(BaseMCPServer):
     def _handle_detect_consolidation(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle detect_consolidation endpoint."""
         prices = params.get("prices", [])
-        window_size = params.get("window_size", 10)
-        volatility_threshold = params.get("volatility_threshold", 0.01)
+        
+        # Get default values from config
+        consolidation_config = CONFIG.get("consolidation", {})
+        default_window_size = consolidation_config.get("default_window_size", 10)
+        default_volatility_threshold = consolidation_config.get("default_volatility_threshold", 0.01)
+        
+        # Use provided values or fall back to config defaults
+        window_size = params.get("window_size", default_window_size)
+        volatility_threshold = params.get("volatility_threshold", default_volatility_threshold)
 
         if not prices or len(prices) < window_size * 2:
             return {"error": "Insufficient price data"}
@@ -827,6 +877,32 @@ class PeakDetectionMCP(BaseMCPServer):
         }
 
     # Public API methods
+    
+    def call_endpoint(self, endpoint_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Call an endpoint by name with the given parameters.
+        
+        Args:
+            endpoint_name: Name of the endpoint to call
+            params: Parameters to pass to the endpoint
+            
+        Returns:
+            Result from the endpoint handler
+        """
+        if endpoint_name not in self.endpoints:
+            return {"error": f"Unknown endpoint: {endpoint_name}"}
+            
+        endpoint = self.endpoints[endpoint_name]
+        handler = endpoint["handler"]
+        
+        # Validate required parameters
+        required_params = endpoint.get("required_params", [])
+        for param in required_params:
+            if param not in params:
+                return {"error": f"Missing required parameter: {param}"}
+                
+        # Call the handler
+        return handler(params)
 
     def detect_peaks(
         self, prices: List[float], window_size: int = 5, prominence: float = 0.5

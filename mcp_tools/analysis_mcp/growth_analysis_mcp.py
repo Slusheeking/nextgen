@@ -12,6 +12,10 @@ import numpy as np
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # GPU acceleration imports with fallbacks to CPU (NumPy)
 try:

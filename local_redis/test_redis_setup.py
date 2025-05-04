@@ -130,7 +130,7 @@ def test_basic_operations(client):
 
         # Clean up test keys
         client.delete(test_key, hash_key, list_key, json_key)
-        logger.info(f"Cleaned up test keys")
+        logger.info("Cleaned up test keys")
 
         logger.info("All basic Redis operations completed successfully!")
         return True

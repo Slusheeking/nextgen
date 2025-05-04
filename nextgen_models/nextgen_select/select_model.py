@@ -484,14 +484,124 @@ Your analysis should be quantitative and evidence-based.""",
         user_proxy.register_function(use_unusual_whales_tool)
         user_proxy.register_function(list_mcp_tools)
 
-    def run_selection_cycle(self) -> List[Dict[str, Any]]:
+    def process_selection_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process a selection request from the Decision Model.
+
+        Args:
+            request: Dictionary containing request details including:
+                - available_capital: Amount of capital available for new positions
+                - request_id: Unique identifier for this request
+                - timestamp: When the request was made
+
+        Returns:
+            Dictionary with results of the selection process
+        """
+        self.logger.info(f"Processing selection request: {request.get('request_id')}")
+
+        try:
+            # Extract available capital
+            available_capital = float(request.get('available_capital', 0.0))
+            
+            # Run selection cycle with capital constraint
+            candidates = self.run_selection_cycle(available_capital=available_capital)
+            
+            # Prepare response
+            response = {
+                "request_id": request.get("request_id"),
+                "candidates_count": len(candidates),
+                "timestamp": datetime.now().isoformat(),
+                "status": "success"
+            }
+            
+            # Store response in Redis
+            response_key = f"selection:response:{request.get('request_id')}"
+            self.redis_mcp.set_json(response_key, response)
+            
+            # Add to response stream for Decision Model to pick up
+            self.redis_mcp.add_to_stream("selection:responses", response)
+            
+            self.logger.info(f"Selection request {request.get('request_id')} processed successfully with {len(candidates)} candidates")
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error processing selection request: {e}")
+            if self.monitor:
+                self.monitor.log_error(
+                    f"Error processing selection request: {e}",
+                    component="selection_model",
+                    action="process_selection_request_error",
+                    error=str(e),
+                )
+            
+            error_response = {
+                "request_id": request.get("request_id"),
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Store error response in Redis
+            response_key = f"selection:response:{request.get('request_id')}"
+            self.redis_mcp.set_json(response_key, error_response)
+            
+            return error_response
+
+    def process_selection_requests(self) -> int:
+        """
+        Process all pending selection requests from the Decision Model.
+        
+        This method checks the selection:requests stream for new requests
+        and processes each one.
+        
+        Returns:
+            Number of requests processed
+        """
+        try:
+            # Get requests from Redis stream
+            stream_key = "selection:requests"
+            requests = self.redis_mcp.read_from_stream(stream_key, count=10)
+            
+            if not requests:
+                self.logger.debug("No pending selection requests found")
+                return 0
+                
+            processed = 0
+            for request_id, request_data in requests:
+                # Process request
+                self.process_selection_request(request_data)
+                
+                # Acknowledge request as processed
+                self.redis_mcp.acknowledge_from_stream(stream_key, request_id)
+                processed += 1
+                
+            self.logger.info(f"Processed {processed} selection requests")
+            return processed
+            
+        except Exception as e:
+            self.logger.error(f"Error processing selection requests: {e}")
+            if self.monitor:
+                self.monitor.log_error(
+                    f"Error processing selection requests: {e}",
+                    component="selection_model",
+                    action="process_selection_requests_error",
+                    error=str(e),
+                )
+            return 0
+
+    def run_selection_cycle(self, available_capital: float = 0.0) -> List[Dict[str, Any]]:
         """
         Run a complete selection cycle to identify trading candidates using AutoGen agents.
+        
+        Args:
+            available_capital: Optional amount of capital available for new positions.
+                              If provided, will be used to constrain selection.
 
         Returns:
             List of candidate dictionaries with scores and metadata
         """
-        self.logger.info("Starting selection cycle with AutoGen agents")
+        self.logger.info(f"Starting selection cycle with AutoGen agents (available capital: ${available_capital:.2f})")
 
         try:
             # Check if market is open

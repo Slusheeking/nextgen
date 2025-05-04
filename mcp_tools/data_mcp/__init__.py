@@ -6,10 +6,12 @@ various financial data sources. These servers provide a unified interface
 for models to access data from different providers dynamically.
 
 Available MCP Servers:
-- PolygonMCP: Access to Polygon.io REST and WebSocket APIs
-- YahooFinanceMCP: Access to Yahoo Finance data
+- PolygonRestMCP: Access to Polygon.io REST API for market data
+- PolygonWsMCP: Access to Polygon.io WebSocket API for real-time data
+- PolygonNewsMCP: Access to Polygon.io news and press releases
+- YahooFinanceMCP: Access to Yahoo Finance market data
 - YahooNewsMCP: Access to Yahoo Finance news and articles
-- RedditMCP: Access to Reddit data and sentiment
+- RedditMCP: Access to Reddit data and sentiment analysis
 - UnusualWhalesMCP: Access to Unusual Whales options flow data
 """
 

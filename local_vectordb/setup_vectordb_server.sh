@@ -16,9 +16,41 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_FILE="$PROJECT_DIR/local_vectordb/vectordb-server.service"
 SYSTEMD_DIR="/etc/systemd/system"
 STORAGE_DIR="$PROJECT_DIR/local_vectordb/vector_db_storage"
+ENV_FILE="$PROJECT_DIR/.env"
 
 echo "Setting up Vector Database server with monitoring integration..."
 echo "Project directory: $PROJECT_DIR"
+
+# Create or update .env file with vector database configuration
+if [ -f "$ENV_FILE" ]; then
+  echo "Updating existing .env file with vector database settings..."
+  # Check if variables already exist in .env, add if not
+  grep -q "VECTORDB_PATH" "$ENV_FILE" || echo "VECTORDB_PATH=$STORAGE_DIR" >> "$ENV_FILE"
+  grep -q "VECTORDB_HOST" "$ENV_FILE" || echo "VECTORDB_HOST=localhost" >> "$ENV_FILE"
+  grep -q "VECTORDB_PORT" "$ENV_FILE" || echo "VECTORDB_PORT=8000" >> "$ENV_FILE"
+  grep -q "VECTORDB_USE_HTTP_SERVER" "$ENV_FILE" || echo "VECTORDB_USE_HTTP_SERVER=False" >> "$ENV_FILE"
+  
+  # Add monitoring configuration with safe defaults
+  grep -q "LOKI_URL" "$ENV_FILE" || echo "LOKI_URL=http://localhost:3100" >> "$ENV_FILE"
+  grep -q "ENABLE_LOKI" "$ENV_FILE" || echo "ENABLE_LOKI=False" >> "$ENV_FILE"
+  grep -q "ENABLE_PROMETHEUS" "$ENV_FILE" || echo "ENABLE_PROMETHEUS=False" >> "$ENV_FILE"
+  grep -q "PROMETHEUS_METRICS_PORT" "$ENV_FILE" || echo "PROMETHEUS_METRICS_PORT=8011" >> "$ENV_FILE"
+else
+  echo "Creating .env file with vector database settings..."
+  cat > "$ENV_FILE" << EOF
+# Vector Database Configuration
+VECTORDB_PATH=$STORAGE_DIR
+VECTORDB_HOST=localhost
+VECTORDB_PORT=8000
+VECTORDB_USE_HTTP_SERVER=False
+
+# Monitoring Configuration
+LOKI_URL=http://localhost:3100
+ENABLE_LOKI=False
+ENABLE_PROMETHEUS=False
+PROMETHEUS_METRICS_PORT=8011
+EOF
+fi
 
 # Install Python dependencies
 echo "Installing Python dependencies..."

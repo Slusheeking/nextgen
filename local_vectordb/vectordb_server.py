@@ -113,22 +113,44 @@ class VectorDBServer:
         """
         try:
             # Get configuration from environment variables or config
-            enable_prometheus = self.config.get("enable_prometheus", True)
-            enable_loki = self.config.get("enable_loki", True)
+            enable_prometheus = self.config.get("enable_prometheus") or os.getenv("ENABLE_PROMETHEUS", "False").lower() == "true"
+            
+            
+            self.logger.info(f"Monitoring config: Prometheus={enable_prometheus}")
 
-            # Set up monitoring
-            monitor, metrics = setup_monitoring(
-                service_name="vector-db-server",
-                enable_prometheus=enable_prometheus,
-                enable_loki=enable_loki,
-                default_labels={"component": "vectordb_server"}
-            )
-
-            self.logger.info("Monitoring initialized successfully")
-            return monitor, metrics
+            # Create a dummy monitor in case setup fails
+            class DummyMonitor:
+                def __getattr__(self, name):
+                    return lambda *args, **kwargs: None
+                
+            try:
+                # Set up monitoring with proper error handling
+                monitor, metrics = setup_monitoring(
+                    service_name="vector-db-server",
+                    enable_prometheus=enable_prometheus,
+                    
+                    default_labels={"component": "vectordb_server"}
+                )
+                
+                # Test the monitor to make sure it's working
+                try:
+                    monitor.log_info("Monitoring test message")
+                    self.logger.info("Monitoring initialized successfully")
+                    return monitor, metrics
+                except Exception as e:
+                    self.logger.warning(f"Monitoring connected but logging failed: {e}")
+                    return DummyMonitor(), metrics
+                    
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize monitoring (non-critical): {e}")
+                return DummyMonitor(), {}
+                
         except Exception as e:
             self.logger.error(f"Failed to initialize monitoring: {e}")
-            return None, {}
+            class DummyMonitor:
+                def __getattr__(self, name):
+                    return lambda *args, **kwargs: None
+            return DummyMonitor(), {}
 
     def _initialize_db(self):
         """
@@ -192,6 +214,10 @@ class VectorDBServer:
             return None
             
         try:
+            # Initialize collections dict if it doesn't exist
+            if not hasattr(self, 'collections'):
+                self.collections = {}
+                
             # If collection exists in cache, return it
             if name in self.collections:
                 return self.collections[name]
@@ -220,49 +246,74 @@ class VectorDBServer:
 
     def _start_metrics_collection(self):
         """Start a background thread to collect Vector DB metrics."""
-        if not self.monitor or not self.client:
+        if not self.client:
             return
 
         def collect_metrics():
+            # Track monitoring failures to avoid excessive error logging
+            monitoring_failures = 0
+            max_failures = 3  # After this many failures, stop trying to use monitoring
+            
             while True:
                 try:
                     # Get all collections
                     collections = self.client.list_collections()
                     collection_count = len(collections)
                     
-                    # Update collection count metric
-                    self.monitor.set_gauge("collection_count", collection_count)
+                    # Log to file logger - this always works
+                    self.logger.info(f"Vector DB metrics collected - {collection_count} collections")
                     
-                    # Update embeddings count for each collection
-                    for collection in collections:
+                    # Only try to use monitoring if we haven't had too many failures
+                    if monitoring_failures < max_failures:
                         try:
-                            # Get collection by name
-                            coll = self._get_collection(self.client, collection.name)
-                            if coll:
-                                # Get count of items in collection
-                                count = coll.count()
-                                self.monitor.set_gauge(
-                                    "embeddings_count", count, collection=collection.name
-                                )
+                            # Try to update metrics but catch any errors
+                            try:
+                                if hasattr(self.monitor, 'set_gauge'):
+                                    self.monitor.set_gauge("collection_count", collection_count)
+                            except Exception:
+                                pass  # Silently ignore these errors
+                            
+                            # Update embeddings count for each collection
+                            for collection in collections:
+                                try:
+                                    # Get collection by name
+                                    coll = self._get_collection(self.client, collection.name)
+                                    if coll:
+                                        # Get count of items in collection
+                                        count = coll.count()
+                                        try:
+                                            if hasattr(self.monitor, 'set_gauge'):
+                                                self.monitor.set_gauge(
+                                                    "embeddings_count", count, collection=collection.name
+                                                )
+                                        except Exception:
+                                            pass  # Silently ignore these errors
+                                except Exception as e:
+                                    # Only log to standard logger, not monitoring
+                                    self.logger.error(f"Error getting count for collection {collection.name}: {e}")
+                            
+                            # Try to log to monitoring, but handle failures gracefully
+                            try:
+                                if hasattr(self.monitor, 'log_info'):
+                                    self.monitor.log_info(
+                                        "Vector DB metrics collected",
+                                        component="vectordb_server",
+                                        action="metrics_collection",
+                                        collection_count=collection_count
+                                    )
+                            except Exception:
+                                monitoring_failures += 1
+                                if monitoring_failures >= max_failures:
+                                    self.logger.warning("Too many monitoring failures, disabling monitoring metrics")
+                        
                         except Exception as e:
-                            self.logger.error(f"Error getting count for collection {collection.name}: {e}")
-
-                    # Log to monitoring
-                    self.monitor.log_info(
-                        "Vector DB metrics collected",
-                        component="vectordb_server",
-                        action="metrics_collection",
-                        collection_count=collection_count
-                    )
+                            monitoring_failures += 1
+                            self.logger.error(f"Error updating monitoring metrics: {e}")
+                            if monitoring_failures >= max_failures:
+                                self.logger.warning("Too many monitoring failures, disabling monitoring metrics")
+                
                 except Exception as e:
-                    self.logger.error(f"Error collecting Vector DB metrics: {e}")
-                    if self.monitor:
-                        self.monitor.log_error(
-                            f"Error collecting Vector DB metrics: {e}",
-                            component="vectordb_server",
-                            action="metrics_collection_error",
-                            error=str(e)
-                        )
+                    self.logger.error(f"Error collecting vector DB metrics: {e}")
 
                 # Sleep for 15 seconds
                 time.sleep(15)
@@ -322,11 +373,25 @@ class VectorDBServer:
         if not self.monitor:
             return
 
-        # Increment operation counter
-        self.monitor.increment_counter("operations_total", 1, operation=operation, status=status)
-
-        # Record operation duration
-        self.monitor.observe_histogram("operation_duration_seconds", duration, operation=operation)
+        try:
+            # Increment operation counter
+            if hasattr(self.monitor, 'increment_counter'):
+                self.monitor.increment_counter(
+                    self.metrics.get('operations_total', 'operations_total'),
+                    1,
+                    operation=operation,
+                    status=status
+                )
+            
+            # Record operation duration
+            if hasattr(self.monitor, 'observe_histogram'):
+                self.monitor.observe_histogram(
+                    self.metrics.get('operation_duration_seconds', 'operation_duration_seconds'),
+                    duration,
+                    operation=operation
+                )
+        except Exception as e:
+            self.logger.error(f"Error recording operation metrics: {e}")
 
     def log_operation(self, operation: str, collection: str, status: str, error: Optional[str] = None):
         """
@@ -341,18 +406,27 @@ class VectorDBServer:
         if not self.monitor:
             return
 
-        log_data = {
-            "component": "vectordb_server",
-            "action": operation,
-            "collection": collection,
-            "status": status
-        }
+        try:
+            log_data = {
+                "component": "vectordb_server",
+                "action": operation,
+                "collection": collection,
+                "status": status
+            }
 
-        if error:
-            log_data["error"] = error
-            self.monitor.log_error(f"Vector DB operation {operation} failed: {error}", **log_data)
-        else:
-            self.monitor.log_info(f"Vector DB operation {operation} completed", **log_data)
+            if error:
+                log_data["error"] = error
+                if hasattr(self.monitor, 'log_error'):
+                    self.monitor.log_error(f"Vector DB operation {operation} failed: {error}", **log_data)
+                else:
+                    self.logger.error(f"Vector DB operation {operation} failed: {error}")
+            else:
+                if hasattr(self.monitor, 'log_info'):
+                    self.monitor.log_info(f"Vector DB operation {operation} completed", **log_data)
+                else:
+                    self.logger.info(f"Vector DB operation {operation} completed for collection {collection}")
+        except Exception as e:
+            self.logger.error(f"Error logging operation: {e}")
 
 
 # Example usage

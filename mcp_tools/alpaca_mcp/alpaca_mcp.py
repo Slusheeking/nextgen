@@ -6,10 +6,13 @@ providing access to trading functionality, account information, and market data.
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 from typing import Dict, List, Any, Optional, Tuple
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Import Alpaca Trading API
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
@@ -21,6 +24,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockQuotesRequest
 from alpaca.data.timeframe import TimeFrame
 
+# Import internal modules
 from mcp_tools.base_mcp_server import BaseMCPServer
 from monitoring import setup_monitoring
 
@@ -505,7 +509,12 @@ class AlpacaMCP(BaseMCPServer):
             return {"error": "Missing required parameter: order_id"}
 
         try:
-            order = self.trading_client.get_order(order_id)
+            # Use get_order_by_id instead of get_orders with filter
+            order = self.trading_client.get_order_by_id(order_id)
+            if not order:
+                return {"error": f"Order not found: {order_id}"}
+            
+            # Return the formatted order
             return self._format_order(order)
         except Exception as e:
             self.logger.error(f"Error getting order {order_id}: {e}")
@@ -903,9 +912,29 @@ class AlpacaMCP(BaseMCPServer):
             return {"error": "Missing required parameter: symbol"}
 
         try:
-            # Get the latest quote
-            quote = self.data_client.get_latest_quote(symbol)
-
+            # Use get_stock_quotes with limit=1 instead of get_latest_quote
+            from alpaca.data.requests import StockQuotesRequest
+            from datetime import datetime, timedelta
+            
+            # Get quotes from the last hour
+            end = datetime.now()
+            start = end - timedelta(hours=1)
+            
+            request = StockQuotesRequest(
+                symbol_or_symbols=symbol,
+                start=start,
+                end=end,
+                limit=1  # Just get the latest one
+            )
+            
+            quotes = self.data_client.get_stock_quotes(request)
+            
+            if symbol not in quotes or not quotes[symbol]:
+                return {"error": f"No quotes found for {symbol}"}
+            
+            # Get the latest quote (should be only one due to limit=1)
+            quote = quotes[symbol][-1]
+            
             # Format the response
             return {
                 "symbol": symbol,

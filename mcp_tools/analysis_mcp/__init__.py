@@ -10,6 +10,13 @@ This package contains specialized MCP tools for market analysis:
 - Correlation Analysis: Measures correlations between assets
 - Risk Metrics: Calculates VaR, volatility, and other risk metrics
 - Portfolio Optimization: Optimizes portfolio allocations
+- Document Processing: Processes and analyzes text documents
+- Document Retrieval: Retrieves relevant documents from storage
+- Entity Extraction: Extracts named entities from text
+- Query Reformulation: Reformulates queries for better search results
+- Relevance Feedback: Processes user feedback for search improvement
+- Risk Attribution: Attributes risk to different factors
+- Scenario Generation: Generates market scenarios for stress testing
 """
 
 # Use lazy imports to avoid circular dependencies
@@ -48,6 +55,13 @@ def get_analysis_mcp(class_name):
         "EmbeddingsMCP": ".embeddings_mcp",
         "VectorDbMCP": ".vector_db_mcp",
         "DecisionAnalyticsMCP": ".decision_analytics_mcp",
+        "DocumentProcessingMCP": ".document_processing_mcp",
+        "DocumentRetrievalMCP": ".document_retrieval_mcp",
+        "EntityExtractionMCP": ".entity_extraction_mcp",
+        "QueryReformulationMCP": ".query_reformulation_mcp",
+        "RelevanceFeedbackMCP": ".relevance_feedback_mcp",
+        "RiskAttributionMCP": ".risk_attribution_mcp",
+        "ScenarioGenerationMCP": ".scenario_generation_mcp",
     }
     
     if class_name not in class_map:

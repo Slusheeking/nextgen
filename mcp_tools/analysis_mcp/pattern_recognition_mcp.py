@@ -13,6 +13,10 @@ import cudf
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # For computer vision and machine learning capabilities
 try:

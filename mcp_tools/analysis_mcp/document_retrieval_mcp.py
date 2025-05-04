@@ -18,8 +18,8 @@ load_dotenv()
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 
-# Import monitoring utilities
-from monitoring import setup_monitoring
+# Import monitoring
+from monitoring.system_monitor import MonitoringManager
 
 # Import necessary libraries for potential reranking
 try:
@@ -29,14 +29,6 @@ try:
 except ImportError:
     HAVE_CROSS_ENCODER = False
     CrossEncoder = None  # Define for type hinting
-
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis-mcp-document-retrieval",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
 
 
 class DocumentRetrievalMCP(BaseMCPServer):
@@ -62,6 +54,16 @@ class DocumentRetrievalMCP(BaseMCPServer):
                 - reranker_cache_dir: Cache directory for the reranker model.
         """
         super().__init__(name="document_retrieval_mcp", config=config)
+        
+        # Initialize monitoring
+        self.monitor = MonitoringManager(
+            service_name="document-retrieval-mcp"
+        )
+        self.monitor.log_info(
+            "DocumentRetrievalMCP initialized",
+            component="document_retrieval_mcp",
+            action="initialization"
+        )
 
         # Configurations
         # These would ideally be client instances or connection details
@@ -436,13 +438,13 @@ class DocumentRetrievalMCP(BaseMCPServer):
                 "processing_time": time.time() - start_time,
             }
 
-        if not self.embeddings_service_available:
+        if not self.embeddings_mcp_client:
             return {
                 "results": [],
                 "error": "Embeddings service is unavailable.",
                 "processing_time": time.time() - start_time,
             }
-        if not self.vector_db_service_available:
+        if not self.vector_db_mcp_client:
             return {
                 "results": [],
                 "error": "Vector DB service is unavailable.",
@@ -649,7 +651,7 @@ class DocumentRetrievalMCP(BaseMCPServer):
                 "processing_time": time.time() - start_time,
             }
 
-        if not self.vector_db_service_available:
+        if not self.vector_db_mcp_client:
             return {
                 "results": [],
                 "error": "Vector DB service is unavailable.",

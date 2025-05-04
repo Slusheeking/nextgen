@@ -14,11 +14,8 @@ This module tests the functionality of the RiskMetricsMCP class, including:
 
 import os
 import unittest
-import json
 import numpy as np
-import pandas as pd
 from unittest.mock import patch, MagicMock
-from typing import Dict, Any, List
 from scipy.stats import norm
 
 # Import the target module for testing

@@ -7,9 +7,8 @@ This module provides utilities for handling semantic versioning according to Sem
 
 import re
 import os
-import sys
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 
 # Current version of the FinGPT AI Day Trading System

@@ -7,7 +7,6 @@ Provides:
 
 Dependencies:
 - prometheus_client
-- logging_loki
 - psutil
 
 Usage:
@@ -37,65 +36,66 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 from prometheus_client import Counter, Gauge, Histogram, Summary, start_http_server
-from logging_loki import LokiHandler
+
 
 class MonitoringManager:
     """
-    Unified monitoring manager that handles both metrics (Prometheus) and logging (Loki).
+    Unified monitoring manager that handles both metrics (Prometheus) and logging (Python logging).
     
     This class provides a simplified interface for monitoring and observability,
     combining metrics collection and structured logging in one place.
     """
-    
-    def __init__(self, service_name, metrics_port=8010, loki_url=None, loki_labels=None):
+    def __init__(self, service_name, metrics_port=8010):
         """
         Initialize the monitoring manager.
-        
+
         Args:
             service_name: Name of the service being monitored
             metrics_port: Port for Prometheus metrics server
-            loki_url: URL for Loki logging server
-            loki_labels: Default labels to apply to all logs
         """
+        # Sanitize service name for Prometheus metrics (no hyphens)
         self.service_name = service_name
+        self.metrics_name = service_name.replace('-', '_')
         self.metrics_port = metrics_port
-        self.loki_url = loki_url or os.getenv("LOKI_URL", "http://localhost:3100/loki/api/v1/push")
         self.hostname = socket.gethostname()
-        
-        # Add hostname and service name to default labels
-        self.loki_labels = loki_labels or {}
-        self.loki_labels.update({
-            "service": service_name,
-            "host": self.hostname
-        })
-        
         self.metrics = {}
         self.start_time = datetime.now()
 
+        # Set up basic logging first
+        self._setup_basic_logging()
+
         # Prometheus setup - try to start the server, but continue if it fails
         try:
-            start_http_server(self.metrics_port)
+            # Try to start the metrics server, but don't fail if the port is already in use
+            try:
+                start_http_server(self.metrics_port)
+                self.log_info(
+                    f"Prometheus metrics server started on port {self.metrics_port}",
+                    component="monitoring",
+                    action="metrics_server_start"
+                )
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    self.log_warning(
+                        f"Prometheus metrics port {self.metrics_port} already in use. Using existing server.",
+                        component="monitoring",
+                        action="metrics_server_warning"
+                    )
+                else:
+                    raise e
+            
+            # Initialize metrics
             self._init_metrics()
-            # Log successful metrics server start
-            self.log_info(
-                f"Prometheus metrics server started on port {self.metrics_port}",
-                component="monitoring",
-                action="metrics_server_start"
-            )
         except Exception as e:
-            # Set up basic logging first
-            self._setup_basic_logging()
             self.log_error(
-                f"Failed to start Prometheus metrics server: {e}",
+                f"Failed to initialize Prometheus metrics: {e}",
                 component="monitoring",
-                action="metrics_server_error",
+                action="metrics_init_error",
                 error=str(e)
             )
-            # Still initialize metrics for when the server becomes available
-            self._init_metrics()
 
-        # Loki setup
-        self._setup_loki_logging()
+        # File logging setup
+        self._setup_file_logging()
         
         # Log initialization
         self.log_info(
@@ -116,82 +116,82 @@ class MonitoringManager:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
     
-    def _setup_loki_logging(self):
-        """Set up Loki logging."""
-        # Ensure basic logging is set up first
-        self._setup_basic_logging()
-        
-        try:
-            # Add Loki handler
-            loki_handler = LokiHandler(
-                url=self.loki_url,
-                tags=self.loki_labels,
-                version="1"
-            )
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            loki_handler.setFormatter(formatter)
-            self.logger.addHandler(loki_handler)
-        except Exception as e:
-            self.log_error(
-                f"Failed to set up Loki logging: {e}",
-                component="monitoring",
-                action="loki_setup_error",
-                error=str(e)
-            )
+    def _setup_file_logging(self):
+        """Set up rotating file logging in addition to console logging."""
+        import logging
+        import os
+        from logging.handlers import RotatingFileHandler
 
+        # Create logs directory if it doesn't exist
+        log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Set up service-specific log file
+        log_path = os.path.join(log_dir, f"{self.service_name}.log")
+        file_handler = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=5)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        
+        # Set up master log file
+        master_log_path = os.path.join(log_dir, "master.log")
+        master_handler = RotatingFileHandler(master_log_path, maxBytes=10*1024*1024, backupCount=10)
+        master_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        master_handler.setFormatter(master_formatter)
+        self.logger.addHandler(master_handler)
     def _init_metrics(self):
         """Initialize Prometheus metrics."""
         try:
             # Request metrics
             self.metrics["requests_total"] = Counter(
-                f"{self.service_name}_requests_total",
+                f"{self.metrics_name}_requests_total",
                 "Total count of requests",
                 ["method", "endpoint", "status"]
             )
             self.metrics["request_duration_seconds"] = Histogram(
-                f"{self.service_name}_request_duration_seconds",
+                f"{self.metrics_name}_request_duration_seconds",
                 "Request duration in seconds",
                 ["method", "endpoint"]
             )
             self.metrics["active_requests"] = Gauge(
-                f"{self.service_name}_active_requests",
+                f"{self.metrics_name}_active_requests",
                 "Number of active requests",
                 ["method", "endpoint"]
             )
             
             # Error metrics
             self.metrics["errors_total"] = Counter(
-                f"{self.service_name}_errors_total",
+                f"{self.metrics_name}_errors_total",
                 "Total count of errors",
                 ["component", "type"]
             )
             
             # System metrics
             self.metrics["cpu_percent"] = Gauge(
-                f"{self.service_name}_cpu_percent",
+                f"{self.metrics_name}_cpu_percent",
                 "CPU utilization percent"
             )
             self.metrics["memory_percent"] = Gauge(
-                f"{self.service_name}_memory_percent",
+                f"{self.metrics_name}_memory_percent",
                 "Memory utilization percent"
             )
             self.metrics["disk_percent"] = Gauge(
-                f"{self.service_name}_disk_percent",
+                f"{self.metrics_name}_disk_percent",
                 "Disk utilization percent"
             )
             
             # Application metrics
             self.metrics["uptime_seconds"] = Gauge(
-                f"{self.service_name}_uptime_seconds",
+                f"{self.metrics_name}_uptime_seconds",
                 "Service uptime in seconds"
             )
             self.metrics["operations_total"] = Counter(
-                f"{self.service_name}_operations_total",
+                f"{self.metrics_name}_operations_total",
                 "Total count of operations",
                 ["component", "operation"]
             )
             self.metrics["operation_duration_seconds"] = Summary(
-                f"{self.service_name}_operation_duration_seconds",
+                f"{self.metrics_name}_operation_duration_seconds",
                 "Operation duration in seconds",
                 ["component", "operation"]
             )

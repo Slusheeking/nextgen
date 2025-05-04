@@ -5,9 +5,12 @@ This module implements a Model Context Protocol (MCP) server for Yahoo News
 API, providing access to financial news and articles.
 """
 
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 import yfinance as yf
+from dotenv import load_dotenv
+load_dotenv()
 from monitoring.system_monitor import MonitoringManager
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP

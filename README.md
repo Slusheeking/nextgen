@@ -1,14 +1,14 @@
-# FinGPT AI Day Trading System
+# NextGen AI Trading System
 
-A comprehensive, AI-powered day trading system built on the FinGPT framework, using large language models to analyze financial markets, select stocks, generate trading signals, and execute trades.
+A comprehensive, AI-powered trading system built on a modular architecture with Model Context Protocol (MCP) for tool integration and Microsoft AutoGen for agent orchestration.
 
 ## System Overview
 
-The FinGPT Day Trading System is an end-to-end solution that combines traditional market data analysis with cutting-edge LLM-based financial intelligence. The system integrates multiple data sources, applies sophisticated analysis using specialized financial language models, and executes trades through the Alpaca trading platform.
+The NextGen AI Trading System is an end-to-end solution that combines traditional market data analysis with cutting-edge LLM-based financial intelligence. The system integrates multiple data sources via MCP tools, applies sophisticated analysis using specialized financial language models, and executes trades through the Alpaca trading platform.
 
 For detailed information about the system:
-- See [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) for a complete description of all components
-- See [SYSTEM_FLOW.md](SYSTEM_FLOW.md) for data flow and interaction diagrams
+- See [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md) for a complete description of all components
+- See [docs/SYSTEM_FLOW.md](docs/SYSTEM_FLOW.md) for data flow and interaction diagrams
 
 ## Directory Structure
 
@@ -16,75 +16,104 @@ For detailed information about the system:
 nextgen/
 ├── .env                      # Environment variables for APIs and configurations
 ├── .env.example              # Example environment file
-├── README.md                 # This file - project documentation
-├── requirements.txt          # Consolidated project dependencies
-├── SYSTEM_ARCHITECTURE.md    # Detailed component architecture
-├── SYSTEM_FLOW.md            # System flow and data diagram
-├── alpaca/                   # Alpaca trading integration
-│   └── alpaca_api.py         # Alpaca API client implementation
-├── data/                     # Data sources and preprocessing
-│   ├── data_preprocessor.py  # Data normalization and feature engineering
-│   ├── polygon_rest.py       # Polygon.io REST API client
-│   ├── polygon_ws.py         # Polygon.io WebSocket API client
-│   ├── reddit.py             # Reddit API client for sentiment data
-│   ├── unusual_whales.py     # Unusual Whales API client for options flow
-│   └── yahoo_finance.py      # Yahoo Finance API client
-├── fingpt/                   # Core FinGPT components
-│   ├── fingpt_bench/         # Benchmarking and performance evaluation
-│   │   └── bench_model.py    # Benchmark model implementation
-│   ├── fingpt_execution/     # Trade execution component
-│   │   └── execution_model.py # Execution strategy implementation
-│   ├── fingpt_finnlp/        # Financial NLP and sentiment analysis
-│   │   └── finnlp_model.py   # Financial NLP model implementation
-│   ├── fingpt_forcaster/     # Price and trend forecasting
-│   │   └── forcaster_model.py # Forecasting model implementation
-│   ├── fingpt_lora/          # LoRA adaptation for fine-tuning LLMs
-│   │   └── lora_model.py     # LoRA model implementation
-│   ├── fingpt_orchestrator/  # Central system orchestrator
-│   │   └── orchestrator_model.py # Orchestrator implementation
-│   ├── fingpt_order/         # Order management system
-│   │   └── order_managment_model.py # Order management implementation
-│   ├── fingpt_rag/           # Retrieval-augmented generation
-│   │   └── rag_model.py      # RAG model implementation
-│   └── fingpt_selection/     # Stock selection and filtering
-│       └── selection_model.py # Stock selection implementation
-├── influxdb/                 # Time series database integration
-│   └── influxdb_manager.py   # InfluxDB client and manager
-├── loki/                     # Logging infrastructure
-│   └── loki_manager.py       # Loki logging client
-├── prometheus/               # Metrics and monitoring
-│   └── prometheus_manager.py # Prometheus metrics manager
-├── local_redis/              # Caching and messaging
-│   └── redis_manager.py      # Redis client and manager
-└── systemd/                  # System deployment configuration
+├── config/                   # Configuration files
+│   ├── analysis_mcp/         # Analysis MCP tool configurations
+│   ├── nextgen_decision/     # Decision model configurations
+│   ├── nextgen_risk/         # Risk model configurations
+│   ├── nextgen_select/       # Selection model configurations
+│   └── nextgen_trader/       # Trader model configurations
+├── docs/                     # Documentation
+│   ├── ENVIRONMENT_VARIABLES.md # Details on required environment variables
+│   ├── SYSTEM_ARCHITECTURE.md # Detailed component architecture
+│   ├── SYSTEM_FLOW.md        # System flow and data diagram
+│   └── SYSTEM_HARDWARE.md    # Hardware requirements and setup
+├── local_redis/              # Local Redis server management
+│   ├── README.md             # Redis setup instructions
+│   ├── redis_server.py       # Redis server implementation
+│   └── start_redis_server.py # Redis server startup script
+├── local_vectordb/           # Local vector database management
+│   ├── README.md             # VectorDB setup instructions
+│   ├── vectordb_server.py    # VectorDB server implementation
+│   └── start_vectordb_server.py # VectorDB server startup script
+├── mcp_tools/                # MCP tool implementations
+│   ├── alpaca_mcp/           # Alpaca trading API tools
+│   │   └── alpaca_mcp.py     # Alpaca MCP implementation
+│   ├── analysis_mcp/         # Analysis tool implementations
+│   │   ├── drift_detection_mcp.py # Drift detection tools
+│   │   ├── peak_detection_mcp.py # Peak detection tools
+│   │   ├── slippage_analysis_mcp.py # Execution analysis tools
+│   │   └── technical_indicators_mcp.py # Technical analysis tools
+│   ├── data_mcp/             # Data source tools
+│   │   ├── base_data_mcp.py  # Base class for data MCPs
+│   │   ├── polygon_rest_mcp.py # Polygon.io REST API tools
+│   │   ├── polygon_ws_mcp.py # Polygon.io WebSocket API tools
+│   │   ├── reddit_mcp.py     # Reddit API tools
+│   │   ├── unusual_whales_mcp.py # Unusual Whales API tools
+│   │   └── yahoo_finance_mcp.py # Yahoo Finance API tools
+│   ├── db_mcp/               # Database tools
+│   │   └── redis_mcp.py      # Redis MCP implementation
+│   └── base_mcp_server.py    # Base MCP server implementation
+├── monitoring/               # System monitoring tools
+│   ├── README.md             # Monitoring setup instructions
+│   ├── system_monitor.py     # System monitoring implementation
+│   └── monitoring_utils.py   # Monitoring utilities
+├── nextgen_models/           # Core model implementations
+│   ├── autogen_orchestrator/ # AutoGen orchestration
+│   │   └── autogen_model.py  # AutoGen implementation
+│   ├── nextgen_context_model/ # Context and knowledge models
+│   │   └── context_model.py  # Context model implementation
+│   ├── nextgen_decision/     # Decision models
+│   │   └── decision_model.py # Decision model implementation
+│   ├── nextgen_fundamental_analysis/ # Fundamental analysis
+│   │   └── fundamental_analysis_model.py # Fundamental analysis implementation
+│   ├── nextgen_market_analysis/ # Market analysis
+│   │   └── market_analysis_model.py # Market analysis implementation
+│   ├── nextgen_risk_assessment/ # Risk assessment
+│   │   └── risk_assessment_model.py # Risk assessment implementation
+│   ├── nextgen_select/       # Stock selection
+│   │   └── select_model.py   # Selection model implementation
+│   ├── nextgen_sentiment_analysis/ # Sentiment analysis
+│   │   └── sentiment_analysis_model.py # Sentiment analysis implementation
+│   └── nextgen_trader/       # Trade execution
+│       └── trade_model.py    # Trade model implementation
+└── tests/                    # Test suite
+    ├── mcp_tools/            # MCP tool tests
+    │   ├── alpaca_mcp/       # Alpaca MCP tests
+    │   ├── analysis_mcp/     # Analysis MCP tests
+    │   └── data_mcp/         # Data MCP tests
+    └── nextgen_models/       # Model tests
+        └── nextgen_trader/   # Trader model tests
 ```
 
 ## Key Components
 
-### Core Trading Engine
+### Core Trading Models
 
-- **Orchestrator**: Central brain of the system that coordinates all components and makes trading decisions
-- **Selection**: Identifies potential trading candidates through multi-tier filtering
-- **Execution**: Implements dynamic position sizing and optimal execution strategies
-- **Order Management**: Tracks open positions and implements risk management
+- **AutoGen Orchestrator**: Central orchestration using Microsoft's AutoGen framework for agent coordination
+- **Selection Model**: Identifies potential trading candidates through multi-tier filtering
+- **Decision Model**: Integrates analysis from all components to make trading decisions
+- **Trade Model**: Implements dynamic position sizing and optimal execution strategies
+- **Risk Assessment**: Evaluates position and portfolio risk
 
-### Analysis Components
+### Analysis Models
 
-- **FinNLP**: Comprehensive financial text processing and sentiment analysis
-- **Forecaster**: Time series forecasting and technical pattern recognition
-- **RAG**: Retrieval-augmented generation for incorporating financial knowledge
+- **Sentiment Analysis**: Processes news and social media for sentiment analysis
+- **Market Analysis**: Generates price predictions and identifies technical patterns
+- **Context Model**: Provides historical context and precedents using vector retrieval
+- **Fundamental Analysis**: Evaluates company financials and metrics
 
-### Data Sources
+### MCP Tools
 
-- **Market Data**: Real-time and historical price data from Polygon.io and Yahoo Finance
+- **Market Data**: Real-time and historical price data via MCP tools for Polygon.io and Yahoo Finance
 - **Alternative Data**: Social sentiment from Reddit, options flow from Unusual Whales
-- **Fundamental Data**: Financial statements, earnings reports, and SEC filings
+- **Analysis Tools**: Technical indicators, peak detection, drift detection, and slippage analysis
+- **Execution Tools**: Order execution and position management via Alpaca MCP
 
 ### Infrastructure
 
-- **Redis**: Event bus and caching layer
-- **InfluxDB**: Time series storage for market data and performance metrics
-- **Prometheus & Loki**: Monitoring and logging infrastructure
+- **Redis**: Event bus and caching layer, managed through Redis MCP
+- **Vector Database**: Storage for embeddings and efficient similarity search
+- **System Monitor**: Performance tracking and centralized logging
 
 ## Setup
 
@@ -94,53 +123,77 @@ nextgen/
    ```bash
    pip install -r requirements.txt
    ```
-4. Install infrastructure components (Redis, InfluxDB, Prometheus, Loki) following their respective documentation
+4. Start Redis:
+   ```bash
+   python local_redis/start_redis_server.py
+   ```
+5. Start Vector Database:
+   ```bash
+   python local_vectordb/start_vectordb_server.py
+   ```
 
 ## Usage
 
-1. Start infrastructure services:
+1. Launch the AutoGen orchestrator:
    ```bash
-   systemctl start redis influxdb prometheus loki
+   python -m nextgen_models.autogen_orchestrator.autogen_model
    ```
 
-2. Launch the FinGPT orchestrator:
-   ```bash
-   python -m fingpt.fingpt_orchestrator.orchestrator_model
-   ```
-
-3. Monitor system performance through the Prometheus dashboard
+2. Monitor performance through the system monitoring tools
 
 ## Model Integration
 
-The system uses several pretrained financial models:
+The system uses LLMs via OpenRouter:
 
-- FinGPT models from HuggingFace (FinGPT-v3-llama2-7b, FinGPT-RAG, FinGPT-Forecaster)
-- OpenAI API for complex financial analysis
-- Anthropic Claude for document analysis
-- Mistral AI for additional analysis capabilities
+- Anthropic Claude 3 Opus for in-depth financial analysis
+- Meta Llama 3 70B for complex financial reasoning
+- Google Gemini Pro for additional analysis capabilities
 
-See [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) for detailed model sources and URLs.
+See [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md) for detailed model sources and integration.
+
+## MCP Tool Integration
+
+The Model Context Protocol (MCP) provides a standardized interface for models to access external tools and resources:
+
+1. **Data Sources**: MCP tools for market data from multiple providers
+2. **Analysis Tools**: MCP tools for specialized financial analysis
+3. **Execution**: MCP tools for trade execution and order management
+4. **Infrastructure**: MCP tools for database access and coordination
+
+This architecture allows for easy extension with new data sources and analysis capabilities without changing core component code.
+
+## AutoGen Agent Architecture
+
+The system uses Microsoft's AutoGen framework for agent orchestration:
+
+- **Specialized Agents**: Each agent handles a specific domain (selection, analysis, execution, etc.)
+- **Tool Registration**: MCP tools are registered with appropriate agents
+- **Group Chat**: Agents collaborate in group chats to solve complex problems
+- **LLM Integration**: LLMs power agent reasoning via OpenRouter
+
+See [docs/SYSTEM_FLOW.md](docs/SYSTEM_FLOW.md) for details on agent interactions and communication.
 
 ## Data Flow
 
 The system operates through an event-driven architecture with the following key workflow:
 
-1. **Stock Discovery**: The selection component identifies potential trading candidates
-2. **Data Gathering**: Data connectors collect relevant information for the selected stocks
-3. **Analysis**: Multiple analysis components process the gathered data
-4. **Decision Making**: The orchestrator integrates all analysis and makes trading decisions
-5. **Execution**: The execution component implements trades with dynamic sizing
-6. **Position Management**: The order management component tracks and manages active positions
-7. **Performance Analysis**: The benchmarking component measures strategy effectiveness
+1. **Stock Discovery**: The selection model identifies potential trading candidates
+2. **Data Gathering**: MCP data tools collect relevant information for the selected stocks
+3. **Analysis**: Multiple analysis models process the gathered data
+4. **Decision Making**: The decision model integrates all analysis and makes trading decisions
+5. **Execution**: The trade model implements trades via Alpaca MCP
+6. **Position Management**: The trade model tracks and manages active positions
+7. **Performance Analysis**: The monitoring components measure strategy effectiveness
 
-See [SYSTEM_FLOW.md](SYSTEM_FLOW.md) for a complete visualization of the data flow.
+See [docs/SYSTEM_FLOW.md](docs/SYSTEM_FLOW.md) for a complete visualization of the data flow.
 
 ## License
 
-This project is based on the FinGPT framework by AI4Finance Foundation and is released under the [MIT License](LICENSE).
+This project is released under the [MIT License](LICENSE).
 
 ## References
 
-- [FinGPT GitHub Repository](https://github.com/AI4Finance-Foundation/FinGPT)
+- [Microsoft AutoGen](https://github.com/microsoft/autogen)
 - [Alpaca Trading API](https://alpaca.markets/)
 - [Polygon.io API](https://polygon.io/)
+- [OpenRouter API](https://openrouter.ai/)

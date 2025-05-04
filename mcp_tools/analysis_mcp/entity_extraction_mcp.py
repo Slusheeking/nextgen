@@ -12,6 +12,10 @@ import re
 import time
 from typing import Dict, List, Any, Optional
 import difflib
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # For entity recognition
 try:

@@ -9,6 +9,10 @@ import os
 import time
 import re
 from typing import Dict, List, Any, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 from monitoring import setup_monitoring

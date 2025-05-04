@@ -7,6 +7,10 @@ execution quality, slippage, and market impact of trades.
 
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # GPU acceleration imports
 try:
@@ -20,16 +24,11 @@ except ImportError:
 from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Import monitoring utilities
-from monitoring import setup_monitoring
+from monitoring.system_monitor import MonitoringManager
 
-
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="analysis_mcp-slippage-analysis-mcp",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "mcp_tools/analysis_mcp"},
-)
+# Set up monitoring (Prometheus + Python logging only)
+monitor = MonitoringManager(service_name="analysis_mcp-slippage-analysis-mcp")
+metrics = monitor.metrics
 
 
 class SlippageAnalysisMCP(BaseMCPServer):

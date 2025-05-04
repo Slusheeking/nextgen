@@ -11,7 +11,6 @@ This script helps automate the release process by:
 
 import argparse
 import datetime
-import os
 import re
 import subprocess
 import sys
@@ -153,7 +152,7 @@ def create_release(increment_type):
 
     # Create a commit with the version changes
     commit_msg = f"Release version {new_version}"
-    run_command(f'git add VERSION.md version.py fingpt/__init__.py')
+    run_command('git add VERSION.md version.py fingpt/__init__.py')
     run_command(f'git commit -m "{commit_msg}"')
 
     # Create tag message

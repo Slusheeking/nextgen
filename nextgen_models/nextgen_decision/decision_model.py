@@ -1023,11 +1023,71 @@ class DecisionModel:
 
             # Add to request stream
             self.redis_mcp.add_to_stream("selection:requests", request)
-
+            
+            self.logger.info(f"Selection request sent with ID: {request['request_id']}")
+            
             return request
         except Exception as e:
             self.logger.error(f"Error requesting new selections: {e}")
             return {"error": str(e)}
+            
+    def check_selection_responses(self) -> List[Dict[str, Any]]:
+        """
+        Check for new selection responses from the Selection Model.
+        
+        This method reads from the selection:responses stream and processes
+        new responses.
+        
+        Returns:
+            List of processed selection responses
+        """
+        try:
+            # Read from the selection responses stream
+            stream_key = "selection:responses"
+            responses = self.redis_mcp.read_from_stream(stream_key, count=10)
+            
+            if not responses:
+                self.logger.debug("No new selection responses found")
+                return []
+                
+            processed_responses = []
+            for response_id, response_data in responses:
+                self.logger.info(f"Processing selection response: {response_data.get('request_id')}")
+                
+                # Process the response (get the candidates)
+                if response_data.get("status") == "success":
+                    # Refresh selection data cache
+                    self._refresh_selection_data()
+                    
+                    # Add processed response
+                    processed_responses.append(response_data)
+                    
+                    self.logger.info(
+                        f"Selection response processed with {response_data.get('candidates_count', 0)} candidates"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Selection response failed: {response_data.get('error')}"
+                    )
+                
+                # Acknowledge the message
+                self.redis_mcp.acknowledge_from_stream(stream_key, response_id)
+                
+            return processed_responses
+            
+        except Exception as e:
+            self.logger.error(f"Error checking selection responses: {e}")
+            return []
+            
+    def _refresh_selection_data(self):
+        """
+        Refresh the selection data from Redis.
+        
+        This method clears any cached selection data and forces a refresh
+        from Redis when get_selection_data() is called next.
+        """
+        # Clear any cached data
+        self._selection_data_cache = None
 
     def get_fundamental_data(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """

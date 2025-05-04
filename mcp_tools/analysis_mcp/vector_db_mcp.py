@@ -31,14 +31,9 @@ except ImportError:
     HAVE_FAISS = False
     faiss = None
 
-# Add imports for other vector DBs like Pinecone
-try:
-    import pinecone
-
-    HAVE_PINECONE = True
-except ImportError:
-    HAVE_PINECONE = False
-    pinecone = None
+# Mark Pinecone as not available - we're only using ChromaDB for local vector DB
+HAVE_PINECONE = False
+pinecone = None
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 

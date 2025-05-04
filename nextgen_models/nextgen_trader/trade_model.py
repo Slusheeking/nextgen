@@ -395,6 +395,78 @@ class TradeModel:
             description="Use a tool provided by the Drift Detection MCP server",
         )
 
+    def start_of_day(self) -> Dict[str, Any]:
+        """
+        Execute start of day procedures:
+        1. Reset daily capital usage
+        2. Calculate available trading capital
+        3. Notify Decision Model of available capital
+        4. Set trading constraints for the day
+        
+        Returns:
+            Dictionary with start of day status and available capital
+        """
+        self.logger.info("Executing start of day procedures")
+        
+        try:
+            # Reset the daily usage key to 0
+            today_key = f"trade:daily_usage:{datetime.now().strftime('%Y-%m-%d')}"
+            self.redis_mcp.set_value(today_key, "0")
+            
+            # Calculate available trading capital
+            # First get account info from Alpaca
+            account_info = self.alpaca_mcp.get_account_info()
+            
+            if not account_info:
+                self.logger.error("Failed to retrieve account information")
+                return {"status": "failed", "reason": "Could not retrieve account information"}
+            
+            # Determine available capital (use cash, but respect daily limit)
+            cash = float(account_info.get("cash", 0))
+            available_capital = min(cash, self.daily_capital_limit)
+            
+            # Store current constraints
+            constraints = {
+                "daily_capital_limit": self.daily_capital_limit,
+                "available_capital": available_capital,
+                "no_overnight_positions": self.no_overnight_positions,
+                "market_hours": self.alpaca_mcp.get_market_hours(),
+                "date": datetime.now().strftime("%Y-%m-%d"),
+            }
+            
+            self.redis_mcp.set_json("trade:daily_constraints", constraints)
+            
+            # Notify Decision Model of available capital
+            self.notify_decision_model(
+                "capital_available",
+                {
+                    "amount": available_capital,
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "is_start_of_day": True
+                }
+            )
+            
+            self.logger.info(f"Start of day complete. Available capital: ${available_capital:.2f}")
+            
+            # Return status and available capital
+            return {
+                "status": "success",
+                "available_capital": available_capital,
+                "daily_capital_limit": self.daily_capital_limit,
+                "date": datetime.now().strftime("%Y-%m-%d")
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error during start of day procedure: {e}")
+            if self.monitoring:
+                self.monitoring.log_error(
+                    f"Start of day procedure failed: {e}",
+                    component="trade_model",
+                    action="start_of_day",
+                    error=str(e)
+                )
+            return {"status": "failed", "reason": str(e)}
+    
     def execute_trade(self, trade_decision: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a trade decision received from the Decision Model.
@@ -406,6 +478,7 @@ class TradeModel:
                 - quantity: Number of shares to trade
                 - order_type: 'market' or 'limit'
                 - limit_price: Price for limit orders (optional)
+                - capital_amount: Amount of capital allocated for this trade (required for buy)
 
         Returns:
             Dictionary with execution results
@@ -422,10 +495,45 @@ class TradeModel:
         quantity = trade_decision.get("quantity")
         order_type = trade_decision.get("order_type", "market")
         limit_price = trade_decision.get("limit_price")
+        capital_amount = trade_decision.get("capital_amount")
 
         # Validate parameters
         if not symbol or not action or not quantity:
             return {"status": "failed", "reason": "Missing required parameters"}
+        
+        # For buy orders, require capital_amount
+        if action == "buy" and not capital_amount:
+            return {"status": "failed", "reason": "Missing capital_amount for buy order"}
+        
+        # Check available capital for buy orders
+        if action == "buy":
+            daily_usage = self.position_manager.get_daily_usage()
+            available_today = self.daily_capital_limit - daily_usage
+            
+            if capital_amount > available_today:
+                return {
+                    "status": "failed", 
+                    "reason": f"Insufficient daily capital: requested ${capital_amount:.2f}, available ${available_today:.2f}"
+                }
+            
+            # For market orders, ensure quantity matches capital (approximate)
+            if order_type == "market" and quantity > 0:
+                try:
+                    quote = self.alpaca_mcp.get_latest_quote(symbol)
+                    if quote and "ask_price" in quote:
+                        estimated_cost = float(quote.get("ask_price")) * quantity
+                        # Allow 5% buffer for market price fluctuation
+                        if estimated_cost > capital_amount * 1.05:
+                            self.logger.warning(f"Quantity ({quantity}) may exceed allocated capital (${capital_amount:.2f})")
+                            # Adjust quantity to match capital
+                            adjusted_quantity = math.floor(capital_amount / float(quote.get("ask_price")))
+                            if adjusted_quantity > 0:
+                                self.logger.info(f"Adjusting quantity from {quantity} to {adjusted_quantity} to match capital")
+                                quantity = adjusted_quantity
+                            else:
+                                return {"status": "failed", "reason": "Insufficient capital for even one share"}
+                except Exception as e:
+                    self.logger.warning(f"Could not verify capital vs quantity: {e}")
 
         # Execute order based on type
         if order_type == "market":
@@ -491,6 +599,22 @@ class TradeModel:
             self.redis_mcp.add_to_stream(stream_key, event_record)
 
             self.logger.info(f"Notified Decision Model of {event_type} event")
+            
+            # Log more detailed information for important events
+            if event_type == "capital_available":
+                amount = event_data.get("amount", 0.0)
+                self.logger.info(f"Notified Decision Model of available capital: ${amount:.2f}")
+                self.monitoring.log_info(
+                    f"Capital available notification sent: ${amount:.2f}",
+                    component="trade_model",
+                    action="notify_capital_available",
+                    amount=amount
+                )
+            elif event_type == "position_closed":
+                symbol = event_data.get("symbol", "Unknown")
+                reason = event_data.get("reason", "Unknown")
+                self.logger.info(f"Notified Decision Model of closed position: {symbol} - Reason: {reason}")
+                
             return True
         except Exception as e:
             self.logger.error(f"Error notifying Decision Model: {e}")
@@ -1778,24 +1902,107 @@ class TradeAnalytics:
                 if t.get("filled_avg_price") is not None
             )
 
-            #
-            # Calculate P&L (simplified - assumes all positions opened/closed
-            # daily or ignores overnight)
-            # A more robust P&L requires tracking positions across days.
-            pnl = sell_volume - buy_volume
-
-            #
-            # Calculate win rate (requires pairing buy/sell trades, more
-            # complex)
-            #
-            # Simplified: count profitable trades (sell price > buy price for
-            # pairs)
-            #
-            # This requires a more sophisticated pairing logic. Placeholder for
-            # now.
-            win_rate = None
+            # Calculate P&L using position tracking
+            # Group trades by symbol to track positions properly
+            symbol_trades = {}
+            for trade in day_trades:
+                symbol = trade.get("symbol")
+                if symbol not in symbol_trades:
+                    symbol_trades[symbol] = []
+                symbol_trades[symbol].append(trade)
+            
+            # Calculate P&L for each symbol
+            symbol_pnl = {}
+            total_pnl = 0
+            
+            for symbol, trades in symbol_trades.items():
+                # Sort trades by filled time
+                sorted_trades = sorted(trades, key=lambda t: pd.to_datetime(t.get("filled_at", "1970-01-01")))
+                
+                # Track position for this symbol
+                position = 0
+                cost_basis = 0
+                symbol_realized_pnl = 0
+                
+                for trade in sorted_trades:
+                    side = trade.get("side")
+                    qty = float(trade.get("qty", 0))
+                    price = float(trade.get("filled_avg_price", 0))
+                    
+                    if side == "buy":
+                        # Update cost basis with weighted average
+                        if position == 0:
+                            cost_basis = price
+                        else:
+                            # Weighted average of existing position and new purchase
+                            cost_basis = ((position * cost_basis) + (qty * price)) / (position + qty)
+                        position += qty
+                    elif side == "sell":
+                        if position > 0:
+                            # Calculate realized P&L for this sale
+                            trade_pnl = qty * (price - cost_basis)
+                            symbol_realized_pnl += trade_pnl
+                            position -= qty
+                            
+                            # If position is now zero, reset cost basis
+                            if position <= 0:
+                                position = 0
+                                cost_basis = 0
+                
+                symbol_pnl[symbol] = symbol_realized_pnl
+                total_pnl += symbol_realized_pnl
+            
+            # Calculate win rate by pairing buy/sell trades
             profitable_trades = 0
             losing_trades = 0
+            
+            for symbol, trades in symbol_trades.items():
+                # Sort trades by filled time
+                sorted_trades = sorted(trades, key=lambda t: pd.to_datetime(t.get("filled_at", "1970-01-01")))
+                
+                # Create a queue of buy trades to match with sells
+                buy_queue = []
+                
+                for trade in sorted_trades:
+                    side = trade.get("side")
+                    qty = float(trade.get("qty", 0))
+                    price = float(trade.get("filled_avg_price", 0))
+                    
+                    if side == "buy":
+                        # Add to buy queue
+                        buy_queue.append((qty, price))
+                    elif side == "sell" and buy_queue:
+                        # Match with buys using FIFO method
+                        remaining_sell_qty = qty
+                        
+                        while remaining_sell_qty > 0 and buy_queue:
+                            buy_qty, buy_price = buy_queue[0]
+                            
+                            # Determine how much of this buy to use
+                            match_qty = min(buy_qty, remaining_sell_qty)
+                            
+                            # Calculate P&L for this match
+                            match_pnl = match_qty * (price - buy_price)
+                            
+                            # Update counters
+                            if match_pnl > 0:
+                                profitable_trades += 1
+                            elif match_pnl < 0:
+                                losing_trades += 1
+                            
+                            # Update remaining quantities
+                            remaining_sell_qty -= match_qty
+                            buy_qty -= match_qty
+                            
+                            # Update or remove the buy entry
+                            if buy_qty > 0:
+                                buy_queue[0] = (buy_qty, buy_price)
+                            else:
+                                buy_queue.pop(0)
+            
+            # Calculate win rate
+            total_closed_trades = profitable_trades + losing_trades
+            win_rate = (profitable_trades / total_closed_trades * 100) if total_closed_trades > 0 else None
 
             # Get unique symbols traded
             symbols_traded = set(t.get("symbol") for t in day_trades if t.get("symbol"))
@@ -1808,7 +2015,7 @@ class TradeAnalytics:
                 "sell_trades_count": len(sell_trades),
                 "buy_volume": round(buy_volume, 2),
                 "sell_volume": round(sell_volume, 2),
-                "estimated_pnl": round(pnl, 2),
+                "estimated_pnl": round(total_pnl, 2),
                 "win_rate_pct": win_rate,  # Placeholder
                 "profitable_trades": profitable_trades,  # Placeholder
                 "losing_trades": losing_trades,  # Placeholder

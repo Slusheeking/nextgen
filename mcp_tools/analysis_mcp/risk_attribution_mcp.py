@@ -12,6 +12,10 @@ import time
 from typing import Dict, List, Any, Optional
 from scipy import stats
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from mcp_tools.base_mcp_server import BaseMCPServer
 from monitoring import setup_monitoring

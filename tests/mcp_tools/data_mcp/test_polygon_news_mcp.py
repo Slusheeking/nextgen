@@ -16,10 +16,8 @@ import os
 import unittest
 import json
 import sys
-from unittest.mock import patch, MagicMock, call
-from datetime import datetime, timedelta
-import time
-from typing import Dict, Any, List
+from unittest.mock import patch, MagicMock
+from datetime import datetime
 
 # Create proper mocks for setup_monitoring
 mock_monitor = MagicMock()
@@ -247,7 +245,8 @@ class TestPolygonNewsMCP(unittest.TestCase):
             
             # Test with lowercase ticker
             params = {"ticker": "aapl", "limit": "10"}
-            result = self.news_mcp._handle_ticker_news(params)
+            # Call method but we're only testing that it doesn't raise an exception
+            self.news_mcp._handle_ticker_news(params)
             
             # Verify ticker was uppercased
             mock_execute.assert_called_once_with("/v2/reference/news", {"ticker": "AAPL", "limit": "10"})
