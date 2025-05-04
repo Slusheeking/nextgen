@@ -1,27 +1,29 @@
 """
 Redis Server Module
 
-This module implements a Redis server with Loki logging and Prometheus monitoring integration.
+This module implements a Redis server with integrated monitoring using the consolidated
+monitoring module that provides both Loki logging and Prometheus metrics.
 It provides a centralized Redis instance for the NextGen FinGPT system.
 """
 
 import os
 import time
-import redis
+# Import the Redis client library with an alias to avoid conflict with our local redis package
+import redis as redis_client
 import logging
 import threading
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-from prometheus.loki.loki_manager import LokiManager
-from prometheus.prometheus_manager import PrometheusManager
+# Import the consolidated monitoring module
+from monitoring import setup_monitoring
 
 class RedisServer:
     """
-    Redis Server with Loki logging and Prometheus monitoring integration.
+    Redis Server with integrated monitoring.
     
     This class provides a centralized Redis instance for the NextGen FinGPT system,
-    with integrated logging to Loki and metrics to Prometheus.
+    with integrated logging and metrics using the consolidated monitoring module.
     """
     
     _instance = None  # Singleton instance
@@ -43,7 +45,7 @@ class RedisServer:
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
-        Initialize the Redis server with Loki and Prometheus integration.
+        Initialize the Redis server with integrated monitoring.
         
         Args:
             config: Optional configuration dictionary to override environment variables
@@ -62,78 +64,48 @@ class RedisServer:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         
-        # Initialize Loki logger
-        self.loki_logger = self._setup_loki_logger()
-        
-        # Initialize Prometheus metrics
-        self.prometheus = self._setup_prometheus()
+        # Initialize monitoring
+        self.monitor, self.metrics = self._setup_monitoring()
         
         # Initialize Redis client
         self.redis_client = self._initialize_redis()
         
         # Register metrics
-        self._register_metrics()
+        if self.monitor:
+            self._register_metrics()
+            self._start_metrics_collection()
         
-        # Start metrics collection thread
-        self._start_metrics_collection()
-        
-        self.logger.info("Redis server initialized with Loki logging and Prometheus monitoring")
-        if self.loki_logger:
-            self.loki_logger.info("Redis server initialized", component="redis_server", action="initialization")
+        self.logger.info("Redis server initialized with integrated monitoring")
+        if self.monitor:
+            self.monitor.log_info("Redis server initialized", component="redis_server", action="initialization")
     
-    def _setup_loki_logger(self) -> Optional[LokiManager]:
+    def _setup_monitoring(self):
         """
-        Set up Loki logger for Redis server.
+        Set up monitoring for Redis server.
         
         Returns:
-            LokiManager instance or None if setup fails
+            Tuple of (MonitoringManager, metrics_dict)
         """
         try:
-            loki_url = self.config.get("loki_url") or os.getenv("LOKI_URL")
-            if not loki_url:
-                self.logger.warning("LOKI_URL not set, Loki logging disabled")
-                return None
+            # Get configuration from environment variables or config
+            enable_prometheus = self.config.get("enable_prometheus", True)
+            enable_loki = self.config.get("enable_loki", True)
             
-            loki_logger = LokiManager(
+            # Set up monitoring
+            monitor, metrics = setup_monitoring(
                 service_name="redis-server",
-                loki_url=loki_url,
-                loki_username=self.config.get("loki_username") or os.getenv("LOKI_USERNAME"),
-                loki_password=self.config.get("loki_password") or os.getenv("LOKI_PASSWORD")
+                enable_prometheus=enable_prometheus,
+                enable_loki=enable_loki,
+                default_labels={"component": "redis_server"}
             )
             
-            self.logger.info(f"Loki logging enabled at {loki_url}")
-            return loki_logger
+            self.logger.info("Monitoring initialized successfully")
+            return monitor, metrics
         except Exception as e:
-            self.logger.error(f"Failed to initialize Loki logger: {e}")
-            return None
+            self.logger.error(f"Failed to initialize monitoring: {e}")
+            return None, {}
     
-    def _setup_prometheus(self) -> Optional[PrometheusManager]:
-        """
-        Set up Prometheus metrics for Redis server.
-        
-        Returns:
-            PrometheusManager instance or None if setup fails
-        """
-        try:
-            metrics_port = self.config.get("metrics_port") or os.getenv("PROMETHEUS_METRICS_PORT")
-            if not metrics_port:
-                self.logger.warning("PROMETHEUS_METRICS_PORT not set, using default port 8010")
-                metrics_port = 8010
-            
-            prometheus = PrometheusManager(
-                service_name="redis-server",
-                expose_metrics=True,
-                metrics_port=int(metrics_port),
-                pushgateway_url=self.config.get("pushgateway_url") or os.getenv("PUSHGATEWAY_URL")
-            )
-            
-            self.logger.info(f"Prometheus metrics enabled on port {metrics_port}")
-            return prometheus
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Prometheus metrics: {e}")
-            return None
-    
-    def _initialize_redis(self) -> redis.Redis:
+    def _initialize_redis(self):
         """
         Initialize the Redis client.
         
@@ -148,7 +120,7 @@ class RedisServer:
             password = self.config.get("password") or os.getenv("REDIS_PASSWORD")
             
             # Create Redis client
-            client = redis.Redis(
+            client = redis_client.Redis(
                 host=host,
                 port=port,
                 db=db,
@@ -164,8 +136,8 @@ class RedisServer:
             client.ping()
             self.logger.info(f"Connected to Redis at {host}:{port}/{db}")
             
-            if self.loki_logger:
-                self.loki_logger.info(
+            if self.monitor:
+                self.monitor.log_info(
                     f"Connected to Redis at {host}:{port}/{db}",
                     component="redis_server",
                     action="connection",
@@ -177,8 +149,8 @@ class RedisServer:
             return client
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis client: {e}")
-            if self.loki_logger:
-                self.loki_logger.error(
+            if self.monitor:
+                self.monitor.log_error(
                     f"Failed to initialize Redis client: {e}",
                     component="redis_server",
                     action="connection_error",
@@ -190,51 +162,58 @@ class RedisServer:
             return None
     
     def _register_metrics(self):
-        """Register Prometheus metrics for Redis monitoring."""
-        if not self.prometheus:
+        """Register metrics for Redis monitoring."""
+        if not self.monitor:
             return
         
-        # Create metrics
-        self.prometheus.create_gauge(
-            "connected_clients",
-            "Number of client connections",
-        )
+        # Create metrics if they don't already exist
+        if 'connected_clients' not in self.metrics:
+            self.metrics['connected_clients'] = self.monitor.create_gauge(
+                "connected_clients",
+                "Number of client connections"
+            )
         
-        self.prometheus.create_gauge(
-            "used_memory",
-            "Used memory in bytes",
-        )
+        if 'used_memory' not in self.metrics:
+            self.metrics['used_memory'] = self.monitor.create_gauge(
+                "used_memory",
+                "Used memory in bytes"
+            )
         
-        self.prometheus.create_gauge(
-            "total_commands_processed",
-            "Total number of commands processed",
-        )
+        if 'total_commands_processed' not in self.metrics:
+            self.metrics['total_commands_processed'] = self.monitor.create_gauge(
+                "total_commands_processed",
+                "Total number of commands processed"
+            )
         
-        self.prometheus.create_gauge(
-            "keyspace_hits",
-            "Number of successful lookups of keys in the main dictionary",
-        )
+        if 'keyspace_hits' not in self.metrics:
+            self.metrics['keyspace_hits'] = self.monitor.create_gauge(
+                "keyspace_hits",
+                "Number of successful lookups of keys in the main dictionary"
+            )
         
-        self.prometheus.create_gauge(
-            "keyspace_misses",
-            "Number of failed lookups of keys in the main dictionary",
-        )
+        if 'keyspace_misses' not in self.metrics:
+            self.metrics['keyspace_misses'] = self.monitor.create_gauge(
+                "keyspace_misses",
+                "Number of failed lookups of keys in the main dictionary"
+            )
         
-        self.prometheus.create_counter(
-            "operations_total",
-            "Total number of Redis operations",
-            ["operation", "status"]
-        )
+        if 'operations_total' not in self.metrics:
+            self.metrics['operations_total'] = self.monitor.create_counter(
+                "operations_total",
+                "Total number of Redis operations",
+                ["operation", "status"]
+            )
         
-        self.prometheus.create_histogram(
-            "operation_duration_seconds",
-            "Duration of Redis operations in seconds",
-            ["operation"]
-        )
+        if 'operation_duration_seconds' not in self.metrics:
+            self.metrics['operation_duration_seconds'] = self.monitor.create_histogram(
+                "operation_duration_seconds",
+                "Duration of Redis operations in seconds",
+                ["operation"]
+            )
     
     def _start_metrics_collection(self):
         """Start a background thread to collect Redis metrics."""
-        if not self.prometheus or not self.redis_client:
+        if not self.monitor or not self.redis_client:
             return
         
         def collect_metrics():
@@ -244,26 +223,25 @@ class RedisServer:
                     info = self.redis_client.info()
                     
                     # Update metrics
-                    self.prometheus.set_gauge("connected_clients", info.get("connected_clients", 0))
-                    self.prometheus.set_gauge("used_memory", info.get("used_memory", 0))
-                    self.prometheus.set_gauge("total_commands_processed", info.get("total_commands_processed", 0))
-                    self.prometheus.set_gauge("keyspace_hits", info.get("keyspace_hits", 0))
-                    self.prometheus.set_gauge("keyspace_misses", info.get("keyspace_misses", 0))
+                    self.monitor.set_gauge("connected_clients", info.get("connected_clients", 0))
+                    self.monitor.set_gauge("used_memory", info.get("used_memory", 0))
+                    self.monitor.set_gauge("total_commands_processed", info.get("total_commands_processed", 0))
+                    self.monitor.set_gauge("keyspace_hits", info.get("keyspace_hits", 0))
+                    self.monitor.set_gauge("keyspace_misses", info.get("keyspace_misses", 0))
                     
-                    # Log to Loki
-                    if self.loki_logger:
-                        self.loki_logger.info(
-                            "Redis metrics collected",
-                            component="redis_server",
-                            action="metrics_collection",
-                            connected_clients=info.get("connected_clients", 0),
-                            used_memory_human=info.get("used_memory_human", "N/A"),
-                            total_commands_processed=info.get("total_commands_processed", 0)
-                        )
+                    # Log to monitoring
+                    self.monitor.log_info(
+                        "Redis metrics collected",
+                        component="redis_server",
+                        action="metrics_collection",
+                        connected_clients=info.get("connected_clients", 0),
+                        used_memory_human=info.get("used_memory_human", "N/A"),
+                        total_commands_processed=info.get("total_commands_processed", 0)
+                    )
                 except Exception as e:
                     self.logger.error(f"Error collecting Redis metrics: {e}")
-                    if self.loki_logger:
-                        self.loki_logger.error(
+                    if self.monitor:
+                        self.monitor.log_error(
                             f"Error collecting Redis metrics: {e}",
                             component="redis_server",
                             action="metrics_collection_error",
@@ -278,7 +256,7 @@ class RedisServer:
         metrics_thread.start()
         self.logger.info("Redis metrics collection started")
     
-    def get_client(self) -> redis.Redis:
+    def get_client(self):
         """
         Get the Redis client instance.
         
@@ -296,27 +274,18 @@ class RedisServer:
             duration: Duration of the operation in seconds
             status: Status of the operation ("success" or "error")
         """
-        if not self.prometheus:
+        if not self.monitor:
             return
         
         # Increment operation counter
-        self.prometheus.increment_counter(
-            "operations_total",
-            1,
-            operation=operation,
-            status=status
-        )
+        self.monitor.increment_counter("operations_total", 1, operation=operation, status=status)
         
         # Record operation duration
-        self.prometheus.observe_histogram(
-            "operation_duration_seconds",
-            duration,
-            operation=operation
-        )
+        self.monitor.observe_histogram("operation_duration_seconds", duration, operation=operation)
     
     def log_operation(self, operation: str, key: str, status: str, error: Optional[str] = None):
         """
-        Log a Redis operation to Loki.
+        Log a Redis operation.
         
         Args:
             operation: Name of the operation (e.g., "get", "set")
@@ -324,7 +293,7 @@ class RedisServer:
             status: Status of the operation ("success" or "error")
             error: Error message if status is "error"
         """
-        if not self.loki_logger:
+        if not self.monitor:
             return
         
         log_data = {
@@ -336,9 +305,9 @@ class RedisServer:
         
         if error:
             log_data["error"] = error
-            self.loki_logger.error(f"Redis operation {operation} failed: {error}", **log_data)
+            self.monitor.log_error(f"Redis operation {operation} failed: {error}", **log_data)
         else:
-            self.loki_logger.info(f"Redis operation {operation} completed", **log_data)
+            self.monitor.log_info(f"Redis operation {operation} completed", **log_data)
 
 
 # Example usage

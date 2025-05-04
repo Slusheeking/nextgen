@@ -9,6 +9,7 @@ import os
 import logging
 import json
 import time
+from monitoring import setup_monitoring
 from typing import Dict, List, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta
 import pandas as pd
@@ -64,6 +65,16 @@ class TradeModel:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="trade-model",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "trade_model"}
+        )
+        if self.monitor:
+            self.monitor.log_info("TradeModel initialized", component="trade_model", action="initialization")
+
         # Initialize configuration
         self.config = config or {}
 
@@ -94,6 +105,8 @@ class TradeModel:
         self.agents = self._setup_agents()
 
         self.logger.info("Trade Model initialized")
+        if self.monitor:
+            self.monitor.log_info("Trade Model initialized", component="trade_model", action="init_agents")
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -186,7 +199,7 @@ class TradeModel:
         @register_function(
             name="execute_market_order",
             description="Execute a market order",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol"
@@ -208,7 +221,7 @@ class TradeModel:
         @register_function(
             name="execute_limit_order",
             description="Execute a limit order",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol"
@@ -235,7 +248,7 @@ class TradeModel:
         @register_function(
             name="start_position_monitoring",
             description="Begin monitoring a new position",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol"
@@ -253,7 +266,7 @@ class TradeModel:
         @register_function(
             name="check_exit_conditions",
             description="Check if exit conditions are met for a position",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol"
@@ -276,7 +289,7 @@ class TradeModel:
         @register_function(
             name="get_position",
             description="Get position for a specific symbol",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol"
@@ -299,7 +312,7 @@ class TradeModel:
         @register_function(
             name="get_trade_history",
             description="Get historical trades",
-            parameters={
+            parameter_schema={
                 "symbol": {
                     "type": "string",
                     "description": "Stock symbol (optional)",
@@ -319,7 +332,7 @@ class TradeModel:
         @register_function(
             name="calculate_execution_quality",
             description="Calculate execution quality metrics",
-            parameters={
+            parameter_schema={
                 "order_id": {
                     "type": "string",
                     "description": "Order ID"
@@ -354,7 +367,7 @@ class TradeModel:
         @register_function(
             name="use_alpaca_tool",
             description="Use a tool provided by the Alpaca MCP server",
-            parameters={
+            parameter_schema={
                 "tool_name": {
                     "type": "string",
                     "description": "Name of the tool to execute"
@@ -372,7 +385,7 @@ class TradeModel:
         @register_function(
             name="use_redis_tool",
             description="Use a tool provided by the Redis MCP server",
-            parameters={
+            parameter_schema={
                 "tool_name": {
                     "type": "string",
                     "description": "Name of the tool to execute"
@@ -390,7 +403,7 @@ class TradeModel:
         @register_function(
             name="use_peak_detection_tool",
             description="Use a tool provided by the Peak Detection MCP server",
-            parameters={
+            parameter_schema={
                 "tool_name": {
                     "type": "string",
                     "description": "Name of the tool to execute"
@@ -500,6 +513,8 @@ class TradeModel:
             return clock.get("is_open", False)
         except Exception as e:
             self.logger.error(f"Error checking market hours: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error checking market hours: {e}", component="trade_model", action="market_hours_error", error=str(e))
             return False
 
     def notify_decision_model(self, event_type: str, event_data: Dict[str, Any]) -> bool:
@@ -533,6 +548,8 @@ class TradeModel:
             return True
         except Exception as e:
             self.logger.error(f"Error notifying Decision Model: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error notifying Decision Model: {e}", component="trade_model", action="notify_decision_model_error", error=str(e))
             return False
 
     def run_monitoring_cycle(self) -> Dict[str, Any]:
@@ -587,6 +604,8 @@ class TradeModel:
                         })
             except Exception as e:
                 self.logger.error(f"Error monitoring position {symbol}: {e}")
+                if self.monitor:
+                    self.monitor.log_error(f"Error monitoring position {symbol}: {e}", component="trade_model", action="monitoring_error", error=str(e), symbol=symbol)
                 results["errors"] += 1
 
         self.logger.info(f"Monitoring cycle completed: {results}")
@@ -1037,29 +1056,64 @@ class TradePositionManager:
         self.trade_model = trade_model
         self.logger = trade_model.logger
         self._daily_usage_key = f"trade:daily_usage:{datetime.now().strftime('%Y-%m-%d')}"
+        
+        # Redis keys for portfolio data
+        self._portfolio_prefix = "portfolio:"
+        self._account_info_key = f"{self._portfolio_prefix}account_info"
+        self._positions_key = f"{self._portfolio_prefix}positions"
+        self._positions_by_symbol_prefix = f"{self._portfolio_prefix}position:"
+        self._portfolio_summary_key = f"{self._portfolio_prefix}summary"
+        self._last_updated_key = f"{self._portfolio_prefix}last_updated"
+        
+        # Default TTL for portfolio data (15 minutes)
+        self._portfolio_data_ttl = 900
+        
+        # Initialize portfolio data in Redis
+        self.sync_portfolio_data()
 
     def get_positions(self) -> List[Dict[str, Any]]:
         """
-        Get all current positions from Alpaca.
+        Get all current positions from Redis or Alpaca.
+        
+        This method first tries to get positions from Redis.
+        If not found or expired, it fetches from Alpaca and updates Redis.
 
         Returns:
             List of position dictionaries
         """
         try:
-            positions = self.trade_model.alpaca_mcp.get_all_positions()
-            # Convert Alpaca position objects to dictionaries if necessary
-            # Ensure numeric types are floats
-            return [
-                 {k: float(v) if isinstance(v, (int, str)) and k in ['qty', 'avg_entry_price', 'market_value', 'cost_basis', 'unrealized_pl', 'unrealized_plpc', 'current_price'] else v for k, v in pos._raw.items()}
-                 for pos in positions
-            ] if positions else []
+            # Try to get from Redis first
+            positions = self.get_positions_from_redis()
+            
+            # If not found in Redis or expired, fetch from Alpaca
+            if not positions:
+                self.logger.info("Positions not found in Redis, fetching from Alpaca")
+                positions = self.get_positions_from_alpaca()
+                
+                if positions:
+                    # Store in Redis with TTL
+                    self.trade_model.redis_mcp.set_json(self._positions_key, positions)
+                    self.trade_model.redis_mcp.expire(self._positions_key, self._portfolio_data_ttl)
+                    
+                    # Store individual positions by symbol
+                    for position in positions:
+                        symbol = position.get("symbol")
+                        if symbol:
+                            key = f"{self._positions_by_symbol_prefix}{symbol}"
+                            self.trade_model.redis_mcp.set_json(key, position)
+                            self.trade_model.redis_mcp.expire(key, self._portfolio_data_ttl)
+            
+            return positions
         except Exception as e:
             self.logger.error(f"Error getting positions: {e}")
             return []
 
     def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        Get position for a specific symbol from Alpaca.
+        Get position for a specific symbol from Redis or Alpaca.
+        
+        This method first tries to get the position from Redis.
+        If not found or expired, it fetches from Alpaca and updates Redis.
 
         Args:
             symbol: Stock symbol
@@ -1068,36 +1122,78 @@ class TradePositionManager:
             Position dictionary or None if not found
         """
         try:
-            position = self.trade_model.alpaca_mcp.get_position(symbol)
-            if position:
-                # Ensure numeric types are floats
-                return {k: float(v) if isinstance(v, (int, str)) and k in ['qty', 'avg_entry_price', 'market_value', 'cost_basis', 'unrealized_pl', 'unrealized_plpc', 'current_price'] else v for k, v in position._raw.items()}
-            else:
-                return None
+            # Try to get from Redis first
+            key = f"{self._positions_by_symbol_prefix}{symbol}"
+            position = self.trade_model.redis_mcp.get_json(key)
+            
+            # If not found in Redis or expired, fetch from Alpaca
+            if not position:
+                self.logger.info(f"Position for {symbol} not found in Redis, fetching from Alpaca")
+                try:
+                    alpaca_position = self.trade_model.alpaca_mcp.get_position(symbol)
+                    if alpaca_position:
+                        # Ensure numeric types are floats
+                        position = {k: float(v) if isinstance(v, (int, str)) and k in ['qty', 'avg_entry_price', 'market_value', 'cost_basis', 'unrealized_pl', 'unrealized_plpc', 'current_price'] else v for k, v in alpaca_position._raw.items()}
+                        
+                        # Store in Redis with TTL
+                        self.trade_model.redis_mcp.set_json(key, position)
+                        self.trade_model.redis_mcp.expire(key, self._portfolio_data_ttl)
+                except Exception as e:
+                    # Alpaca API might raise an exception if position doesn't exist
+                    if "position not found" in str(e).lower():
+                        self.logger.info(f"No position found for symbol {symbol}.")
+                        return None
+                    raise  # Re-raise for other exceptions
+            
+            return position
         except Exception as e:
-            # Alpaca API might raise an exception if position doesn't exist
-            if "position not found" in str(e).lower():
-                self.logger.info(f"No position found for symbol {symbol}.")
-                return None
             self.logger.error(f"Error getting position for {symbol}: {e}")
             return None
 
     def get_portfolio_constraints(self) -> Dict[str, Any]:
         """
-        Get current portfolio constraints, including daily capital usage.
+        Get current portfolio constraints and account information.
+        
+        This method combines daily capital usage with account information
+        from Redis to provide a comprehensive view of portfolio constraints.
 
         Returns:
-            Dictionary with portfolio constraints
+            Dictionary with portfolio constraints and account information
         """
+        # Get daily usage
         daily_usage = self.get_daily_usage()
         remaining_capital = self.trade_model.daily_capital_limit - daily_usage
-
-        return {
+        
+        # Get account info from Redis
+        account_info = self.get_account_info()
+        
+        # Get portfolio summary
+        portfolio_summary = self.trade_model.redis_mcp.get_json(self._portfolio_summary_key) or {}
+        
+        # Combine all data
+        constraints = {
             "daily_capital_limit": self.trade_model.daily_capital_limit,
             "daily_capital_used": daily_usage,
             "remaining_daily_capital": remaining_capital,
-            "no_overnight_positions": self.trade_model.no_overnight_positions
+            "no_overnight_positions": self.trade_model.no_overnight_positions,
+            "last_updated": self.trade_model.redis_mcp.get_value(self._last_updated_key) or datetime.now().isoformat()
         }
+        
+        # Add account info
+        if account_info:
+            constraints["buying_power"] = float(account_info.get("buying_power", 0))
+            constraints["portfolio_value"] = float(account_info.get("portfolio_value", 0))
+            constraints["cash"] = float(account_info.get("cash", 0))
+            constraints["equity"] = float(account_info.get("equity", 0))
+        
+        # Add portfolio summary
+        if portfolio_summary:
+            constraints["total_positions"] = portfolio_summary.get("total_positions", 0)
+            constraints["total_market_value"] = portfolio_summary.get("total_market_value", 0.0)
+            constraints["total_unrealized_pl"] = portfolio_summary.get("total_unrealized_pl", 0.0)
+            constraints["total_unrealized_plpc"] = portfolio_summary.get("total_unrealized_plpc", 0.0)
+        
+        return constraints
 
     def update_daily_usage(self, amount: float) -> float:
         """
@@ -1134,6 +1230,213 @@ class TradePositionManager:
         except Exception as e:
             self.logger.error(f"Error getting daily usage: {e}")
             return 0.0
+            
+    def get_account_info(self) -> Dict[str, Any]:
+        """
+        Get account information from Redis or Alpaca.
+        
+        This method first tries to get account information from Redis.
+        If not found or expired, it fetches from Alpaca and updates Redis.
+        
+        Returns:
+            Dictionary with account information
+        """
+        try:
+            # Try to get from Redis first
+            account_info = self.trade_model.redis_mcp.get_json(self._account_info_key)
+            
+            # If not found in Redis or expired, fetch from Alpaca
+            if not account_info:
+                self.logger.info("Account info not found in Redis, fetching from Alpaca")
+                account_info = self.trade_model.alpaca_mcp.get_account_info()
+                
+                if account_info:
+                    # Store in Redis with TTL
+                    self.trade_model.redis_mcp.set_json(self._account_info_key, account_info)
+                    self.trade_model.redis_mcp.expire(self._account_info_key, self._portfolio_data_ttl)
+                    
+                    # Also store individual values for easier access
+                    if "buying_power" in account_info:
+                        self.trade_model.redis_mcp.set_value(
+                            f"{self._portfolio_prefix}buying_power",
+                            str(account_info["buying_power"])
+                        )
+                        self.trade_model.redis_mcp.expire(
+                            f"{self._portfolio_prefix}buying_power",
+                            self._portfolio_data_ttl
+                        )
+                    
+                    if "portfolio_value" in account_info:
+                        self.trade_model.redis_mcp.set_value(
+                            f"{self._portfolio_prefix}portfolio_value",
+                            str(account_info["portfolio_value"])
+                        )
+                        self.trade_model.redis_mcp.expire(
+                            f"{self._portfolio_prefix}portfolio_value",
+                            self._portfolio_data_ttl
+                        )
+                    
+                    if "cash" in account_info:
+                        self.trade_model.redis_mcp.set_value(
+                            f"{self._portfolio_prefix}cash",
+                            str(account_info["cash"])
+                        )
+                        self.trade_model.redis_mcp.expire(
+                            f"{self._portfolio_prefix}cash",
+                            self._portfolio_data_ttl
+                        )
+                    
+                    # Update last updated timestamp
+                    self.trade_model.redis_mcp.set_value(
+                        self._last_updated_key,
+                        datetime.now().isoformat()
+                    )
+                    self.trade_model.redis_mcp.expire(
+                        self._last_updated_key,
+                        self._portfolio_data_ttl
+                    )
+            
+            return account_info or {}
+            
+        except Exception as e:
+            self.logger.error(f"Error getting account info: {e}")
+            return {}
+    
+    def sync_portfolio_data(self) -> bool:
+        """
+        Synchronize all portfolio data from Alpaca to Redis.
+        
+        This method fetches account information and positions from Alpaca
+        and stores them in Redis for other components to access.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get account information
+            account_info = self.trade_model.alpaca_mcp.get_account_info()
+            
+            # Get positions
+            positions = self.get_positions_from_alpaca()
+            
+            # Calculate portfolio summary
+            portfolio_summary = self._calculate_portfolio_summary(account_info, positions)
+            
+            # Store in Redis
+            if account_info:
+                self.trade_model.redis_mcp.set_json(self._account_info_key, account_info)
+                self.trade_model.redis_mcp.expire(self._account_info_key, self._portfolio_data_ttl)
+            
+            if positions:
+                self.trade_model.redis_mcp.set_json(self._positions_key, positions)
+                self.trade_model.redis_mcp.expire(self._positions_key, self._portfolio_data_ttl)
+                
+                # Store individual positions by symbol
+                for position in positions:
+                    symbol = position.get("symbol")
+                    if symbol:
+                        key = f"{self._positions_by_symbol_prefix}{symbol}"
+                        self.trade_model.redis_mcp.set_json(key, position)
+                        self.trade_model.redis_mcp.expire(key, self._portfolio_data_ttl)
+            
+            if portfolio_summary:
+                self.trade_model.redis_mcp.set_json(self._portfolio_summary_key, portfolio_summary)
+                self.trade_model.redis_mcp.expire(self._portfolio_summary_key, self._portfolio_data_ttl)
+            
+            # Update last updated timestamp
+            self.trade_model.redis_mcp.set_value(
+                self._last_updated_key,
+                datetime.now().isoformat()
+            )
+            self.trade_model.redis_mcp.expire(
+                self._last_updated_key,
+                self._portfolio_data_ttl
+            )
+            
+            self.logger.info("Portfolio data synchronized to Redis")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error synchronizing portfolio data: {e}")
+            return False
+    
+    def get_positions_from_alpaca(self) -> List[Dict[str, Any]]:
+        """
+        Get positions directly from Alpaca.
+        
+        Returns:
+            List of position dictionaries
+        """
+        try:
+            positions = self.trade_model.alpaca_mcp.get_all_positions()
+            # Convert Alpaca position objects to dictionaries if necessary
+            # Ensure numeric types are floats
+            return [
+                {k: float(v) if isinstance(v, (int, str)) and k in ['qty', 'avg_entry_price', 'market_value', 'cost_basis', 'unrealized_pl', 'unrealized_plpc', 'current_price'] else v for k, v in pos._raw.items()}
+                for pos in positions
+            ] if positions else []
+        except Exception as e:
+            self.logger.error(f"Error getting positions from Alpaca: {e}")
+            return []
+    
+    def get_positions_from_redis(self) -> List[Dict[str, Any]]:
+        """
+        Get positions from Redis.
+        
+        Returns:
+            List of position dictionaries
+        """
+        try:
+            positions = self.trade_model.redis_mcp.get_json(self._positions_key)
+            return positions or []
+        except Exception as e:
+            self.logger.error(f"Error getting positions from Redis: {e}")
+            return []
+    
+    def _calculate_portfolio_summary(self, account_info: Dict[str, Any], positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Calculate portfolio summary metrics.
+        
+        Args:
+            account_info: Account information dictionary
+            positions: List of position dictionaries
+            
+        Returns:
+            Dictionary with portfolio summary metrics
+        """
+        summary = {
+            "total_positions": len(positions),
+            "total_market_value": 0.0,
+            "total_cost_basis": 0.0,
+            "total_unrealized_pl": 0.0,
+            "total_unrealized_plpc": 0.0,
+            "positions_by_sector": {},
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add account info
+        if account_info:
+            summary["equity"] = float(account_info.get("equity", 0))
+            summary["buying_power"] = float(account_info.get("buying_power", 0))
+            summary["cash"] = float(account_info.get("cash", 0))
+        
+        # Calculate position totals
+        for position in positions:
+            summary["total_market_value"] += float(position.get("market_value", 0))
+            summary["total_cost_basis"] += float(position.get("cost_basis", 0))
+            summary["total_unrealized_pl"] += float(position.get("unrealized_pl", 0))
+            
+            # Group by sector if available
+            sector = position.get("sector", "Unknown")
+            if sector not in summary["positions_by_sector"]:
+                summary["positions_by_sector"][sector] = 0
+            summary["positions_by_sector"][sector] += 1
+        
+        # Calculate percentage P&L
+        if summary["total_cost_basis"] > 0:
+            summary["total_unrealized_plpc"] = (summary["total_unrealized_pl"] / summary["total_cost_basis"]) * 100
+        
+        return summary
 
 
 class TradeAnalytics:

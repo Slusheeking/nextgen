@@ -13,6 +13,7 @@ import requests
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 import pandas as pd
+from monitoring import setup_monitoring
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -37,6 +38,16 @@ class UnusualWhalesMCP(BaseDataMCP):
         """
         super().__init__(name="unusual_whales_mcp", config=config)
         
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="unusual-whales-mcp",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "unusual_whales_mcp"}
+        )
+        if self.monitor:
+            self.monitor.log_info("UnusualWhalesMCP initialized", component="unusual_whales_mcp", action="initialization")
+        
         # Initialize client configuration
         self.whales_client = self._initialize_client()
         
@@ -47,6 +58,8 @@ class UnusualWhalesMCP(BaseDataMCP):
         self._register_specific_tools()
         
         self.logger.info("UnusualWhalesMCP initialized with %d endpoints", len(self.endpoints))
+        if self.monitor:
+            self.monitor.log_info(f"UnusualWhalesMCP initialized with {len(self.endpoints)} endpoints", component="unusual_whales_mcp", action="init_endpoints")
     
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -73,6 +86,8 @@ class UnusualWhalesMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Unusual Whales client: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Failed to initialize Unusual Whales client: {e}", component="unusual_whales_mcp", action="client_init_error", error=str(e))
             return None
     
     def _verify_api_connectivity(self, api_key: str, base_url: str) -> bool:
@@ -107,6 +122,8 @@ class UnusualWhalesMCP(BaseDataMCP):
                 
         except Exception as e:
             self.logger.error(f"API connectivity check failed: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"API connectivity check failed: {e}", component="unusual_whales_mcp", action="api_connectivity_error", error=str(e), base_url=base_url)
             self.logger.error(f"Please verify the API base URL ({base_url}) is accessible")
             return False
     

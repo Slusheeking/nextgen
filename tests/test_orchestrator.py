@@ -37,7 +37,7 @@ load_dotenv(dotenv_path=project_root / ".env")
 
 # Import the modules to test
 from fingpt.autogen_orchestrator.autogen_model import AutoGenOrchestrator, create_orchestrator
-from fingpt.nextgen_selection.selection_model import SelectionModel
+from fingpt.nextgen_select.select_model import SelectionModel
 
 # Sample market data for testing
 SAMPLE_MARKET_DATA = {

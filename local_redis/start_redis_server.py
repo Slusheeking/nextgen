@@ -16,7 +16,7 @@ import signal
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import the Redis server
-from redis.redis_server import RedisServer
+from local_redis.redis_server import RedisServer
 
 # Configure logging
 logging.basicConfig(

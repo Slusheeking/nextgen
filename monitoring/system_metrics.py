@@ -31,8 +31,8 @@ try:
 except ImportError:
     NVML_AVAILABLE = False
 
-from prometheus.prometheus_manager import PrometheusManager
-from prometheus.loki.loki_manager import LokiManager
+from monitoring.prometheus_manager import PrometheusManager
+from monitoring.loki.loki_manager import LokiManager
 
 # Configure logging
 logging.basicConfig(

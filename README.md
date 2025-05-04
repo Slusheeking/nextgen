@@ -54,7 +54,7 @@ nextgen/
 │   └── loki_manager.py       # Loki logging client
 ├── prometheus/               # Metrics and monitoring
 │   └── prometheus_manager.py # Prometheus metrics manager
-├── redis/                    # Caching and messaging
+├── local_redis/              # Caching and messaging
 │   └── redis_manager.py      # Redis client and manager
 └── systemd/                  # System deployment configuration
 ```

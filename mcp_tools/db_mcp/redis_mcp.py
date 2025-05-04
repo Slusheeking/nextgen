@@ -3,21 +3,21 @@ Redis MCP Server
 
 This module implements a Model Context Protocol (MCP) server for Redis,
 providing access to Redis for state management, caching, and pub/sub messaging.
-It connects to the official Redis server with monitoring integration.
+It connects to the official Redis server with integrated monitoring.
 """
 
 import os
 import logging
 import time
 import json
-import redis
+# Import the Redis client library with an alias to avoid conflict with our local redis package
+import redis as redis_client
 from typing import Dict, List, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from mcp_tools.base_mcp_server import BaseMCPServer
-from prometheus.prometheus_manager import PrometheusManager
-from prometheus.loki.loki_manager import LokiManager
+from monitoring import setup_monitoring
 
 class RedisMCP(BaseMCPServer):
     """
@@ -45,8 +45,7 @@ class RedisMCP(BaseMCPServer):
         super().__init__(name="redis_mcp", config=config)
         
         # Initialize monitoring
-        self.prometheus = self._setup_prometheus()
-        self.loki_logger = self._setup_loki_logger()
+        self.monitor, self.metrics = self._setup_monitoring()
         
         # Initialize Redis client
         self.redis_client = self._initialize_client()
@@ -58,8 +57,10 @@ class RedisMCP(BaseMCPServer):
         self._register_specific_tools()
         
         self.logger.info("RedisMCP initialized with integrated Redis server")
+        if self.monitor:
+            self.monitor.log_info("RedisMCP initialized", component="redis_mcp", action="initialization")
     
-    def _initialize_client(self) -> redis.Redis:
+    def _initialize_client(self) -> redis_client.Redis:
         """
         Initialize the Redis client to connect to the official Redis server.
         
@@ -75,7 +76,7 @@ class RedisMCP(BaseMCPServer):
             decode_responses = self.config.get("decode_responses", True)
             
             # Create Redis client
-            client = redis.Redis(
+            client = redis_client.Redis(
                 host=host,
                 port=port,
                 db=db,
@@ -91,10 +92,27 @@ class RedisMCP(BaseMCPServer):
             client.ping()
             self.logger.info(f"Connected to Redis at {host}:{port}/{db}")
             
+            if self.monitor:
+                self.monitor.log_info(
+                    f"Connected to Redis at {host}:{port}/{db}",
+                    component="redis_mcp",
+                    action="connection",
+                    host=host,
+                    port=port,
+                    db=db
+                )
+            
             return client
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis client: {e}")
+            if self.monitor:
+                self.monitor.log_error(
+                    f"Failed to initialize Redis client: {e}",
+                    component="redis_mcp",
+                    action="connection_error",
+                    error=str(e)
+                )
             self.logger.warning("Using dummy client for testing/development")
             return None
     
@@ -263,104 +281,91 @@ class RedisMCP(BaseMCPServer):
         self.register_tool(self.get_json)
         self.register_tool(self.increment_hash_value)
     
-    # Handler methods for specific endpoints
-    
-    def _setup_prometheus(self) -> Optional[PrometheusManager]:
+    def _setup_monitoring(self):
         """
-        Set up Prometheus metrics for Redis MCP.
+        Set up monitoring for Redis MCP.
         
         Returns:
-            PrometheusManager instance or None if setup fails
+            Tuple of (MonitoringManager, metrics_dict)
         """
         try:
+            # Get configuration from environment variables or config
+            enable_prometheus = self.config.get("enable_prometheus", True)
+            enable_loki = self.config.get("enable_loki", True)
             metrics_port = self.config.get("metrics_port") or os.getenv("PROMETHEUS_METRICS_PORT")
-            if not metrics_port:
-                self.logger.warning("PROMETHEUS_METRICS_PORT not set, using default port 8012")
-                metrics_port = 8012  # Use a different port than Redis server
             
-            prometheus = PrometheusManager(
+            # Use a different port than Redis server if not specified
+            if not metrics_port:
+                metrics_port = 8012
+                self.logger.warning(f"PROMETHEUS_METRICS_PORT not set, using default port {metrics_port}")
+            
+            # Set up monitoring
+            monitor, metrics = setup_monitoring(
                 service_name="redis-mcp",
-                expose_metrics=True,
-                metrics_port=int(metrics_port),
-                pushgateway_url=self.config.get("pushgateway_url") or os.getenv("PUSHGATEWAY_URL")
+                enable_prometheus=enable_prometheus,
+                enable_loki=enable_loki,
+                default_labels={"component": "redis_mcp"},
+                metrics_port=int(metrics_port)
             )
             
             # Register metrics
-            prometheus.create_counter(
-                "redis_operations_total",
-                "Total number of Redis operations",
-                ["operation", "status"]
-            )
+            if 'redis_operations_total' not in metrics:
+                metrics['redis_operations_total'] = monitor.create_counter(
+                    "redis_operations_total",
+                    "Total number of Redis operations",
+                    ["operation", "status"]
+                )
             
-            prometheus.create_histogram(
-                "redis_operation_duration_seconds",
-                "Duration of Redis operations in seconds",
-                ["operation"]
-            )
+            if 'redis_operation_duration_seconds' not in metrics:
+                metrics['redis_operation_duration_seconds'] = monitor.create_histogram(
+                    "redis_operation_duration_seconds",
+                    "Duration of Redis operations in seconds",
+                    ["operation"]
+                )
             
-            self.logger.info(f"Prometheus metrics enabled on port {metrics_port}")
-            return prometheus
+            self.logger.info("Monitoring initialized successfully")
+            return monitor, metrics
         except Exception as e:
-            self.logger.error(f"Failed to initialize Prometheus metrics: {e}")
-            return None
-    
-    def _setup_loki_logger(self) -> Optional[LokiManager]:
-        """
-        Set up Loki logger for Redis MCP.
-        
-        Returns:
-            LokiManager instance or None if setup fails
-        """
-        try:
-            loki_url = self.config.get("loki_url") or os.getenv("LOKI_URL")
-            if not loki_url:
-                self.logger.warning("LOKI_URL not set, Loki logging disabled")
-                return None
-            
-            loki_logger = LokiManager(
-                service_name="redis-mcp",
-                loki_url=loki_url,
-                loki_username=self.config.get("loki_username") or os.getenv("LOKI_USERNAME"),
-                loki_password=self.config.get("loki_password") or os.getenv("LOKI_PASSWORD")
-            )
-            
-            self.logger.info(f"Loki logging enabled at {loki_url}")
-            return loki_logger
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Loki logger: {e}")
-            return None
+            self.logger.error(f"Failed to initialize monitoring: {e}")
+            return None, {}
     
     def _record_metrics(self, operation: str, duration: float, status: str = "success"):
         """Record metrics for Redis operations."""
-        if self.prometheus:
-            self.prometheus.increment_counter(
-                "redis_operations_total",
-                1,
-                operation=operation,
-                status=status
-            )
-            
-            self.prometheus.observe_histogram(
-                "redis_operation_duration_seconds",
-                duration,
-                operation=operation
-            )
+        if not self.monitor:
+            return
+        
+        # Increment operation counter
+        self.monitor.increment_counter(
+            "redis_operations_total",
+            1,
+            operation=operation,
+            status=status
+        )
+        
+        # Record operation duration
+        self.monitor.observe_histogram(
+            "redis_operation_duration_seconds",
+            duration,
+            operation=operation
+        )
     
     def _log_operation(self, operation: str, key: str, status: str, error: Optional[str] = None):
-        """Log Redis operations to Loki."""
-        if self.loki_logger:
-            log_data = {
-                "component": "redis_mcp",
-                "action": operation,
-                "key": key,
-                "status": status
-            }
-            
-            if error:
-                log_data["error"] = error
-                self.loki_logger.error(f"Redis operation {operation} failed: {error}", **log_data)
-            else:
-                self.loki_logger.info(f"Redis operation {operation} completed", **log_data)
+        """Log Redis operations."""
+        if not self.monitor:
+            return
+        
+        log_data = {
+            "component": "redis_mcp",
+            "action": operation,
+            "key": key,
+            "status": status
+        }
+        
+        if error:
+            log_data["error"] = error
+            self.monitor.log_error(f"Redis operation {operation} failed: {error}", **log_data)
+        else:
+            self.monitor.log_info(f"Redis operation {operation} completed", **log_data)
 
     def _handle_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get endpoint."""
@@ -813,7 +818,7 @@ class RedisMCP(BaseMCPServer):
             List of values
         """
         return self.fetch_data("lrange", {"key": key, "start": start, "stop": stop}).get("values", [])
-    
+
     def add_to_list(self, key: str, value: Any, prepend: bool = False) -> int:
         """
         Add a value to a list.
@@ -830,7 +835,7 @@ class RedisMCP(BaseMCPServer):
             return self.fetch_data("lpush", {"key": key, "value": value}).get("length", 0)
         else:
             return self.fetch_data("rpush", {"key": key, "value": value}).get("length", 0)
-    
+
     def get_sorted_set(self, key: str, start: int = 0, stop: int = -1, reverse: bool = True, with_scores: bool = True) -> List[Any]:
         """
         Get a range of values from a sorted set.
@@ -850,7 +855,7 @@ class RedisMCP(BaseMCPServer):
             return self.fetch_data("zrevrange", params).get("values", [])
         else:
             return self.fetch_data("zrange", params).get("values", [])
-    
+
     def add_to_sorted_set(self, key: str, value: Any, score: float) -> bool:
         """
         Add a value to a sorted set.
@@ -864,7 +869,7 @@ class RedisMCP(BaseMCPServer):
             True if the value was added, False otherwise
         """
         return self.fetch_data("zadd", {"key": key, "value": value, "score": score}).get("added", False)
-    
+
     def publish_message(self, channel: str, message: Any) -> int:
         """
         Publish a message to a channel.
@@ -877,7 +882,7 @@ class RedisMCP(BaseMCPServer):
             Number of clients that received the message
         """
         return self.fetch_data("publish", {"channel": channel, "message": message}).get("receivers", 0)
-    
+
     def set_json(self, key: str, data: Any, expiry: Optional[int] = None) -> bool:
         """
         Set a JSON value in Redis.
@@ -894,7 +899,7 @@ class RedisMCP(BaseMCPServer):
         if expiry:
             params["expiry"] = expiry
         return "error" not in self.fetch_data("json_set", params)
-    
+
     def get_json(self, key: str) -> Any:
         """
         Get a JSON value from Redis.
@@ -906,7 +911,7 @@ class RedisMCP(BaseMCPServer):
             Deserialized JSON data or None if key doesn't exist
         """
         return self.fetch_data("json_get", {"key": key}).get("data")
-    
+
     def increment_hash_value(self, key: str, field: str, amount: int = 1) -> int:
         """
         Increment a value in a hash.

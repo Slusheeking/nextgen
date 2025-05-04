@@ -7,7 +7,7 @@ Wants=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/nextgen
-ExecStart=/usr/bin/python3 /home/ubuntu/nextgen/redis/start_redis_server.py
+ExecStart=/usr/bin/python3 /home/ubuntu/nextgen/local_redis/start_redis_server.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

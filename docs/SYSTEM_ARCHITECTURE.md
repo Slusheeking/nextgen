@@ -209,7 +209,7 @@ The FinGPT AI Day Trading System is organized as a modular, event-driven archite
 
 ## Infrastructure Components
 
-### 17. redis/redis_manager.py
+### 17. local_redis/redis_manager.py
 - **Purpose**: Manage Redis for caching and messaging
 - **Functions**:
   - Cache frequently used data

@@ -1,81 +1,125 @@
-# Prometheus Monitoring System
+# NextGen FinGPT Monitoring Module
 
-This directory contains the Prometheus monitoring system components for the NextGen FinGPT project.
+This module provides comprehensive monitoring capabilities for the NextGen FinGPT project, including Prometheus metrics collection, Loki logging, and system metrics monitoring.
 
-## Components
+## Features
 
-### 1. Prometheus Server
+- **Unified Monitoring Interface**: A single interface for both Prometheus metrics and Loki logging
+- **System Metrics Collection**: Automatic collection of system metrics (CPU, memory, disk, GPU, etc.)
+- **Alerting**: Configurable alerting based on metric thresholds
+- **Frontend Integration**: HTTP endpoints for metrics that can be consumed by frontend dashboards
+- **Compatibility Layer**: Backward compatibility with existing code
 
-Prometheus is a monitoring system and time series database. It collects metrics from configured targets at given intervals, evaluates rule expressions, displays the results, and can trigger alerts when specified conditions are observed.
+## Installation
 
-- **Status**: Running as a system service (`prometheus.service`)
-- **Configuration**: Located at `/etc/prometheus/prometheus.yml`
-- **Data Storage**: Located at `/var/lib/prometheus/`
-
-### 2. System Metrics Collector
-
-The System Metrics Collector is a Python service that collects system metrics (CPU, memory, disk, network, GPU) and exposes them through Prometheus. It also sends alerts to Loki when metrics exceed configured thresholds.
-
-- **Status**: Available but not running as a service yet
-- **Setup**: Run `sudo ./setup_system_metrics.sh` to install and start the service
-- **Service File**: `system-metrics.service`
-
-### 3. Loki
-
-Loki is a log aggregation system designed to store and query logs from all your applications and infrastructure.
-
-- **Status**: Running as a system service (`loki.service`)
-- **Configuration**: Located at `/etc/loki/local-config.yaml`
-
-## Setup Instructions
-
-### Setting up the System Metrics Collector
-
-1. Make sure Prometheus and Loki are running
-2. Run the setup script:
-   ```bash
-   sudo ./setup_system_metrics.sh
-   ```
-3. Verify the service is running:
-   ```bash
-   systemctl status system-metrics.service
-   ```
-
-### Viewing Metrics and Logs
-
-- **Prometheus UI**: http://localhost:9090
-- **Loki Logs**: Can be viewed through Grafana if installed
-
-## Troubleshooting
-
-### Checking Service Status
+The monitoring module is included as part of the NextGen FinGPT project. To install the required dependencies:
 
 ```bash
-# Check Prometheus status
-systemctl status prometheus
-
-# Check Loki status
-systemctl status loki
-
-# Check System Metrics Collector status
-systemctl status system-metrics
+pip install prometheus_client psutil python-dotenv logging-loki
 ```
 
-### Viewing Service Logs
+For GPU monitoring (optional):
 
 ```bash
-# View Prometheus logs
-journalctl -u prometheus -f
-
-# View Loki logs
-journalctl -u loki -f
-
-# View System Metrics Collector logs
-journalctl -u system-metrics -f
+pip install gputil py3nvml pynvml
 ```
 
-## Additional Information
+## Usage
 
-- The System Metrics Collector uses the `prometheus_client` Python library to expose metrics
-- Alerts are configured in the `SystemMetricsCollector` class with default thresholds
-- GPU metrics collection is attempted if GPU monitoring libraries are available
+### Basic Usage
+
+```python
+from monitoring import setup_monitoring
+
+# Set up monitoring for a service
+monitor, metrics = setup_monitoring(
+    service_name="my-service",
+    enable_prometheus=True,
+    enable_loki=True,
+    default_labels={"environment": "production"}
+)
+
+# Log messages
+monitor.log_info("Service started", component="main")
+monitor.log_warning("Resource usage high", component="resource_monitor", usage=85)
+
+# Update metrics
+monitor.increment_counter("requests_total", 1, method="GET", endpoint="/api/data", status="200")
+monitor.set_gauge("active_connections", 42, server="primary")
+monitor.observe_histogram("response_time_seconds", 0.2, method="GET", endpoint="/api/data")
+```
+
+### Frontend Integration
+
+The monitoring module exposes metrics via HTTP endpoints that can be consumed by frontend dashboards:
+
+1. **Prometheus Metrics Endpoint**: By default, metrics are exposed on port 8010 (configurable via environment variable `PROMETHEUS_METRICS_PORT`).
+
+   ```
+   http://your-server:8010/metrics
+   ```
+
+2. **Grafana Integration**: You can configure Grafana to use Prometheus as a data source and create dashboards to visualize the metrics.
+
+3. **Loki Logs**: Logs are sent to Loki (configurable via environment variable `LOKI_URL`), which can also be visualized in Grafana.
+
+### System Metrics Collector
+
+The module includes a standalone system metrics collector that can be run as a service:
+
+```bash
+# Install as a systemd service
+sudo ./monitoring/setup_system_metrics.sh
+
+# Or run directly
+python -m monitoring.system_metrics
+```
+
+## Configuration
+
+Configuration is done via environment variables:
+
+- `PROMETHEUS_METRICS_PORT`: Port to expose Prometheus metrics on (default: 8010)
+- `LOKI_URL`: URL of the Loki server (default: http://localhost:3100)
+- `LOKI_USERNAME`: Username for Loki authentication (optional)
+- `LOKI_PASSWORD`: Password for Loki authentication (optional)
+- `METRICS_INTERVAL`: Interval for collecting system metrics in seconds (default: 5)
+- `METRICS_SERVICE_NAME`: Name of the system metrics service (default: system_metrics)
+- `METRICS_ENABLE_LOKI`: Whether to enable Loki logging for system metrics (default: true)
+
+## API Reference
+
+### MonitoringManager
+
+The main class for unified monitoring:
+
+- `log_info(message, **labels)`: Log an info message
+- `log_warning(message, **labels)`: Log a warning message
+- `log_error(message, **labels)`: Log an error message
+- `log_critical(message, **labels)`: Log a critical message
+- `increment_counter(name, value=1, **labels)`: Increment a counter
+- `set_gauge(name, value, **labels)`: Set a gauge value
+- `observe_histogram(name, value, **labels)`: Observe a value in a histogram
+
+### PrometheusManager
+
+For direct Prometheus metrics management:
+
+- `create_counter(name, description, labels=None)`: Create a counter
+- `create_gauge(name, description, labels=None)`: Create a gauge
+- `create_histogram(name, description, labels=None, buckets=None)`: Create a histogram
+- `create_summary(name, description, labels=None)`: Create a summary
+
+### LokiManager
+
+For direct Loki logging:
+
+- `info(message, **labels)`: Log an info message
+- `warning(message, **labels)`: Log a warning message
+- `error(message, **labels)`: Log an error message
+- `critical(message, **labels)`: Log a critical message
+- `debug(message, **labels)`: Log a debug message
+
+## Contributing
+
+Contributions to the monitoring module are welcome. Please follow the project's contribution guidelines.

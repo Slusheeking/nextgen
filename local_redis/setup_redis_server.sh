@@ -14,7 +14,7 @@ fi
 # Get the absolute path to the project directory
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REDIS_CONF="$PROJECT_DIR/redis/redis.conf"
-SERVICE_FILE="$PROJECT_DIR/redis/redis-official.service"
+SERVICE_FILE="$PROJECT_DIR/local_redis/redis-official.service"
 SYSTEMD_DIR="/etc/systemd/system"
 
 echo "Setting up Redis server with monitoring integration..."

@@ -13,6 +13,7 @@ import requests
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 import pandas as pd
+from monitoring import setup_monitoring
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -37,6 +38,16 @@ class PolygonRestMCP(BaseDataMCP):
         """
         super().__init__(name="polygon_rest_mcp", config=config)
         
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="polygon-rest-mcp",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "polygon_rest_mcp"}
+        )
+        if self.monitor:
+            self.monitor.log_info("PolygonRestMCP initialized", component="polygon_rest_mcp", action="initialization")
+        
         # Initialize the REST client
         self.rest_client = self._initialize_client()
         
@@ -47,6 +58,8 @@ class PolygonRestMCP(BaseDataMCP):
         self._register_specific_tools()
         
         self.logger.info("PolygonRestMCP initialized with %d endpoints", len(self.endpoints))
+        if self.monitor:
+            self.monitor.log_info(f"PolygonRestMCP initialized with {len(self.endpoints)} endpoints", component="polygon_rest_mcp", action="init_endpoints")
     
     def _initialize_client(self) -> Union[Dict[str, Any], None]:
         """
@@ -70,6 +83,8 @@ class PolygonRestMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Polygon REST client: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Failed to initialize Polygon REST client: {e}", component="polygon_rest_mcp", action="client_init_error", error=str(e))
             return None
     
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
@@ -902,6 +917,25 @@ class PolygonRestMCP(BaseDataMCP):
             
         return self.fetch_data("stock_financials", params)
     
+
+    def get_market_movers(self, category: str = "gainers", limit: int = 10) -> Dict[str, Any]:
+        """
+        Get top market movers (gainers or losers) using the Polygon REST API.
+        Args:
+            category: "gainers" or "losers"
+            limit: Number of movers to return
+        Returns:
+            Dictionary with market movers data (may include "results" key)
+        """
+        direction = category if category in ["gainers", "losers"] else "gainers"
+        try:
+            data = self.fetch_data("market_movers", {"direction": direction, "limit": str(limit)})
+            return data
+        except Exception as e:
+            self.logger.error(f"Error getting market movers: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting market movers: {e}", component="polygon_rest_mcp", action="market_movers_error", error=str(e))
+            return {}
 
     @property
     def api_key(self) -> str:

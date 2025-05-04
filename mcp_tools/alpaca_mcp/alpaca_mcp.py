@@ -22,6 +22,7 @@ from alpaca.data.requests import StockBarsRequest, StockQuotesRequest
 from alpaca.data.timeframe import TimeFrame
 
 from mcp_tools.base_mcp_server import BaseMCPServer
+from monitoring import setup_monitoring
 
 class AlpacaMCP(BaseMCPServer):
     """
@@ -44,6 +45,16 @@ class AlpacaMCP(BaseMCPServer):
         """
         super().__init__(name="alpaca_mcp", config=config)
         
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="alpaca-mcp",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "alpaca_mcp"}
+        )
+        if self.monitor:
+            self.monitor.log_info("AlpacaMCP initialized", component="alpaca_mcp", action="initialization")
+        
         # Initialize Alpaca clients
         self.trading_client, self.data_client = self._initialize_client()
         
@@ -54,6 +65,52 @@ class AlpacaMCP(BaseMCPServer):
         self._register_specific_tools()
         
         self.logger.info("AlpacaMCP initialized")
+        
+    def fetch_data(self, endpoint_name: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Fetch data from an endpoint.
+        
+        Args:
+            endpoint_name: Name of the endpoint to fetch data from
+            params: Parameters to pass to the endpoint
+            
+        Returns:
+            Fetched data
+            
+        Raises:
+            ValueError: If the endpoint doesn't exist
+        """
+        if endpoint_name not in self.endpoints:
+            self.logger.error(f"Endpoint not found: {endpoint_name}")
+            return {"error": f"Endpoint not found: {endpoint_name}"}
+        
+        endpoint = self.endpoints[endpoint_name]
+        handler = endpoint.get("handler")
+        
+        if not handler:
+            self.logger.error(f"No handler for endpoint: {endpoint_name}")
+            return {"error": f"No handler for endpoint: {endpoint_name}"}
+        
+        params = params or {}
+        
+        # Check required parameters
+        required_params = endpoint.get("required_params", [])
+        for param in required_params:
+            if param not in params:
+                self.logger.error(f"Missing required parameter: {param}")
+                return {"error": f"Missing required parameter: {param}"}
+        
+        # Call the handler
+        self.logger.info(f"Fetching data from endpoint: {endpoint_name}")
+        try:
+            result = handler(params)
+            return result
+        except Exception as e:
+            self.logger.error(f"Error fetching data from endpoint {endpoint_name}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error fetching data from endpoint {endpoint_name}: {e}",
+                                      component="alpaca_mcp", action="fetch_data_error", error=str(e))
+            return {"error": str(e)}
     
     def _initialize_client(self) -> Tuple[TradingClient, StockHistoricalDataClient]:
         """
@@ -84,6 +141,8 @@ class AlpacaMCP(BaseMCPServer):
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Alpaca client: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Failed to initialize Alpaca client: {e}", component="alpaca_mcp", action="connection_error", error=str(e))
             return None, None
     
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
@@ -271,6 +330,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting account information: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting account information: {e}", component="alpaca_mcp", action="get_account_error", error=str(e))
             return {"error": f"Failed to get account information: {str(e)}"}
     
     def _handle_get_positions(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -289,6 +350,8 @@ class AlpacaMCP(BaseMCPServer):
                 }
         except Exception as e:
             self.logger.error(f"Error getting positions: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting positions: {e}", component="alpaca_mcp", action="get_positions_error", error=str(e))
             return {"error": f"Failed to get positions: {str(e)}"}
     
     def _format_position(self, position) -> Dict[str, Any]:
@@ -337,6 +400,8 @@ class AlpacaMCP(BaseMCPServer):
             return result
         except Exception as e:
             self.logger.error(f"Error getting portfolio history: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting portfolio history: {e}", component="alpaca_mcp", action="get_portfolio_history_error", error=str(e))
             return {"error": f"Failed to get portfolio history: {str(e)}"}
     
     def _handle_get_orders(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -364,6 +429,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting orders: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting orders: {e}", component="alpaca_mcp", action="get_orders_error", error=str(e))
             return {"error": f"Failed to get orders: {str(e)}"}
     
     def _handle_get_order(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -378,6 +445,8 @@ class AlpacaMCP(BaseMCPServer):
             return self._format_order(order)
         except Exception as e:
             self.logger.error(f"Error getting order {order_id}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting order {order_id}: {e}", component="alpaca_mcp", action="get_order_error", error=str(e))
             return {"error": f"Failed to get order: {str(e)}"}
     
     def _format_order(self, order) -> Dict[str, Any]:
@@ -440,6 +509,8 @@ class AlpacaMCP(BaseMCPServer):
             return self._format_order(order)
         except Exception as e:
             self.logger.error(f"Error submitting market order: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error submitting market order: {e}", component="alpaca_mcp", action="submit_market_order_error", error=str(e))
             return {"error": f"Failed to submit market order: {str(e)}"}
     
     def _handle_submit_limit_order(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -478,6 +549,8 @@ class AlpacaMCP(BaseMCPServer):
             return self._format_order(order)
         except Exception as e:
             self.logger.error(f"Error submitting limit order: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error submitting limit order: {e}", component="alpaca_mcp", action="submit_limit_order_error", error=str(e))
             return {"error": f"Failed to submit limit order: {str(e)}"}
     
     def _handle_submit_stop_order(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -516,6 +589,8 @@ class AlpacaMCP(BaseMCPServer):
             return self._format_order(order)
         except Exception as e:
             self.logger.error(f"Error submitting stop order: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error submitting stop order: {e}", component="alpaca_mcp", action="submit_stop_order_error", error=str(e))
             return {"error": f"Failed to submit stop order: {str(e)}"}
     
     def _handle_cancel_order(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -530,6 +605,8 @@ class AlpacaMCP(BaseMCPServer):
             return {"order_id": order_id, "status": "canceled"}
         except Exception as e:
             self.logger.error(f"Error canceling order {order_id}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error canceling order {order_id}: {e}", component="alpaca_mcp", action="cancel_order_error", error=str(e))
             return {"error": f"Failed to cancel order: {str(e)}"}
     
     def _handle_cancel_all_orders(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -539,6 +616,8 @@ class AlpacaMCP(BaseMCPServer):
             return {"status": "all orders canceled"}
         except Exception as e:
             self.logger.error(f"Error canceling all orders: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error canceling all orders: {e}", component="alpaca_mcp", action="cancel_all_orders_error", error=str(e))
             return {"error": f"Failed to cancel all orders: {str(e)}"}
             
     def _handle_get_bars(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -618,6 +697,8 @@ class AlpacaMCP(BaseMCPServer):
                 }
         except Exception as e:
             self.logger.error(f"Error getting bars for {symbol}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting bars for {symbol}: {e}", component="alpaca_mcp", action="get_bars_error", error=str(e))
             return {"error": f"Failed to get bars: {str(e)}"}
     
     def _handle_get_quotes(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -672,6 +753,8 @@ class AlpacaMCP(BaseMCPServer):
                 }
         except Exception as e:
             self.logger.error(f"Error getting quotes for {symbol}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting quotes for {symbol}: {e}", component="alpaca_mcp", action="get_quotes_error", error=str(e))
             return {"error": f"Failed to get quotes: {str(e)}"}
     
     def _handle_get_latest_trade(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -697,6 +780,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting latest trade for {symbol}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting latest trade for {symbol}: {e}", component="alpaca_mcp", action="get_latest_trade_error", error=str(e))
             return {"error": f"Failed to get latest trade: {str(e)}"}
     
     def _handle_get_latest_quote(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -722,6 +807,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting latest quote for {symbol}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting latest quote for {symbol}: {e}", component="alpaca_mcp", action="get_latest_quote_error", error=str(e))
             return {"error": f"Failed to get latest quote: {str(e)}"}
     
     def _handle_get_assets(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -755,6 +842,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting assets: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting assets: {e}", component="alpaca_mcp", action="get_assets_error", error=str(e))
             return {"error": f"Failed to get assets: {str(e)}"}
     
     def _handle_get_asset(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -783,6 +872,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting asset {symbol}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting asset {symbol}: {e}", component="alpaca_mcp", action="get_asset_error", error=str(e))
             return {"error": f"Failed to get asset: {str(e)}"}
     
     def _handle_get_calendar(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -810,6 +901,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting calendar: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting calendar: {e}", component="alpaca_mcp", action="get_calendar_error", error=str(e))
             return {"error": f"Failed to get calendar: {str(e)}"}
     
     def _handle_get_clock(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -826,6 +919,8 @@ class AlpacaMCP(BaseMCPServer):
             }
         except Exception as e:
             self.logger.error(f"Error getting clock: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error getting clock: {e}", component="alpaca_mcp", action="get_clock_error", error=str(e))
             return {"error": f"Failed to get clock: {str(e)}"}
     
     # Public API methods for models to use directly

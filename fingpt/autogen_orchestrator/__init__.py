@@ -5,4 +5,6 @@ LLM-powered multi-agent orchestration system based on Microsoft AutoGen framewor
 Coordinates agent interactions, manages workflows, and aggregates results for trading decisions.
 """
 
-from fingpt.autogen_orchestrator.autogen_model import AutoGenOrchestrator
+from fingpt.autogen_orchestrator.autogen_model import AutoGenOrchestrator, create_orchestrator
+
+__all__ = ['AutoGenOrchestrator', 'create_orchestrator']

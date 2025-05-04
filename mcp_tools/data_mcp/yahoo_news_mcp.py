@@ -14,6 +14,7 @@ from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
+from monitoring import setup_monitoring
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -43,6 +44,16 @@ class YahooNewsMCP(BaseDataMCP):
             
         super().__init__(name="yahoo_news_mcp", config=config)
         
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="yahoo-news-mcp",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "yahoo_news_mcp"}
+        )
+        if self.monitor:
+            self.monitor.log_info("YahooNewsMCP initialized", component="yahoo_news_mcp", action="initialization")
+        
         # Set default result limits
         self.default_news_limit = self.config.get("default_news_limit", 10)
         
@@ -59,6 +70,8 @@ class YahooNewsMCP(BaseDataMCP):
         self._initialize_sentiment_analyzer()
         
         self.logger.info("YahooNewsMCP initialized with %d endpoints", len(self.endpoints))
+        if self.monitor:
+            self.monitor.log_info(f"YahooNewsMCP initialized with {len(self.endpoints)} endpoints", component="yahoo_news_mcp", action="init_endpoints")
     
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -79,6 +92,8 @@ class YahooNewsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Yahoo News client: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Failed to initialize Yahoo News client: {e}", component="yahoo_news_mcp", action="client_init_error", error=str(e))
             return None
     
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
@@ -236,6 +251,8 @@ class YahooNewsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Error fetching news for {ticker}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error fetching news for {ticker}: {e}", component="yahoo_news_mcp", action="ticker_news_error", error=str(e), ticker=ticker)
             return {"error": f"Failed to fetch news: {str(e)}"}
     
     def _handle_market_news(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -277,6 +294,8 @@ class YahooNewsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Error fetching market news: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error fetching market news: {e}", component="yahoo_news_mcp", action="market_news_error", error=str(e))
             return {"error": f"Failed to fetch market news: {str(e)}"}
     
     def _handle_news_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -316,6 +335,8 @@ class YahooNewsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Error searching news for {keywords}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error searching news for {keywords}: {e}", component="yahoo_news_mcp", action="news_search_error", error=str(e), keywords=keywords)
             return {"error": f"Failed to search news: {str(e)}"}
     
     def _handle_news_sentiment(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -389,6 +410,8 @@ class YahooNewsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Error analyzing sentiment for {ticker}: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Error analyzing sentiment for {ticker}: {e}", component="yahoo_news_mcp", action="news_sentiment_error", error=str(e), ticker=ticker)
             return {"error": f"Failed to analyze sentiment: {str(e)}"}
     
     def _analyze_sentiment_text(self, text: str) -> float:

@@ -23,6 +23,13 @@ pip3 install prometheus_client psutil python-dotenv logging-loki
 echo "Attempting to install GPU monitoring packages..."
 pip3 install gputil py3nvml pynvml || echo "GPU monitoring packages installation failed, continuing without them"
 
+# Ensure the system_metrics directory has an __init__.py file
+if [ ! -f "$SCRIPT_DIR/system_metrics/__init__.py" ]; then
+  echo "Creating system_metrics/__init__.py..."
+  mkdir -p "$SCRIPT_DIR/system_metrics"
+  touch "$SCRIPT_DIR/system_metrics/__init__.py"
+fi
+
 # Copy the service file to systemd directory
 echo "Installing systemd service file..."
 cp "$SCRIPT_DIR/system-metrics.service" /etc/systemd/system/

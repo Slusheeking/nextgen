@@ -9,6 +9,7 @@ import os
 import logging
 import json
 import time
+from monitoring import setup_monitoring
 from typing import Dict, List, Any, Optional, Union, Tuple, Callable, TypedDict
 from datetime import datetime, timedelta
 import pandas as pd
@@ -23,7 +24,7 @@ from autogen import (
     # FunctionCall is not available in autogen 0.9.0
 )
 
-from mcp_tools.execution_mcp.alpaca_mcp import AlpacaMCP
+from mcp_tools.alpaca_mcp.alpaca_mcp import AlpacaMCP
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
 from mcp_tools.data_mcp.polygon_rest_mcp import PolygonRestMCP
 from mcp_tools.data_mcp.polygon_ws_mcp import PolygonWSMCP
@@ -54,6 +55,16 @@ class SelectionModel:
                 - llm_config: Configuration for the LLM
         """
         self.logger = logging.getLogger(__name__)
+
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="selection-model",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "selection_model"}
+        )
+        if self.monitor:
+            self.monitor.log_info("SelectionModel initialized", component="selection_model", action="initialization")
         
         # Initialize configuration
         self.config = config or {}
@@ -79,6 +90,8 @@ class SelectionModel:
         self.agents = self._setup_agents()
         
         self.logger.info("SelectionModel initialized with AutoGen agents")
+        if self.monitor:
+            self.monitor.log_info("SelectionModel initialized with AutoGen agents", component="selection_model", action="init_agents")
     
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -550,6 +563,8 @@ Your analysis should be quantitative and evidence-based.""",
             
         except Exception as e:
             self.logger.error(f"Error in selection cycle: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error in selection cycle: {e}", component="selection_model", action="selection_cycle_error", error=str(e))
             return []
     
     def _get_market_context(self) -> Dict[str, Any]:
@@ -583,37 +598,59 @@ Your analysis should be quantitative and evidence-based.""",
             
         except Exception as e:
             self.logger.error(f"Error getting market context: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting market context: {e}", component="selection_model", action="market_context_error", error=str(e))
         
         return context
     
     # Function map methods for the user proxy agent
     
+    def get_market_movers(self, category: str = "gainers", limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get top market movers (gainers or losers) using the Polygon REST MCP tool.
+        """
+        try:
+            movers = self.polygon_rest_mcp.call_tool(
+                "get_market_movers",
+                {"category": category, "limit": limit}
+            )
+            if isinstance(movers, dict) and "results" in movers:
+                return movers["results"]
+            return movers if isinstance(movers, list) else []
+        except Exception as e:
+            self.logger.error(f"Error getting market movers: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting market movers: {e}", component="selection_model", action="market_movers_error", error=str(e))
+            return []
+
     def get_market_data(self) -> List[Dict[str, Any]]:
         """
-        Get initial universe of stocks.
+        Get initial universe of stocks, optionally including market movers.
         
         Returns:
             List of stock dictionaries with basic information
         """
         self.logger.info("Getting initial universe of stocks")
-        
         try:
             # Get all tradable assets from Polygon
             assets = self.polygon_rest_mcp.get_all_tickers()
-            
-            # Filter for stocks only
             stocks = [
                 asset for asset in assets 
-                if asset.get("type") == "CS"  # Common Stock
+                if asset.get("type") == "CS"
                 and self.min_price <= asset.get("price", 0) <= self.max_price
                 and asset.get("market") == "stocks"
             ]
-            
-            self.logger.info(f"Found {len(stocks)} stocks in initial universe")
+            # Optionally include market movers
+            if self.config.get("include_market_movers", True):
+                movers = self.get_market_movers(category="gainers", limit=10)
+                mover_symbols = {m["ticker"] for m in movers if "ticker" in m}
+                stocks = [s for s in stocks if s.get("ticker") not in mover_symbols] + movers
+            self.logger.info(f"Found {len(stocks)} stocks in initial universe (including market movers)")
             return stocks
-            
         except Exception as e:
             self.logger.error(f"Error getting market data: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting market data: {e}", component="selection_model", action="market_data_error", error=str(e))
             return []
     
     def filter_by_liquidity(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -684,6 +721,8 @@ Your analysis should be quantitative and evidence-based.""",
                     filtered.append(stock)
             except Exception as e:
                 self.logger.error(f"Error filtering stock {symbol}: {e}")
+                if self.monitor:
+                    self.monitor.log_error(f"Error filtering stock {symbol}: {e}", component="selection_model", action="liquidity_filter_error", error=str(e), symbol=symbol)
         
         self.logger.info(f"After liquidity filters: {len(filtered)} stocks")
         return filtered
@@ -719,6 +758,8 @@ Your analysis should be quantitative and evidence-based.""",
                 spy_return = (spy_closes[-1] / spy_closes[0] - 1) * 100 if spy_closes and len(spy_closes) > 1 else 0
         except Exception as e:
             self.logger.error(f"Error getting SPY data: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting SPY data: {e}", component="selection_model", action="spy_data_error", error=str(e))
             spy_return = 0
         
         for stock in stocks:
@@ -820,6 +861,8 @@ Your analysis should be quantitative and evidence-based.""",
                 result.append(stock)
             except Exception as e:
                 self.logger.error(f"Error calculating technical indicators for {symbol}: {e}")
+                if self.monitor:
+                    self.monitor.log_error(f"Error calculating technical indicators for {symbol}: {e}", component="selection_model", action="technical_indicator_error", error=str(e), symbol=symbol)
         
         self.logger.info(f"Calculated technical indicators for {len(result)} stocks")
         return result
@@ -873,6 +916,8 @@ Your analysis should be quantitative and evidence-based.""",
                 result.append(stock)
             except Exception as e:
                 self.logger.error(f"Error checking unusual activity for {symbol}: {e}")
+                if self.monitor:
+                    self.monitor.log_error(f"Error checking unusual activity for {symbol}: {e}", component="selection_model", action="unusual_activity_error", error=str(e), symbol=symbol)
         
         self.logger.info(f"Checked unusual activity for {len(result)} stocks")
         return result
@@ -933,6 +978,8 @@ Your analysis should be quantitative and evidence-based.""",
                 stock["unusual_score"] = unusual_score
             except Exception as e:
                 self.logger.error(f"Error scoring stock {stock.get('ticker')}: {e}")
+                if self.monitor:
+                    self.monitor.log_error(f"Error scoring stock {stock.get('ticker')}: {e}", component="selection_model", action="scoring_error", error=str(e), symbol=stock.get('ticker'))
                 stock["score"] = 0
         
         # Sort by score in descending order
@@ -1002,6 +1049,8 @@ Your analysis should be quantitative and evidence-based.""",
             return True
         except Exception as e:
             self.logger.error(f"Error storing candidates: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error storing candidates: {e}", component="selection_model", action="store_candidates_error", error=str(e))
             return False
     
     def get_candidates(self) -> List[Dict[str, Any]]:
@@ -1088,6 +1137,8 @@ Your analysis should be quantitative and evidence-based.""",
             }
         except Exception as e:
             self.logger.error(f"Error getting selection data: {e}")
+            if self.monitor:
+                self.monitor.log_error(f"Error getting selection data: {e}", component="selection_model", action="get_selection_data_error", error=str(e))
             return {
                 "market_context": {},
                 "candidates": [],

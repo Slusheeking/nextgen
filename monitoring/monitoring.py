@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Monitoring Module
+Unified Monitoring Module
 
-This module provides a unified interface for Prometheus metrics and Loki logging
-in the NextGen FinGPT project. It combines the functionality of:
+This module provides a comprehensive monitoring solution for the NextGen FinGPT project,
+combining Prometheus metrics and Loki logging functionality in a single package.
+It includes:
 - PrometheusManager: For collecting and exposing Prometheus metrics
 - LokiManager: For sending logs to Loki
 - MonitoringManager: A unified interface for both Prometheus and Loki
+- SystemMetricsCollector: For collecting system metrics (CPU, memory, disk, GPU, etc.)
 """
 
 import os
@@ -14,10 +16,20 @@ import time
 import logging
 import threading
 import importlib.util
+import platform
+import subprocess
+import socket
 from urllib.parse import urlparse
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List, Union
+from threading import Thread
 
-# Import required libraries
+# Try to import optional dependencies
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
 try:
     from prometheus_client import Counter, Gauge, Histogram, Summary
     from prometheus_client import start_http_server, push_to_gateway
@@ -34,8 +46,27 @@ except ImportError:
 try:
     from dotenv import load_dotenv
     DOTENV_AVAILABLE = True
+    # Load environment variables if dotenv is available
+    load_dotenv()
 except ImportError:
     DOTENV_AVAILABLE = False
+
+# Try to import GPU monitoring libraries
+try:
+    import GPUtil
+    GPU_AVAILABLE = True
+except ImportError:
+    try:
+        import pynvml
+        GPU_AVAILABLE = True
+    except ImportError:
+        GPU_AVAILABLE = False
+
+try:
+    import py3nvml.py3nvml as nvml
+    NVML_AVAILABLE = True
+except ImportError:
+    NVML_AVAILABLE = False
 
 # Configure basic logging
 logging.basicConfig(
@@ -43,10 +74,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("monitoring")
-
-# Load environment variables if dotenv is available
-if DOTENV_AVAILABLE:
-    load_dotenv()
 
 
 class PrometheusManager:
@@ -809,6 +836,316 @@ class MonitoringManager:
         self.loki.debug(message, **all_labels)
 
 
+class SystemMetricsCollector:
+    """
+    Collects system metrics and exposes them through Prometheus.
+    Sends system alerts and notifications to Loki.
+    """
+    
+    def __init__(self, interval=5, service_name="system_metrics", enable_loki=True):
+        """
+        Initialize the system metrics collector.
+        
+        Args:
+            interval (int): Collection interval in seconds. Defaults to 5.
+            service_name (str): Name of the service for Prometheus. Defaults to "system_metrics".
+            enable_loki (bool): Whether to enable Loki logging for alerts. Defaults to True.
+        """
+        if not PSUTIL_AVAILABLE:
+            raise ImportError("psutil library is not available. Please install it with: pip install psutil")
+            
+        self.interval = interval
+        self.running = False
+        self.metrics_thread = None
+        
+        # Initialize Prometheus manager
+        self.prom = PrometheusManager(service_name=service_name)
+        
+        # Initialize Loki manager for alerts
+        self.enable_loki = enable_loki
+        if enable_loki:
+            self.loki = LokiManager(service_name=service_name)
+            logger.info("Loki logging initialized for system alerts")
+        
+        # Initialize metrics
+        self._init_metrics()
+        
+        # Configure alert thresholds with default values
+        self._configure_alert_thresholds()
+        
+        # Initialize GPU monitoring if available
+        self.has_gpu = False
+        if GPU_AVAILABLE or NVML_AVAILABLE:
+            try:
+                if NVML_AVAILABLE:
+                    nvml.nvmlInit()
+                    self.gpu_count = nvml.nvmlDeviceGetCount()
+                    self.has_gpu = self.gpu_count > 0
+                    if self.has_gpu:
+                        logger.info(f"NVML initialized. Found {self.gpu_count} GPU(s)")
+                elif GPU_AVAILABLE:
+                    if 'GPUtil' in globals():
+                        self.gpus = GPUtil.getGPUs()
+                        self.has_gpu = len(self.gpus) > 0
+                        if self.has_gpu:
+                            logger.info(f"GPUtil initialized. Found {len(self.gpus)} GPU(s)")
+                    else:  # pynvml
+                        import pynvml
+                        pynvml.nvmlInit()
+                        self.gpu_count = pynvml.nvmlDeviceGetCount()
+                        self.has_gpu = self.gpu_count > 0
+                        if self.has_gpu:
+                            logger.info(f"PYNVML initialized. Found {self.gpu_count} GPU(s)")
+            except Exception as e:
+                logger.error(f"Error initializing GPU monitoring: {e}")
+                self.has_gpu = False
+        
+        if not self.has_gpu:
+            logger.warning("No GPU detected or GPU monitoring libraries unavailable")
+    
+    def _configure_alert_thresholds(self):
+        """Configure default alert thresholds for system metrics."""
+        self.alert_thresholds = {
+            # CPU related thresholds
+            'cpu_utilization_percent': {
+                'warning': 80.0,  # 80% utilization
+                'critical': 95.0,  # 95% utilization
+                'duration': 3,     # Alert after 3 consecutive readings
+                'counter': 0,
+                'last_alert': 0,   # Timestamp of last alert
+                'cooldown': 300    # 5 minutes between alerts
+            },
+            # Memory related thresholds
+            'memory_usage_percent': {
+                'warning': 80.0,
+                'critical': 95.0,
+                'duration': 3,
+                'counter': 0,
+                'last_alert': 0,
+                'cooldown': 300
+            },
+            # Disk related thresholds
+            'disk_usage_percent': {
+                'warning': 80.0,
+                'critical': 95.0,
+                'duration': 1,
+                'counter': 0,
+                'last_alert': 0,
+                'cooldown': 3600  # 1 hour between disk alerts
+            },
+            # GPU related thresholds
+            'gpu_utilization_percent': {
+                'warning': 85.0,
+                'critical': 98.0,
+                'duration': 5,
+                'counter': 0,
+                'last_alert': 0,
+                'cooldown': 300
+            },
+            'gpu_memory_percent': {
+                'warning': 80.0,
+                'critical': 95.0,
+                'duration': 3,
+                'counter': 0,
+                'last_alert': 0,
+                'cooldown': 300
+            },
+            'gpu_temperature_celsius': {
+                'warning': 80.0,    # 80°C is getting hot
+                'critical': 90.0,   # 90°C is too hot
+                'duration': 1,      # Alert immediately on high temperature
+                'counter': 0,
+                'last_alert': 0,
+                'cooldown': 60      # 1 minute between temperature alerts
+            }
+        }
+        
+        logger.info("Alert thresholds configured with default values")
+    
+    def _init_metrics(self):
+        """Initialize all Prometheus metrics."""
+        # CPU metrics
+        self.cpu_percent = self.prom.create_gauge(
+            "cpu_utilization_percent", 
+            "CPU utilization percentage",
+            ["cpu"]
+        )
+        
+        self.cpu_freq = self.prom.create_gauge(
+            "cpu_frequency_mhz",
+            "CPU frequency in MHz",
+            ["cpu"]
+        )
+        
+        self.cpu_count = self.prom.create_gauge(
+            "cpu_count",
+            "Number of CPU cores/threads"
+        )
+        
+        self.load_avg = self.prom.create_gauge(
+            "load_average",
+            "System load average",
+            ["period"]
+        )
+        
+        self.cpu_temp = self.prom.create_gauge(
+            "cpu_temperature_celsius",
+            "CPU temperature in Celsius",
+            ["sensor"]
+        )
+        
+        # Memory metrics
+        self.memory_usage = self.prom.create_gauge(
+            "memory_usage_bytes",
+            "Memory usage in bytes",
+            ["type"]
+        )
+        
+        self.memory_percent = self.prom.create_gauge(
+            "memory_usage_percent",
+            "Memory usage percentage",
+            ["type"]
+        )
+        
+        # Disk metrics
+        self.disk_usage = self.prom.create_gauge(
+            "disk_usage_bytes",
+            "Disk usage in bytes",
+            ["device", "mountpoint", "type"]
+        )
+        
+        self.disk_percent = self.prom.create_gauge(
+            "disk_usage_percent",
+            "Disk usage percentage",
+            ["device", "mountpoint"]
+        )
+        
+        self.disk_io = self.prom.create_gauge(
+            "disk_io_bytes",
+            "Disk I/O in bytes",
+            ["device", "direction"]
+        )
+        
+        # Network metrics
+        self.network_io = self.prom.create_gauge(
+            "network_io_bytes",
+            "Network I/O in bytes",
+            ["interface", "direction"]
+        )
+        
+        self.network_connections = self.prom.create_gauge(
+            "network_connections",
+            "Number of network connections",
+            ["type", "status"]
+        )
+        
+        # GPU metrics (if available)
+        if GPU_AVAILABLE or NVML_AVAILABLE:
+            self.gpu_utilization = self.prom.create_gauge(
+                "gpu_utilization_percent",
+                "GPU utilization percentage",
+                ["gpu", "type"]
+            )
+            
+            self.gpu_memory = self.prom.create_gauge(
+                "gpu_memory_bytes",
+                "GPU memory usage in bytes",
+                ["gpu", "type"]
+            )
+            
+            self.gpu_memory_percent = self.prom.create_gauge(
+                "gpu_memory_percent",
+                "GPU memory usage percentage",
+                ["gpu"]
+            )
+            
+            self.gpu_temp = self.prom.create_gauge(
+                "gpu_temperature_celsius",
+                "GPU temperature in Celsius",
+                ["gpu"]
+            )
+            
+            self.gpu_power = self.prom.create_gauge(
+                "gpu_power_watts",
+                "GPU power usage in watts",
+                ["gpu", "type"]
+            )
+        
+        # System uptime
+        self.uptime = self.prom.create_gauge(
+            "system_uptime_seconds",
+            "System uptime in seconds"
+        )
+        
+        # Process count
+        self.process_count = self.prom.create_gauge(
+            "process_count",
+            "Number of running processes",
+            ["state"]
+        )
+    
+    def check_and_alert(self, metric_name, value, labels=None):
+        """
+        Check if a metric value exceeds alert thresholds and send alert if needed.
+        
+        Args:
+            metric_name (str): Name of the metric
+            value (float): Current value of the metric
+            labels (dict, optional): Additional labels for this metric
+        """
+        if not self.enable_loki or metric_name not in self.alert_thresholds:
+            return
+            
+        thresholds = self.alert_thresholds[metric_name]
+        current_time = time.time()
+        
+        # Format labels for alert message
+        label_str = ""
+        if labels:
+            label_str = " (" + ", ".join(f"{k}={v}" for k, v in labels.items()) + ")"
+        
+        # Check if value exceeds thresholds
+        if value >= thresholds['critical']:
+            thresholds['counter'] += 1
+            
+            if (thresholds['counter'] >= thresholds['duration'] and 
+                current_time - thresholds['last_alert'] > thresholds['cooldown']):
+                # Send CRITICAL alert to Loki
+                alert_msg = f"CRITICAL: {metric_name}{label_str} = {value:.2f} exceeds critical threshold of {thresholds['critical']}"
+                self.loki.critical(alert_msg, metric=metric_name, value=value, threshold="critical", **labels if labels else {})
+                logger.critical(alert_msg)
+                
+                # Reset counter and update last alert time
+                thresholds['counter'] = 0
+                thresholds['last_alert'] = current_time
+                
+        elif value >= thresholds['warning']:
+            thresholds['counter'] += 1
+            
+            if (thresholds['counter'] >= thresholds['duration'] and 
+                current_time - thresholds['last_alert'] > thresholds['cooldown']):
+                # Send WARNING alert to Loki
+                alert_msg = f"WARNING: {metric_name}{label_str} = {value:.2f} exceeds warning threshold of {thresholds['warning']}"
+                self.loki.warning(alert_msg, metric=metric_name, value=value, threshold="warning", **labels if labels else {})
+                logger.warning(alert_msg)
+                
+                # Reset counter and update last alert time
+                thresholds['counter'] = 0
+                thresholds['last_alert'] = current_time
+                
+        else:
+            # Reset counter if value returns to normal
+            if thresholds['counter'] > 0:
+                thresholds['counter'] = 0
+                
+                # Log recovery if we were previously above thresholds
+                if current_time - thresholds['last_alert'] < thresholds['cooldown']:
+                    recovery_msg = f"RECOVERY: {metric_name}{label_str} = {value:.2f} returned to normal"
+                    if self.enable_loki:
+                        self.loki.info(recovery_msg, metric=metric_name, value=value, status="recovery", **labels if labels else {})
+                    logger.info(recovery_msg)
+
+
 # Convenience function to create a monitoring manager
 def setup_monitoring(
     service_name: str,
@@ -876,3 +1213,25 @@ def setup_monitoring(
             "Number of active requests",
             ["method", "endpoint"]
         )
+    
+    return monitor, metrics
+
+
+# Example usage
+if __name__ == "__main__":
+    # Set up monitoring for a service
+    monitor, metrics = setup_monitoring(
+        service_name="example-service",
+        metrics_port=9091,
+        default_labels={"environment": "development"}
+    )
+    
+    # Log some messages
+    monitor.log_info("Service started", component="main")
+    monitor.log_warning("Resource usage high", component="resource_monitor", usage=85)
+    
+    # Update some metrics
+    monitor.increment_counter("requests_total", 1, method="GET", endpoint="/api/data", status="200")
+    monitor.observe_histogram("response_time_seconds", 0.2, method="GET", endpoint="/api/data")
+    
+    print("Monitoring initialized. Check Prometheus and Loki for metrics and logs.")

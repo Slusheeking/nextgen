@@ -14,6 +14,7 @@ from typing import Dict, List, Any, Optional, Union, Callable
 import pandas as pd
 import websockets
 from uuid import uuid4
+from monitoring import setup_monitoring
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -40,6 +41,16 @@ class PolygonWsMCP(BaseDataMCP):
         """
         super().__init__(name="polygon_ws_mcp", config=config)
         
+        # Initialize monitoring
+        self.monitor, self.metrics = setup_monitoring(
+            service_name="polygon-ws-mcp",
+            enable_prometheus=True,
+            enable_loki=True,
+            default_labels={"component": "polygon_ws_mcp"}
+        )
+        if self.monitor:
+            self.monitor.log_info("PolygonWsMCP initialized", component="polygon_ws_mcp", action="initialization")
+        
         # Initialize the WS client
         self.ws_client = self._initialize_client()
         
@@ -62,6 +73,8 @@ class PolygonWsMCP(BaseDataMCP):
         self._register_specific_tools()
         
         self.logger.info("PolygonWsMCP initialized with %d stream types", len(self.endpoints))
+        if self.monitor:
+            self.monitor.log_info(f"PolygonWsMCP initialized with {len(self.endpoints)} stream types", component="polygon_ws_mcp", action="init_endpoints")
     
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -85,6 +98,8 @@ class PolygonWsMCP(BaseDataMCP):
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Polygon WebSocket client: {e}")
+            if hasattr(self, "monitor") and self.monitor:
+                self.monitor.log_error(f"Failed to initialize Polygon WebSocket client: {e}", component="polygon_ws_mcp", action="client_init_error", error=str(e))
             return None
     
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
