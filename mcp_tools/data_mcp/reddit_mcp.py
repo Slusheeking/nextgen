@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional
 import praw
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 
 
@@ -40,15 +40,9 @@ class RedditMCP(BaseDataMCP):
         """
         super().__init__(name="reddit_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="reddit-mcp"
-        )
-        self.monitor.log_info(
-            "RedditMCP initialized",
-            component="reddit_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="reddit-mcp")
+        self.logger.info("RedditMCP initialized")
 
         # Initialize client configuration
         self.reddit_client = self._initialize_client()
@@ -73,7 +67,7 @@ class RedditMCP(BaseDataMCP):
         # Register specific tools
         self._register_specific_tools()
 
-        self.logger.info("RedditMCP initialized with %d endpoints", len(self.endpoints))
+        self.logger.info(f"RedditMCP initialized with {len(self.endpoints)} endpoints")
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -114,12 +108,7 @@ class RedditMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Failed to initialize Reddit client: {e}")
-            self.monitor.log_error(
-                f"Failed to initialize Reddit client: {e}",
-                component="reddit_mcp",
-                action="client_init_error",
-                error=str(e),
-            )
+            self.logger.counter("error_count", 1)
             return None
 
     def _initialize_sentiment_analyzer(self):
@@ -350,6 +339,7 @@ class RedditMCP(BaseDataMCP):
         sort = params.get("sort", "new")
 
         try:
+            start_time = time.time()
             if not self.reddit_client or not self.reddit_client.get("reddit"):
                 return {"error": "Reddit client not initialized"}
 
@@ -394,6 +384,11 @@ class RedditMCP(BaseDataMCP):
 
                 posts.append(post)
 
+            elapsed = (time.time() - start_time) * 1000  # ms
+            self.logger.counter("external_api_call_count", 1)
+            self.logger.timing("data_fetch_time_ms", elapsed)
+            self.logger.gauge("data_volume_posts", len(posts))
+
             return {
                 "subreddit": subreddit,
                 "sort": sort,
@@ -403,13 +398,7 @@ class RedditMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching posts from r/{subreddit}: {e}")
-            self.monitor.log_error(
-                f"Error fetching posts from r/{subreddit}: {e}",
-                component="reddit_mcp",
-                action="fetch_posts_error",
-                error=str(e),
-                subreddit=subreddit,
-            )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch posts: {str(e)}"}
 
     def _handle_hot_posts(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -477,14 +466,7 @@ class RedditMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error searching for {ticker} in r/{subreddit}: {e}")
-            self.monitor.log_error(
-                f"Error searching for {ticker} in r/{subreddit}: {e}",
-                component="reddit_mcp",
-                action="search_ticker_error",
-                error=str(e),
-                ticker=ticker,
-                subreddit=subreddit,
-            )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to search for ticker: {str(e)}"}
 
     def _handle_post_comments(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -545,13 +527,7 @@ class RedditMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching comments for post {post_id}: {e}")
-            self.monitor.log_error(
-                f"Error fetching comments for post {post_id}: {e}",
-                component="reddit_mcp",
-                action="fetch_comments_error",
-                error=str(e),
-                post_id=post_id,
-            )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch comments: {str(e)}"}
 
     def _handle_sentiment_analysis(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -662,12 +638,7 @@ class RedditMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error analyzing sentiment: {e}")
-            self.monitor.log_error(
-                f"Error analyzing sentiment: {e}",
-                component="reddit_mcp",
-                action="sentiment_analysis_error",
-                error=str(e),
-            )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to analyze sentiment: {str(e)}"}
 
     def _handle_wsb_sentiment(self, params: Dict[str, Any]) -> Dict[str, Any]:

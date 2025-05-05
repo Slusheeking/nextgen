@@ -9,11 +9,11 @@ The model uses MCP tools to access market data and trading functionality.
 import os
 from dotenv import load_dotenv
 load_dotenv()
-import logging
 import json
-from monitoring.system_monitor import MonitoringManager
-from typing import Dict, List, Any, Optional
+import asyncio
+import time
 from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional
 import numpy as np
 import autogen as autogen
 from autogen import (
@@ -23,6 +23,10 @@ from autogen import (
     register_function,
     # FunctionCall is not available in autogen 0.9.0
 )
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.stock_charts import StockChartGenerator
 
 from mcp_tools.alpaca_mcp.alpaca_mcp import AlpacaMCP
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
@@ -55,20 +59,46 @@ class SelectionModel:
                 - redis_prefix: Prefix for Redis keys (default: "selection:")
                 - llm_config: Configuration for the LLM
         """
-        self.logger = logging.getLogger(__name__)
+        init_start_time = time.time()
+        # Initialize NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-select-model")
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="selection-model"
-        )
-        self.monitor.log_info(
-            "SelectionModel initialized",
-            component="selection_model",
-            action="initialization",
-        )
+        # Initialize StockChartGenerator
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("StockChartGenerator initialized")
 
-        # Initialize configuration
-        self.config = config or {}
+        # Initialize counters for selection model metrics
+        self.selection_cycles_run = 0
+        self.candidates_selected_count = 0
+        self.candidates_filtered_count = 0
+        self.candidates_stored_count = 0
+        self.llm_api_call_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.execution_errors = 0 # Errors during selection process
+
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_select", "select_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.execution_errors += 1
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.execution_errors += 1
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
         self.max_candidates = self.config.get("max_candidates", 20)
         self.min_price = self.config.get("min_price", 10.0)
         self.max_price = self.config.get("max_price", 200.0)
@@ -93,11 +123,10 @@ class SelectionModel:
         self.agents = self._setup_agents()
 
         self.logger.info("SelectionModel initialized with AutoGen agents")
-        self.monitor.log_info(
-            "SelectionModel initialized with AutoGen agents",
-            component="selection_model",
-            action="init_agents",
-        )
+
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("selection_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """

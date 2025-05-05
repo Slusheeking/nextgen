@@ -6,11 +6,14 @@ execution quality, slippage, and market impact of trades.
 """
 
 import numpy as np
+import json
+import os
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
 
 # GPU acceleration imports
 try:
@@ -54,8 +57,29 @@ class SlippageAnalysisMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "analysis_mcp", "slippage_analysis_mcp_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
+
         # Configure GPU usage
         self.use_gpu = self.config.get("use_gpu", HAVE_GPU)
+        self.min_data_size_for_gpu = self.config.get("min_data_size_for_gpu", 1000)
 
         if self.use_gpu and HAVE_GPU:
             gpu_device = self.config.get("gpu_device", 0)

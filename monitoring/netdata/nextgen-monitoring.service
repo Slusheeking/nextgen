@@ -1,0 +1,23 @@
+[Unit]
+Description=NextGen Monitoring System
+After=network.target
+Wants=netdata.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/bin/bash /home/ubuntu/nextgen/monitoring/start_monitoring_system.sh
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=nextgen-monitoring
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

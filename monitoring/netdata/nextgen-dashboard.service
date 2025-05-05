@@ -1,0 +1,17 @@
+[Unit]
+Description=NextGen Monitoring Dashboard
+After=network.target netdata.service
+
+[Service]
+User=ubuntu
+ExecStart=/usr/bin/python3 /home/ubuntu/nextgen/monitoring/dashboard/server.py
+WorkingDirectory=/home/ubuntu/nextgen/monitoring/dashboard
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=nextgen-dashboard
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

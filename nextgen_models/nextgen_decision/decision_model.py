@@ -9,11 +9,14 @@ and makes final trading decisions.
 import os
 from dotenv import load_dotenv
 load_dotenv()
-import logging
 import json
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.stock_charts import StockChartGenerator
 
 # AutoGen imports
 from autogen import (
@@ -68,21 +71,46 @@ class DecisionModel:
         Args:
             config: Optional configuration dictionary
         """
-        # Initialize logging
-        self.logger = logging.getLogger("nextgen_models.nextgen_decision")
-        self.logger.setLevel(logging.INFO)
+        init_start_time = time.time()
+        # Initialize NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-decision-model")
 
-        # Add console handler if none exists
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
+        # Initialize StockChartGenerator
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("StockChartGenerator initialized")
 
-        # Initialize configuration
-        self.config = config or {}
+        # Initialize counters for decision model metrics
+        self.decisions_made_count = 0
+        self.buy_decisions_count = 0
+        self.sell_decisions_count = 0
+        self.hold_decisions_count = 0
+        self.risk_rejections_count = 0
+        self.llm_api_call_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.execution_errors = 0 # Errors during decision making process
+        self.total_decision_cycles = 0 # Total times process_analysis_results is called
+
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_decision", "decision_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize MCP clients
         self.redis_mcp = RedisMCP(self.config.get("redis_config"))
@@ -143,6 +171,9 @@ class DecisionModel:
         self.risk_per_trade_pct = self.config.get("risk_per_trade_pct", 1.0)
 
         self.logger.info("Decision Model initialized")
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("decision_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -242,7 +273,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_selection_data() -> Dict[str, Any]:
-            return self.get_selection_data()
+            start_time = time.time()
+            result = self.get_selection_data()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_selection_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_selection_data"})
+            return result
 
         @register_function(
             name="get_finnlp_data",
@@ -251,7 +287,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_finnlp_data(symbol: Optional[str] = None) -> Dict[str, Any]:
-            return self.get_finnlp_data(symbol)
+            start_time = time.time()
+            result = self.get_finnlp_data(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_finnlp_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_finnlp_data"})
+            return result
 
         @register_function(
             name="get_forecaster_data",
@@ -260,7 +301,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_forecaster_data(symbol: Optional[str] = None) -> Dict[str, Any]:
-            return self.get_forecaster_data(symbol)
+            start_time = time.time()
+            result = self.get_forecaster_data(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_forecaster_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_forecaster_data"})
+            return result
 
         @register_function(
             name="get_rag_data",
@@ -269,7 +315,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_rag_data(symbol: Optional[str] = None) -> Dict[str, Any]:
-            return self.get_rag_data(symbol)
+            start_time = time.time()
+            result = self.get_rag_data(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_rag_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_rag_data"})
+            return result
 
         @register_function(
             name="get_fundamental_data",
@@ -278,7 +329,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_fundamental_data(symbol: Optional[str] = None) -> Dict[str, Any]:
-            return self.get_fundamental_data(symbol)
+            start_time = time.time()
+            result = self.get_fundamental_data(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_fundamental_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_fundamental_data"})
+            return result
 
         @register_function(
             name="get_portfolio_data",
@@ -287,7 +343,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_portfolio_data() -> Dict[str, Any]:
-            return self.portfolio_analyzer.get_portfolio_data()
+            start_time = time.time()
+            result = self.portfolio_analyzer.get_portfolio_data()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_portfolio_data"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_portfolio_data"})
+            return result
 
         # Define decision-making functions
         @register_function(
@@ -299,7 +360,12 @@ class DecisionModel:
         def calculate_confidence_score(
             signals: Dict[str, Any], weights: Optional[Dict[str, float]] = None
         ) -> Dict[str, Any]:
-            return self.calculate_confidence_score(signals, weights)
+            start_time = time.time()
+            result = self.calculate_confidence_score(signals, weights)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "calculate_confidence_score"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "calculate_confidence_score"})
+            return result
 
         @register_function(
             name="calculate_optimal_position_size",
@@ -310,7 +376,12 @@ class DecisionModel:
         def calculate_optimal_position_size(
             symbol: str, confidence: float
         ) -> Dict[str, Any]:
-            return self.calculate_optimal_position_size(symbol, confidence)
+            start_time = time.time()
+            result = self.calculate_optimal_position_size(symbol, confidence)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "calculate_optimal_position_size"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "calculate_optimal_position_size"})
+            return result
 
         @register_function(
             name="calculate_portfolio_impact",
@@ -321,7 +392,12 @@ class DecisionModel:
         def calculate_portfolio_impact(
             symbol: str, position_size: float
         ) -> Dict[str, Any]:
-            return self.calculate_portfolio_impact(symbol, position_size)
+            start_time = time.time()
+            result = self.calculate_portfolio_impact(symbol, position_size)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "calculate_portfolio_impact"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "calculate_portfolio_impact"})
+            return result
 
         @register_function(
             name="evaluate_market_conditions",
@@ -330,7 +406,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def evaluate_market_conditions() -> Dict[str, Any]:
-            return self.market_state_analyzer.evaluate_market_conditions()
+            start_time = time.time()
+            result = self.market_state_analyzer.evaluate_market_conditions()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "evaluate_market_conditions"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "evaluate_market_conditions"})
+            return result
 
         @register_function(
             name="check_risk_limits",
@@ -341,7 +422,12 @@ class DecisionModel:
         def check_risk_limits(
             symbol: str, position_size: float, action: str
         ) -> Dict[str, Any]:
-            return self.risk_manager.check_risk_limits(symbol, position_size, action)
+            start_time = time.time()
+            result = self.risk_manager.check_risk_limits(symbol, position_size, action)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "check_risk_limits"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "check_risk_limits"})
+            return result
 
         @register_function(
             name="make_trade_decision",
@@ -352,7 +438,12 @@ class DecisionModel:
         def make_trade_decision(
             symbol: str, analysis_data: Dict[str, Any]
         ) -> Dict[str, Any]:
-            return self.make_trade_decision(symbol, analysis_data)
+            start_time = time.time()
+            result = self.make_trade_decision(symbol, analysis_data)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "make_trade_decision"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "make_trade_decision"})
+            return result
 
         @register_function(
             name="store_decision",
@@ -361,7 +452,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def store_decision(decision: Dict[str, Any]) -> bool:
-            return self.store_decision(decision)
+            start_time = time.time()
+            result = self.store_decision(decision)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "store_decision"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "store_decision"})
+            return result
 
         @register_function(
             name="get_recent_decisions",
@@ -370,7 +466,12 @@ class DecisionModel:
             executor=user_proxy,
         )
         def get_recent_decisions(limit: int = 10) -> List[Dict[str, Any]]:
-            return self.get_recent_decisions(limit)
+            start_time = time.time()
+            result = self.get_recent_decisions(limit)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_recent_decisions"})
+            self.logger.counter("decision_model.function_call_count", tags={"function": "get_recent_decisions"})
+            return result
 
         # Register MCP tool access functions
         self._register_mcp_tool_access()
@@ -392,7 +493,20 @@ class DecisionModel:
         def use_decision_analytics_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.decision_analytics_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.decision_analytics_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "decision_analytics", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "decision_analytics", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Decision Analytics tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "decision_analytics", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "decision_analytics", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="use_portfolio_optimization_tool",
@@ -403,7 +517,19 @@ class DecisionModel:
         def use_portfolio_optimization_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.portfolio_optimization_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.portfolio_optimization_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "portfolio_optimization", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "portfolio_optimization", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Portfolio Optimization tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "portfolio_optimization", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "portfolio_optimization", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_drift_detection_tool",
@@ -412,7 +538,19 @@ class DecisionModel:
             executor=user_proxy,
         )
         def use_drift_detection_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.drift_detection_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.drift_detection_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "drift_detection", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "drift_detection", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Drift Detection tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "drift_detection", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "drift_detection", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_redis_tool",
@@ -421,7 +559,19 @@ class DecisionModel:
             executor=user_proxy,
         )
         def use_redis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.redis_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.redis_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "redis", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "redis", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Redis tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "redis", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "redis", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         # Register RAG-related MCP tool access functions
         @register_function(
@@ -431,7 +581,19 @@ class DecisionModel:
             executor=user_proxy,
         )
         def use_embeddings_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.embeddings_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.embeddings_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "embeddings", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "embeddings", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Embeddings tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "embeddings", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "embeddings", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_vector_db_tool",
@@ -440,7 +602,19 @@ class DecisionModel:
             executor=user_proxy,
         )
         def use_vector_db_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.vector_db_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.vector_db_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "vector_db", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "vector_db", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Vector DB tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "vector_db", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "vector_db", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_document_retrieval_tool",
@@ -451,7 +625,19 @@ class DecisionModel:
         def use_document_retrieval_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.document_retrieval_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.document_retrieval_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "document_retrieval", "tool": tool_name, "status": "success"})
+                self.logger.counter("decision_model.mcp_tool_call_count", tags={"server": "document_retrieval", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Document Retrieval tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("decision_model.mcp_tool_error_count", tags={"server": "document_retrieval", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.mcp_tool_call_duration_ms", duration, tags={"server": "document_retrieval", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
     def process_analysis_results(
         self,
@@ -475,71 +661,101 @@ class DecisionModel:
             List of trading decisions
         """
         self.logger.info("Processing analysis results from all models")
+        self.total_decision_cycles += 1
+        start_time = time.time()
 
-        # Get candidates from selection data
-        candidates = selection_data.get("candidates", [])
-        if not candidates:
-            self.logger.warning("No candidates found in selection data")
+        try:
+            # Get candidates from selection data
+            candidates = selection_data.get("candidates", [])
+            if not candidates:
+                self.logger.warning("No candidates found in selection data")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.process_analysis_results_duration_ms", duration, tags={"status": "no_candidates"})
+                return []
+
+            # Get market conditions
+            market_conditions = self.market_state_analyzer.evaluate_market_conditions()
+
+            # Get portfolio constraints
+            portfolio_data = self.portfolio_analyzer.get_portfolio_data()
+
+            # Process each candidate
+            decisions = []
+            for candidate in candidates:
+                symbol = candidate.get("symbol")
+                if not symbol:
+                    continue
+
+                # Gather all analysis data for this symbol
+                symbol_analysis = {
+                    "selection": candidate,
+                    "finnlp": self._get_symbol_data(finnlp_data, symbol),
+                    "forecaster": self._get_symbol_data(forecaster_data, symbol),
+                    "rag": self._get_symbol_data(rag_data, symbol),
+                    "fundamental": self.get_fundamental_data(symbol)
+                    if fundamental_data is None
+                    else self._get_symbol_data(fundamental_data, symbol),
+                    "market_conditions": market_conditions,
+                }
+
+                # Make decision for this symbol
+                decision = self.make_trade_decision(symbol, symbol_analysis)
+
+                # Apply risk management
+                if decision.get("action") != "hold":
+                    risk_check = self.risk_manager.check_risk_limits(
+                        symbol, decision.get("position_size", 0), decision.get("action", "")
+                    )
+
+                    if not risk_check.get("approved", False):
+                        self.logger.warning(
+                            f"Trade for {symbol} rejected by risk management: {risk_check.get('reason')}"
+                        )
+                        self.risk_rejections_count += 1
+                        self.logger.counter("decision_model.risk_rejections_count")
+                        decision["action"] = "hold"
+                        decision["reason"] = f"Risk management: {risk_check.get('reason')}"
+                    else:
+                        # Ensure position size is valid after risk check
+                        if decision.get("position_size", 0) <= 0:
+                            self.logger.warning(
+                                f"Invalid position size (<=0) for {symbol} after risk check."
+                            )
+                            self.risk_rejections_count += 1 # Count as a risk rejection due to invalid size
+                            self.logger.counter("decision_model.risk_rejections_count")
+                            decision["action"] = "hold"
+                            decision["reason"] = "Invalid position size after risk check"
+
+                # Store the decision (even if 'hold')
+                if decision:
+                    self.store_decision(decision)
+                    # Only add actionable decisions to the list to be executed
+                    if decision.get("action") != "hold":
+                        decisions.append(decision)
+
+            self.logger.info(f"Made {len(decisions)} actionable trading decisions")
+            self.decisions_made_count += len(decisions)
+            self.logger.counter("decision_model.actionable_decisions_count", len(decisions))
+            self.logger.gauge("decision_model.total_decisions_made", self.decisions_made_count)
+            self.logger.gauge("decision_model.risk_rejection_rate", (self.risk_rejections_count / self.total_decision_cycles) * 100 if self.total_decision_cycles > 0 else 0)
+
+
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.process_analysis_results_duration_ms", duration, tags={"status": "success"})
+
+            return decisions
+
+        except Exception as e:
+            self.logger.error(f"Error processing analysis results: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            self.logger.gauge("decision_model.execution_error_rate", (self.execution_errors / self.total_decision_cycles) * 100 if self.total_decision_cycles > 0 else 0)
+
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.process_analysis_results_duration_ms", duration, tags={"status": "failed"})
+
             return []
 
-        # Get market conditions
-        market_conditions = self.market_state_analyzer.evaluate_market_conditions()
-
-        # Get portfolio constraints
-        portfolio_data = self.portfolio_analyzer.get_portfolio_data()
-
-        # Process each candidate
-        decisions = []
-        for candidate in candidates:
-            symbol = candidate.get("symbol")
-            if not symbol:
-                continue
-
-            # Gather all analysis data for this symbol
-            symbol_analysis = {
-                "selection": candidate,
-                "finnlp": self._get_symbol_data(finnlp_data, symbol),
-                "forecaster": self._get_symbol_data(forecaster_data, symbol),
-                "rag": self._get_symbol_data(rag_data, symbol),
-                "fundamental": self.get_fundamental_data(symbol)
-                if fundamental_data is None
-                else self._get_symbol_data(fundamental_data, symbol),
-                "market_conditions": market_conditions,
-            }
-
-            # Make decision for this symbol
-            decision = self.make_trade_decision(symbol, symbol_analysis)
-
-            # Apply risk management
-            if decision.get("action") != "hold":
-                risk_check = self.risk_manager.check_risk_limits(
-                    symbol, decision.get("position_size", 0), decision.get("action", "")
-                )
-
-                if not risk_check.get("approved", False):
-                    self.logger.warning(
-                        f"Trade for {symbol} rejected by risk management: {risk_check.get('reason')}"
-                    )
-                    decision["action"] = "hold"
-                    decision["reason"] = f"Risk management: {risk_check.get('reason')}"
-                else:
-                    # Ensure position size is valid after risk check
-                    if decision.get("position_size", 0) <= 0:
-                        self.logger.warning(
-                            f"Invalid position size (<=0) for {symbol} after risk check."
-                        )
-                        decision["action"] = "hold"
-                        decision["reason"] = "Invalid position size after risk check"
-
-            # Store the decision (even if 'hold')
-            if decision:
-                self.store_decision(decision)
-                # Only add actionable decisions to the list to be executed
-                if decision.get("action") != "hold":
-                    decisions.append(decision)
-
-        self.logger.info(f"Made {len(decisions)} actionable trading decisions")
-        return decisions
 
     def _get_symbol_data(
         self, model_data: Dict[str, Any], symbol: str
@@ -581,9 +797,24 @@ class DecisionModel:
             Trading decision
         """
         self.logger.info(f"Making trade decision for {symbol} using AutoGen agent")
+        start_time = time.time()
 
         decision_assistant = self.agents["decision_assistant"]
         user_proxy = self.agents["user_proxy"]
+
+        if not decision_assistant or not user_proxy:
+             self.logger.error("AutoGen agents not initialized for make_trade_decision")
+             self.execution_errors += 1
+             self.logger.counter("decision_model.execution_errors")
+             duration = (time.time() - start_time) * 1000
+             self.logger.timing("decision_model.make_trade_decision_duration_ms", duration, tags={"status": "failed", "reason": "agents_not_initialized"})
+             return {
+                "symbol": symbol,
+                "action": "hold",
+                "reasoning": "AutoGen agents not initialized",
+                "timestamp": datetime.now().isoformat(),
+            }
+
 
         # Prepare the prompt for the decision assistant
         prompt = f"""
@@ -615,7 +846,13 @@ class DecisionModel:
 
         # Initiate chat with the decision assistant
         try:
+            llm_call_start_time = time.time()
             user_proxy.initiate_chat(decision_assistant, message=prompt)
+            llm_call_duration = (time.time() - llm_call_start_time) * 1000
+            self.logger.timing("decision_model.llm_call_duration_ms", llm_call_duration)
+            self.llm_api_call_count += 1
+            self.logger.counter("decision_model.llm_api_call_count")
+
             # Get the last message from the assistant
             last_message = user_proxy.last_message(decision_assistant)
             content = last_message.get("content", "")
@@ -647,11 +884,31 @@ class DecisionModel:
                     self.logger.info(
                         f"Decision made for {symbol}: {decision.get('action')}"
                     )
+                    self.logger.gauge("decision_model.confidence_score", decision.get("confidence", 0.0), tags={"symbol": symbol})
+                    action = decision.get("action")
+                    if action == "buy":
+                        self.buy_decisions_count += 1
+                        self.logger.counter("decision_model.buy_decisions_count")
+                    elif action == "sell":
+                        self.sell_decisions_count += 1
+                        self.logger.counter("decision_model.sell_decisions_count")
+                    else:
+                        self.hold_decisions_count += 1
+                        self.logger.counter("decision_model.hold_decisions_count")
+
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("decision_model.make_trade_decision_duration_ms", duration, tags={"status": "success", "action": action})
+
                     return decision
                 else:
                     self.logger.warning(
                         f"Could not parse JSON decision from agent response for {symbol}. Content: {content}"
                     )
+                    self.execution_errors += 1
+                    self.logger.counter("decision_model.execution_errors")
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("decision_model.make_trade_decision_duration_ms", duration, tags={"status": "failed", "reason": "json_parse_error"})
+
                     return {
                         "symbol": symbol,
                         "action": "hold",
@@ -663,6 +920,11 @@ class DecisionModel:
                 self.logger.error(
                     f"Error decoding JSON decision for {symbol}: {e}. Content: {content}"
                 )
+                self.execution_errors += 1
+                self.logger.counter("decision_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.make_trade_decision_duration_ms", duration, tags={"status": "failed", "reason": "json_decode_error"})
+
                 return {
                     "symbol": symbol,
                     "action": "hold",
@@ -672,6 +934,11 @@ class DecisionModel:
 
         except Exception as e:
             self.logger.error(f"Error during AutoGen chat for {symbol}: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.make_trade_decision_duration_ms", duration, tags={"status": "failed", "reason": "autogen_chat_error"})
+
             return {
                 "symbol": symbol,
                 "action": "hold",
@@ -692,10 +959,23 @@ class DecisionModel:
         Returns:
             Confidence score and breakdown
         """
-        # Use the DecisionAnalyticsMCP to calculate confidence score
-        return self.decision_analytics_mcp.calculate_confidence_score(
-            signals, weights, self.confidence_threshold
-        )
+        start_time = time.time()
+        try:
+            # Use the DecisionAnalyticsMCP to calculate confidence score
+            result = self.decision_analytics_mcp.calculate_confidence_score(
+                signals, weights, self.confidence_threshold
+            )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_confidence_score_duration_ms", duration, tags={"status": "success"})
+            return result
+        except Exception as e:
+            self.logger.error(f"Error calculating confidence score: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_confidence_score_duration_ms", duration, tags={"status": "failed"})
+            return {"error": str(e)}
+
 
     def calculate_optimal_position_size(
         self, symbol: str, confidence: float
@@ -710,17 +990,30 @@ class DecisionModel:
         Returns:
             Optimal position size and reasoning
         """
-        # Get portfolio data
-        portfolio_data = self.portfolio_analyzer.get_portfolio_data()
+        start_time = time.time()
+        try:
+            # Get portfolio data
+            portfolio_data = self.portfolio_analyzer.get_portfolio_data()
 
-        # Use the PortfolioOptimizationMCP to calculate position size
-        return self.portfolio_optimization_mcp.calculate_optimal_position_size(
-            symbol=symbol,
-            confidence=confidence,
-            portfolio_data=portfolio_data,
-            max_position_pct=self.max_position_size_pct,
-            risk_per_trade_pct=self.risk_per_trade_pct,
-        )
+            # Use the PortfolioOptimizationMCP to calculate position size
+            result = self.portfolio_optimization_mcp.calculate_optimal_position_size(
+                symbol=symbol,
+                confidence=confidence,
+                portfolio_data=portfolio_data,
+                max_position_pct=self.max_position_size_pct,
+                risk_per_trade_pct=self.risk_per_trade_pct,
+            )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_optimal_position_size_duration_ms", duration, tags={"status": "success"})
+            return result
+        except Exception as e:
+            self.logger.error(f"Error calculating optimal position size for {symbol}: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_optimal_position_size_duration_ms", duration, tags={"status": "failed"})
+            return {"error": str(e)}
+
 
     def calculate_portfolio_impact(
         self, symbol: str, position_size: float
@@ -735,19 +1028,32 @@ class DecisionModel:
         Returns:
             Portfolio impact metrics
         """
-        # Get portfolio data
-        portfolio_data = self.portfolio_analyzer.get_portfolio_data()
+        start_time = time.time()
+        try:
+            # Get portfolio data
+            portfolio_data = self.portfolio_analyzer.get_portfolio_data()
 
-        # Get correlation data if available
-        correlation_data = self.portfolio_analyzer.get_correlation_data()
+            # Get correlation data if available
+            correlation_data = self.portfolio_analyzer.get_correlation_data()
 
-        # Use the PortfolioOptimizationMCP to calculate portfolio impact
-        return self.portfolio_optimization_mcp.calculate_portfolio_impact(
-            symbol=symbol,
-            position_size=position_size,
-            portfolio_data=portfolio_data,
-            correlation_data=correlation_data,
-        )
+            # Use the PortfolioOptimizationMCP to calculate portfolio impact
+            result = self.portfolio_optimization_mcp.calculate_portfolio_impact(
+                symbol=symbol,
+                position_size=position_size,
+                portfolio_data=portfolio_data,
+                correlation_data=correlation_data,
+            )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_portfolio_impact_duration_ms", duration, tags={"status": "success"})
+            return result
+        except Exception as e:
+            self.logger.error(f"Error calculating portfolio impact for {symbol}: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.calculate_portfolio_impact_duration_ms", duration, tags={"status": "failed"})
+            return {"error": str(e)}
+
 
     def store_decision(self, decision: Dict[str, Any]) -> bool:
         """
@@ -759,6 +1065,7 @@ class DecisionModel:
         Returns:
             True if successful, False otherwise
         """
+        start_time = time.time()
         try:
             # Generate a unique ID if not present
             if "id" not in decision:
@@ -780,9 +1087,15 @@ class DecisionModel:
                     f"decision:history:{symbol}", decision.get("id"), int(time.time())
                 )
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.store_decision_duration_ms", duration, tags={"status": "success"})
             return True
         except Exception as e:
             self.logger.error(f"Error storing decision: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.store_decision_duration_ms", duration, tags={"status": "failed"})
             return False
 
     def get_recent_decisions(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -795,6 +1108,7 @@ class DecisionModel:
         Returns:
             List of recent trading decisions
         """
+        start_time = time.time()
         try:
             # Get decision IDs from sorted set (newest first)
             decision_ids = self.redis_mcp.get_sorted_set_members(
@@ -802,6 +1116,8 @@ class DecisionModel:
             )
 
             if not decision_ids:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.get_recent_decisions_duration_ms", duration, tags={"status": "not_found"})
                 return []
 
             # Get decision details for each ID
@@ -812,9 +1128,15 @@ class DecisionModel:
                 if decision:
                     decisions.append(decision)
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_recent_decisions_duration_ms", duration, tags={"status": "success"})
             return decisions
         except Exception as e:
             self.logger.error(f"Error getting recent decisions: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_recent_decisions_duration_ms", duration, tags={"status": "failed"})
             return []
 
     def get_selection_data(self) -> Dict[str, Any]:
@@ -824,10 +1146,18 @@ class DecisionModel:
         Returns:
             Selection Model data
         """
+        start_time = time.time()
         try:
-            return self.redis_mcp.get_json(self.redis_keys["selection_data"]) or {}
+            result = self.redis_mcp.get_json(self.redis_keys["selection_data"]) or {}
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_selection_data_duration_ms", duration, tags={"status": "success" if result else "not_found"})
+            return result
         except Exception as e:
             self.logger.error(f"Error getting selection data: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_selection_data_duration_ms", duration, tags={"status": "failed"})
             return {}
 
     def get_finnlp_data(self, symbol: Optional[str] = None) -> Dict[str, Any]:
@@ -840,16 +1170,25 @@ class DecisionModel:
         Returns:
             FinNLP Model data
         """
+        start_time = time.time()
         try:
             data = self.redis_mcp.get_json(self.redis_keys["finnlp_data"]) or {}
 
             if symbol and "symbols" in data:
                 symbol_data = data.get("symbols", {}).get(symbol, {})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.get_finnlp_data_duration_ms", duration, tags={"status": "success" if symbol_data else "not_found", "symbol": symbol})
                 return {"symbols": {symbol: symbol_data}} if symbol_data else {}
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_finnlp_data_duration_ms", duration, tags={"status": "success" if data else "not_found", "symbol": "all"})
             return data
         except Exception as e:
             self.logger.error(f"Error getting FinNLP data: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_finnlp_data_duration_ms", duration, tags={"status": "failed", "symbol": symbol or "all"})
             return {}
 
     def get_forecaster_data(self, symbol: Optional[str] = None) -> Dict[str, Any]:
@@ -862,16 +1201,25 @@ class DecisionModel:
         Returns:
             Forecaster Model data
         """
+        start_time = time.time()
         try:
             data = self.redis_mcp.get_json(self.redis_keys["forecaster_data"]) or {}
 
             if symbol and "symbols" in data:
                 symbol_data = data.get("symbols", {}).get(symbol, {})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.get_forecaster_data_duration_ms", duration, tags={"status": "success" if symbol_data else "not_found", "symbol": symbol})
                 return {"symbols": {symbol: symbol_data}} if symbol_data else {}
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_forecaster_data_duration_ms", duration, tags={"status": "success" if data else "not_found", "symbol": "all"})
             return data
         except Exception as e:
             self.logger.error(f"Error getting Forecaster data: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_forecaster_data_duration_ms", duration, tags={"status": "failed", "symbol": symbol or "all"})
             return {}
 
     def get_rag_data(self, symbol: Optional[str] = None) -> Dict[str, Any]:
@@ -884,6 +1232,7 @@ class DecisionModel:
         Returns:
             RAG Model data
         """
+        start_time = time.time()
         try:
             # First try to get data from Redis
             data = self.redis_mcp.get_json(self.redis_keys["rag_data"]) or {}
@@ -891,6 +1240,8 @@ class DecisionModel:
             if symbol and "symbols" in data:
                 symbol_data = data.get("symbols", {}).get(symbol, {})
                 if symbol_data:
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "success_redis", "symbol": symbol})
                     return {"symbols": {symbol: symbol_data}}
 
             #
@@ -900,11 +1251,15 @@ class DecisionModel:
                 try:
                     # Query for relevant documents about this symbol
                     query = f"latest information about {symbol} stock"
+                    retrieval_start_time = time.time()
                     retrieval_result = self.document_retrieval_mcp.retrieve_by_text(
                         query_text=query,
                         top_k=5,
                         where_filter={"symbol": symbol} if symbol else None,
                     )
+                    retrieval_duration = (time.time() - retrieval_start_time) * 1000
+                    self.logger.timing("decision_model.rag_retrieval_duration_ms", retrieval_duration, tags={"symbol": symbol, "status": "success" if retrieval_result and not retrieval_result.get("error") else "failed"})
+
 
                     if retrieval_result and not retrieval_result.get("error"):
                         #
@@ -933,17 +1288,38 @@ class DecisionModel:
                         data["symbols"][symbol] = context_data
                         self.redis_mcp.set_json(self.redis_keys["rag_data"], data)
 
+                        duration = (time.time() - start_time) * 1000
+                        self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "success_retrieval", "symbol": symbol})
                         return {"symbols": {symbol: context_data}}
+                    else:
+                         self.logger.error(f"Document retrieval failed for {symbol}: {retrieval_result.get('error', 'Unknown error')}")
+                         self.execution_errors += 1
+                         self.logger.counter("decision_model.execution_errors")
+                         duration = (time.time() - start_time) * 1000
+                         self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "failed_retrieval", "symbol": symbol})
+                         return {"error": retrieval_result.get('error', 'Unknown retrieval error')}
+
                 except Exception as e:
                     self.logger.error(
                         f"Error retrieving RAG data from DocumentRetrievalMCP: {e}"
                     )
+                    self.execution_errors += 1
+                    self.logger.counter("decision_model.execution_errors")
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "failed_retrieval_exception", "symbol": symbol})
                     # Fall back to Redis data or empty dict
 
+
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "success_redis_all" if data else "not_found_redis_all", "symbol": "all"})
             return data
         except Exception as e:
             self.logger.error(f"Error getting RAG data: {e}")
-            return {}
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_rag_data_duration_ms", duration, tags={"status": "failed", "symbol": symbol or "all"})
+            return {"error": str(e)}
 
     def handle_position_update(self, update_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -956,6 +1332,7 @@ class DecisionModel:
             Response with action taken
         """
         self.logger.info(f"Handling position update: {update_data.get('event_type')}")
+        start_time = time.time()
 
         event_type = update_data.get("event_type")
         event_data = update_data.get("event_data", {})
@@ -966,33 +1343,49 @@ class DecisionModel:
             "timestamp": datetime.now().isoformat(),
         }
 
-        # Handle different event types
-        if event_type == "position_closed":
-            symbol = event_data.get("symbol")
-            reason = event_data.get("reason")
-
-            self.logger.info(f"Position closed for {symbol}: {reason}")
-            response["action_taken"] = "position_recorded"
-
-        elif event_type == "capital_available":
-            amount = event_data.get("amount", 0.0)
-
-            if amount > 0:
-                # Request new selections if significant capital is available
-                if amount >= 1000:  # Minimum threshold for new selections
-                    self.request_new_selections(amount)
-                    response["action_taken"] = "new_selections_requested"
-                else:
-                    response["action_taken"] = "capital_noted"
-
-        # Store the response in Redis
         try:
-            key = f"decision:response:{int(time.time())}"
-            self.redis_mcp.set_json(key, response)
-        except Exception as e:
-            self.logger.error(f"Error storing position update response: {e}")
+            # Handle different event types
+            if event_type == "position_closed":
+                symbol = event_data.get("symbol")
+                reason = event_data.get("reason")
 
-        return response
+                self.logger.info(f"Position closed for {symbol}: {reason}")
+                response["action_taken"] = "position_recorded"
+
+            elif event_type == "capital_available":
+                amount = event_data.get("amount", 0.0)
+
+                if amount > 0:
+                    # Request new selections if significant capital is available
+                    if amount >= 1000:  # Minimum threshold for new selections
+                        self.request_new_selections(amount)
+                        response["action_taken"] = "new_selections_requested"
+                    else:
+                        response["action_taken"] = "capital_noted"
+
+            # Store the response in Redis
+            try:
+                key = f"decision:response:{int(time.time())}"
+                self.redis_mcp.set_json(key, response)
+            except Exception as e:
+                self.logger.error(f"Error storing position update response: {e}")
+                self.execution_errors += 1
+                self.logger.counter("decision_model.execution_errors")
+
+
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.handle_position_update_duration_ms", duration, tags={"event_type": event_type, "action_taken": response["action_taken"]})
+
+            return response
+
+        except Exception as e:
+            self.logger.error(f"Error handling position update: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.handle_position_update_duration_ms", duration, tags={"event_type": event_type, "status": "failed"})
+            return {"error": str(e)}
+
 
     def request_new_selections(self, available_capital: float) -> Dict[str, Any]:
         """
@@ -1007,6 +1400,7 @@ class DecisionModel:
         self.logger.info(
             f"Requesting new selections with {available_capital:.2f} available capital"
         )
+        start_time = time.time()
 
         # Create selection request
         request = {
@@ -1026,9 +1420,16 @@ class DecisionModel:
             
             self.logger.info(f"Selection request sent with ID: {request['request_id']}")
             
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.request_new_selections_duration_ms", duration, tags={"status": "success"})
+
             return request
         except Exception as e:
             self.logger.error(f"Error requesting new selections: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.request_new_selections_duration_ms", duration, tags={"status": "failed"})
             return {"error": str(e)}
             
     def check_selection_responses(self) -> List[Dict[str, Any]]:
@@ -1041,6 +1442,7 @@ class DecisionModel:
         Returns:
             List of processed selection responses
         """
+        start_time = time.time()
         try:
             # Read from the selection responses stream
             stream_key = "selection:responses"
@@ -1048,6 +1450,8 @@ class DecisionModel:
             
             if not responses:
                 self.logger.debug("No new selection responses found")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.check_selection_responses_duration_ms", duration, tags={"status": "no_responses"})
                 return []
                 
             processed_responses = []
@@ -1073,10 +1477,17 @@ class DecisionModel:
                 # Acknowledge the message
                 self.redis_mcp.acknowledge_from_stream(stream_key, response_id)
                 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.check_selection_responses_duration_ms", duration, tags={"status": "success", "responses_count": len(processed_responses)})
+
             return processed_responses
             
         except Exception as e:
             self.logger.error(f"Error checking selection responses: {e}")
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.check_selection_responses_duration_ms", duration, tags={"status": "failed"})
             return []
             
     def _refresh_selection_data(self):
@@ -1099,12 +1510,15 @@ class DecisionModel:
         Returns:
             Fundamental Analysis Model data
         """
+        start_time = time.time()
         try:
             if symbol:
                 # Get symbol-specific fundamental data
                 key = f"{self.redis_keys['fundamental_data']}{symbol}"
                 data = self.redis_mcp.get_json(key)
                 if data:
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("decision_model.get_fundamental_data_duration_ms", duration, tags={"status": "success", "symbol": symbol})
                     return data
 
             #
@@ -1113,15 +1527,23 @@ class DecisionModel:
             # This would require scanning Redis for keys with the prefix
             if symbol:
                 self.logger.warning(f"No fundamental data found for symbol {symbol}")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.get_fundamental_data_duration_ms", duration, tags={"status": "not_found", "symbol": symbol})
                 return {}
 
             # For getting all fundamental data (not implemented yet)
             self.logger.warning("Retrieving all fundamental data not implemented")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_fundamental_data_duration_ms", duration, tags={"status": "not_implemented", "symbol": "all"})
             return {}
 
         except Exception as e:
             self.logger.error(f"Error getting fundamental data: {e}")
-            return {}
+            self.execution_errors += 1
+            self.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.get_fundamental_data_duration_ms", duration, tags={"status": "failed", "symbol": symbol or "all"})
+            return {"error": str(e)}
 
 
 # --- Helper Component Classes ---
@@ -1136,6 +1558,7 @@ class PortfolioAnalyzer:
 
     def get_portfolio_data(self) -> Dict[str, Any]:
         """Get current portfolio data from Redis."""
+        start_time = time.time()
         try:
             account_info = (
                 self.decision_model.redis_mcp.get_json(
@@ -1167,17 +1590,26 @@ class PortfolioAnalyzer:
                 "total_positions": portfolio_summary.get("total_positions", 0),
                 "last_updated": portfolio_summary.get("timestamp"),
             }
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.portfolio_analyzer.get_portfolio_data_duration_ms", duration, tags={"status": "success"})
             return portfolio_data
         except Exception as e:
             self.logger.error(f"Error getting portfolio data: {e}")
-            return {}
+            self.decision_model.execution_errors += 1
+            self.decision_model.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.portfolio_analyzer.get_portfolio_data_duration_ms", duration, tags={"status": "failed"})
+            return {"error": str(e)}
 
     def get_correlation_data(self) -> Dict[str, Any]:
         """Get asset correlation data (placeholder)."""
+        start_time = time.time()
         #
         # In a real implementation, this would fetch or calculate correlation
         # data
         self.logger.warning("Correlation data retrieval is not fully implemented.")
+        duration = (time.time() - start_time) * 1000
+        self.logger.timing("decision_model.portfolio_analyzer.get_correlation_data_duration_ms", duration, tags={"status": "not_implemented"})
         return {}
 
 
@@ -1194,43 +1626,62 @@ class RiskManager:
         self, symbol: str, position_size: float, action: str
     ) -> Dict[str, Any]:
         """Check if a proposed trade meets risk limits."""
-        portfolio_data = self.decision_model.portfolio_analyzer.get_portfolio_data()
-        portfolio_value = portfolio_data.get("portfolio_value", 0.0)
-        buying_power = portfolio_data.get("buying_power", 0.0)
+        start_time = time.time()
+        try:
+            portfolio_data = self.decision_model.portfolio_analyzer.get_portfolio_data()
+            portfolio_value = portfolio_data.get("portfolio_value", 0.0)
+            buying_power = portfolio_data.get("buying_power", 0.0)
 
-        if portfolio_value <= 0:
-            return {"approved": False, "reason": "Invalid portfolio value"}
+            if portfolio_value <= 0:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "failed", "reason": "invalid_portfolio_value"})
+                return {"approved": False, "reason": "Invalid portfolio value"}
 
-        # Check max position size
-        max_position_value = portfolio_value * (self.max_position_pct / 100.0)
-        if position_size > max_position_value:
-            return {
-                "approved": False,
-                "reason": f"Position size ({position_size:.2f}) exceeds max limit ({max_position_value:.2f})",
-            }
+            # Check max position size
+            max_position_value = portfolio_value * (self.max_position_pct / 100.0)
+            if position_size > max_position_value:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "failed", "reason": "max_position_exceeded"})
+                return {
+                    "approved": False,
+                    "reason": f"Position size ({position_size:.2f}) exceeds max limit ({max_position_value:.2f})",
+                }
 
-        # Check buying power
-        if action == "buy" and position_size > buying_power:
-            return {
-                "approved": False,
-                "reason": f"Position size ({position_size:.2f}) exceeds buying power ({buying_power:.2f})",
-            }
+            # Check buying power
+            if action == "buy" and position_size > buying_power:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "failed", "reason": "buying_power_exceeded"})
+                return {
+                    "approved": False,
+                    "reason": f"Position size ({position_size:.2f}) exceeds buying power ({buying_power:.2f})",
+                }
 
-        #
-        # Check risk per trade (simplified - assumes stop loss is set
-        # elsewhere)
-        # A more robust check would involve volatility and stop-loss distance
-        max_risk_amount = portfolio_value * (self.risk_per_trade_pct / 100.0)
-        # Assuming risk is proportional to position size for now
-        if (
-            position_size > max_risk_amount * 20
-        ):  # Example: Max size is 20x max risk amount (5% risk)
-            return {
-                "approved": False,
-                "reason": f"Position size ({position_size:.2f}) implies risk exceeding limit ({max_risk_amount:.2f})",
-            }
+            #
+            # Check risk per trade (simplified - assumes stop loss is set
+            # elsewhere)
+            # A more robust check would involve volatility and stop-loss distance
+            max_risk_amount = portfolio_value * (self.risk_per_trade_pct / 100.0)
+            # Assuming risk is proportional to position size for now
+            if (
+                position_size > max_risk_amount * 20
+            ):  # Example: Max size is 20x max risk amount (5% risk)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "failed", "reason": "risk_per_trade_exceeded"})
+                return {
+                    "approved": False,
+                    "reason": f"Position size ({position_size:.2f}) implies risk exceeding limit ({max_risk_amount:.2f})",
+                }
 
-        return {"approved": True, "reason": "Within risk limits"}
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "success"})
+            return {"approved": True, "reason": "Within risk limits"}
+        except Exception as e:
+            self.logger.error(f"Error checking risk limits for {symbol}: {e}")
+            self.decision_model.execution_errors += 1
+            self.decision_model.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.risk_manager.check_risk_limits_duration_ms", duration, tags={"status": "failed", "reason": "exception"})
+            return {"approved": False, "reason": f"Risk check error: {e}"}
 
 
 class MarketStateAnalyzer:
@@ -1242,6 +1693,7 @@ class MarketStateAnalyzer:
 
     def evaluate_market_conditions(self) -> Dict[str, Any]:
         """Evaluate market conditions using Polygon REST MCP."""
+        start_time = time.time()
         try:
             # Get market status
             market_status = self.decision_model.polygon_rest_mcp.get_market_status()
@@ -1276,7 +1728,7 @@ class MarketStateAnalyzer:
             # drift_result.get("trend") == "downtrend":
             #     market_state = "trending"
 
-            return {
+            result = {
                 "is_market_open": market_status.get("market", "closed") == "open",
                 "volatility_index": vix_value,
                 "volatility_state": volatility,
@@ -1284,6 +1736,13 @@ class MarketStateAnalyzer:
                 "spy_price": spy_price,
                 "timestamp": datetime.now().isoformat(),
             }
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.market_state_analyzer.evaluate_market_conditions_duration_ms", duration, tags={"status": "success"})
+            return result
         except Exception as e:
             self.logger.error(f"Error evaluating market conditions: {e}")
+            self.decision_model.execution_errors += 1
+            self.decision_model.logger.counter("decision_model.execution_errors")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("decision_model.market_state_analyzer.evaluate_market_conditions_duration_ms", duration, tags={"status": "failed"})
             return {"error": str(e)}

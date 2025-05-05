@@ -7,7 +7,7 @@ It integrates with data retrieval, document processing, query reformulation, and
 relevance feedback MCP tools.
 """
 
-import logging
+from monitoring.netdata_logger import NetdataLogger
 import json
 import time
 import os
@@ -17,11 +17,11 @@ load_dotenv()
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-# Import monitoring
-from monitoring.system_monitor import MonitoringManager
+# No longer using MonitoringManager; replaced by NetdataLogger
 
 # For Redis integration
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
+from monitoring.system_metrics import SystemMetricsCollector
 
 # MCP tools
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
@@ -65,28 +65,35 @@ class ContextModel:
                 - context_data_ttl: Time-to-live for context data in seconds (default: 3600 - 1 hour)
                 - llm_config: Configuration for AutoGen LLM
         """
-        self.config = config or {}
-        self.logger = logging.getLogger(__name__)
+        init_start_time = time.time()
+        # Set up NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-context-model")
 
-        # Initialize logging
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        # Initialize system metrics collector
+        self.metrics_collector = SystemMetricsCollector(self.logger)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="nextgen_context_model-context-model"
-        )
-        self.monitor.log_info(
-            "ContextModel initialized",
-            component="context_model",
-            action="initialization",
-        )
+        # Start collecting system metrics
+        self.metrics_collector.start()
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_context_model", "context_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize MCP clients
         # Data Sources (example: Polygon News, Reddit, Yahoo Finance/News - add others as needed)
@@ -148,7 +155,72 @@ class ContextModel:
         # Register functions with the agents
         self._register_functions()
 
+        # Configuration parameters
+        self.context_data_ttl = self.config.get(
+            "context_data_ttl", 3600
+        )  # Default: 1 hour
+
+        # Redis keys for data storage
+        self.redis_keys = {
+            "context_data": "context:data:",  # Prefix for general contextual data
+            "document_chunks": "context:chunks:",  # Prefix for document chunks
+            "document_metadata": "context:metadata:",  # Prefix for document metadata
+            "query_history": "context:queries:",  # Prefix for query history
+            "feedback_data": "context:feedback:",  # Prefix for feedback data
+            "latest_context_update": "context:latest_update",  # Latest context update timestamp
+        }
+
+        # Initialize MCP clients
+        # Data Sources (example: Polygon News, Reddit, Yahoo Finance/News - add others as needed)
+        self.data_sources: Dict[str, BaseDataMCP] = {}
+        data_sources_config = self.config.get("data_sources_config", {})
+        for source_name, source_config in data_sources_config.items():
+            try:
+                # Dynamically import and initialize data source MCPs
+                module_path = source_config.get("module_path")
+                class_name = source_config.get("class_name")
+                if module_path and class_name:
+                    module = __import__(module_path, fromlist=[class_name])
+                    data_source_class = getattr(module, class_name)
+                    self.data_sources[source_name] = data_source_class(
+                        source_config.get("config")
+                    )
+                    self.logger.info(f"Initialized data source MCP: {source_name}")
+                else:
+                    self.logger.warning(
+                        f"Skipping data source '{source_name}': module_path or class_name missing in config."
+                    )
+            except Exception as e:
+                self.logger.error(
+                    f"Error initializing data source MCP '{source_name}': {e}"
+                )
+
+        self.document_processing_mcp = DocumentProcessingMCP(
+            self.config.get("document_processing_config")
+        )
+        self.embeddings_mcp = EmbeddingsMCP(self.config.get("embeddings_config"))
+        self.vector_db_mcp = VectorDBMCP(self.config.get("vector_db_config"))
+        self.query_reformulation_mcp = QueryReformulationMCP(
+            self.config.get("query_reformulation_config")
+        )
+        self.relevance_feedback_mcp = RelevanceFeedbackMCP(
+            self.config.get("relevance_feedback_config")
+        )
+        self.redis_mcp = RedisMCP(self.config.get("redis_config"))
+
+        # Initialize AutoGen integration
+        self.llm_config = self._get_llm_config()
+        self.agents = self._setup_agents()
+
+        # Register functions with the agents
+        self._register_functions()
+
         self.logger.info("ContextModel initialized.")
+        self.logger.gauge("context_model.data_sources_count", len(self.data_sources))
+        
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("context_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """

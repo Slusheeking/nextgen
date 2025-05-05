@@ -8,13 +8,15 @@ It provides a centralized Redis instance for the NextGen FinGPT system.
 
 import os
 import time
+import re
+import json
 #
 # Import the Redis client library with an alias to avoid conflict with our
 # local redis package
 import redis as redis_client
 import logging
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from dotenv import load_dotenv
 
 # Import the consolidated monitoring module
@@ -56,16 +58,33 @@ class RedisServer:
         # Load environment variables
         load_dotenv()
 
-        # Store configuration
-        self.config = config or {}
-
-        # Set up logging
+        # Initialize logging first for early debugging
         self.logger = logging.getLogger("redis_server")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        
+        # Load configuration from file if no config provided
+        if config is None:
+            config_path = os.path.join("config", "local_redis", "redis_server_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize monitoring
         self.monitor, self.metrics = self._setup_monitoring()
@@ -90,10 +109,14 @@ class RedisServer:
             Tuple of (MonitoringManager, metrics_dict)
         """
         try:
-            # Get configuration from environment variables or config
-            enable_prometheus = self.config.get("enable_prometheus", True)
-            enable_loki = self.config.get("enable_loki", True)
-
+            # Get monitoring settings from config
+            monitoring_config = self.config.get("monitoring", {})
+            
+            # Extract monitoring parameters
+            enable_prometheus = monitoring_config.get("enable_prometheus", True)
+            enable_loki = monitoring_config.get("enable_loki", True)
+            metrics_interval = int(monitoring_config.get("metrics_interval", 15))
+            
             # Set up monitoring
             monitor, metrics = setup_monitoring(
                 service_name="redis-server",
@@ -101,8 +124,11 @@ class RedisServer:
                 enable_loki=enable_loki,
                 default_labels={"component": "redis_server"}
             )
+            
+            # Store metrics interval for use in metrics collection
+            self.metrics_interval = metrics_interval
 
-            self.logger.info("Monitoring initialized successfully")
+            self.logger.info(f"Monitoring initialized successfully (Prometheus: {enable_prometheus}, Loki: {enable_loki})")
             return monitor, metrics
         except Exception as e:
             self.logger.error(f"Failed to initialize monitoring: {e}")
@@ -116,23 +142,36 @@ class RedisServer:
             Redis client instance
         """
         try:
-            # Get Redis configuration from environment variables or config
-            host = self.config.get("host") or os.getenv("REDIS_HOST", "localhost")
-            port = int(self.config.get("port") or os.getenv("REDIS_PORT", "6379"))
-            db = int(self.config.get("db") or os.getenv("REDIS_DB", "0"))
-            password = self.config.get("password") or os.getenv("REDIS_PASSWORD")
-
+            # Get connection settings from config
+            connection_config = self.config.get("connection", {})
+            
+            # Extract connection parameters with environment variable fallbacks
+            # Use self._get_config_value helper to parse ${ENV_VAR:default} format
+            host = self._get_config_value(connection_config.get("host", "${REDIS_HOST:localhost}"))
+            port = int(self._get_config_value(connection_config.get("port", "${REDIS_PORT:6379}")))
+            db = int(self._get_config_value(connection_config.get("db", "${REDIS_DB:0}")))
+            password = self._get_config_value(connection_config.get("password", "${REDIS_PASSWORD:}"))
+            
+            # Extract additional connection parameters
+            socket_timeout = float(connection_config.get("socket_timeout", 5.0))
+            socket_connect_timeout = float(connection_config.get("socket_connect_timeout", 10.0))
+            retry_on_timeout = bool(connection_config.get("retry_on_timeout", True))
+            decode_responses = bool(connection_config.get("decode_responses", True))
+            
+            # Log connection details (excluding password)
+            self.logger.info(f"Initializing Redis client with host={host}, port={port}, db={db}")
+            
             # Create Redis client
             client = redis_client.Redis(
                 host=host,
                 port=port,
                 db=db,
                 password=password,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
+                decode_responses=decode_responses,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
                 socket_keepalive=True,
-                retry_on_timeout=True
+                retry_on_timeout=retry_on_timeout
             )
 
             # Test connection
@@ -251,8 +290,8 @@ class RedisServer:
                             error=str(e)
                         )
 
-                # Sleep for 15 seconds
-                time.sleep(15)
+                # Sleep for configured interval (defaults to 15 seconds)
+                time.sleep(getattr(self, 'metrics_interval', 15))
 
         # Start metrics collection thread
         metrics_thread = threading.Thread(target=collect_metrics, daemon=True)
@@ -311,6 +350,32 @@ class RedisServer:
             self.monitor.log_error(f"Redis operation {operation} failed: {error}", **log_data)
         else:
             self.monitor.log_info(f"Redis operation {operation} completed", **log_data)
+            
+    def _get_config_value(self, value: str) -> str:
+        """
+        Parse a configuration value that may contain environment variable references.
+        Supports the format ${ENV_VAR:default_value} where default_value is used
+        if ENV_VAR is not set.
+        
+        Args:
+            value: The configuration value to parse
+            
+        Returns:
+            The parsed value with environment variables replaced
+        """
+        if not isinstance(value, str):
+            return value
+            
+        # Match ${ENV_VAR:default} pattern
+        pattern = r'\${([^:{}]+)(?::([^{}]*))?}'
+        
+        def replace_env_var(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) is not None else ""
+            return os.getenv(env_var, default)
+            
+        # Replace all occurrences of the pattern
+        return re.sub(pattern, replace_env_var, value)
 
 
 # Example usage

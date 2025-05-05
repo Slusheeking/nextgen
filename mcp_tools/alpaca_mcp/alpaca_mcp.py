@@ -6,6 +6,7 @@ providing access to trading functionality, account information, and market data.
 """
 
 import os
+import json
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 
@@ -49,6 +50,26 @@ class AlpacaMCP(BaseMCPServer):
                 - paper_trading: Whether to use paper trading (default: True)
         """
         super().__init__(name="alpaca_mcp", config=config)
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "alpaca_mcp", "alpaca_mcp_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize monitoring
         self.monitor, self.metrics = setup_monitoring(

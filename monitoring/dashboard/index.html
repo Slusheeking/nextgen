@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NextGen Monitoring Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            background-color: #333;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .dashboard-section {
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+        .chart-container {
+            width: 100%;
+            height: 300px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .netdata-container {
+            width: 100%;
+            height: 300px;
+            margin-bottom: 20px;
+        }
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+            gap: 20px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-green {
+            background-color: #4CAF50;
+        }
+        .status-red {
+            background-color: #F44336;
+        }
+        .status-yellow {
+            background-color: #FFC107;
+        }
+        .status-panel {
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .status-item {
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            padding: 15px;
+            margin: 5px;
+            flex: 1;
+            min-width: 200px;
+        }
+    </style>
+    <script type="text/javascript" src="http://localhost:19999/dashboard.js"></script>
+</head>
+<body>
+    <header>
+        <h1>NextGen Monitoring Dashboard</h1>
+    </header>
+    
+    <div class="container">
+        <div class="dashboard-section">
+            <h2>System Status</h2>
+            <div class="status-panel">
+                <div class="status-item">
+                    <h3><span class="status-indicator status-green"></span> System</h3>
+                    <p>CPU: <span id="cpu-usage">Loading...</span></p>
+                    <p>Memory: <span id="memory-usage">Loading...</span></p>
+                    <p>Disk: <span id="disk-usage">Loading...</span></p>
+                </div>
+                <div class="status-item">
+                    <h3><span class="status-indicator status-green"></span> Services</h3>
+                    <p>Netdata: <span id="netdata-status">Running</span></p>
+                    <p>Log Server: <span id="logserver-status">Running</span></p>
+                    <p>Dashboard: <span id="dashboard-status">Running</span></p>
+                </div>
+                <div class="status-item">
+                    <h3><span class="status-indicator status-green"></span> Application</h3>
+                    <p>Uptime: <span id="app-uptime">Loading...</span></p>
+                    <p>Last Error: <span id="last-error">None</span></p>
+                    <p>Active Models: <span id="active-models">Loading...</span></p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="dashboard-section">
+            <h2>System Overview</h2>
+            <div class="dashboard-grid">
+                <div class="netdata-container">
+                    <div data-netdata="system.cpu"
+                         data-title="CPU Usage"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+                <div class="netdata-container">
+                    <div data-netdata="system.ram"
+                         data-title="Memory Usage"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="dashboard-section">
+            <h2>Disk & Network</h2>
+            <div class="dashboard-grid">
+                <div class="netdata-container">
+                    <div data-netdata="disk_space._"
+                         data-title="Disk Space Usage"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+                <div class="netdata-container">
+                    <div data-netdata="system.io"
+                         data-title="Disk I/O"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+                <div class="netdata-container">
+                    <div data-netdata="system.net"
+                         data-title="Network Traffic"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="dashboard-section">
+            <h2>Application Metrics</h2>
+            <div class="dashboard-grid">
+                <div class="netdata-container">
+                    <div data-netdata="apps.cpu"
+                         data-title="Application CPU Usage"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+                <div class="netdata-container">
+                    <div data-netdata="apps.mem"
+                         data-title="Application Memory Usage"
+                         data-chart-library="dygraph"
+                         data-width="100%"
+                         data-height="100%"
+                         data-after="-300"
+                         data-legend="true"></div>
+                </div>
+            </div>
+        </div>
+        <div class="dashboard-section">
+            <h2>Log Viewer</h2>
+            <div class="log-controls">
+                <select id="log-file-select">
+                    <option value="master.log">Master Log</option>
+                    <!-- Other log files will be populated dynamically -->
+                </select>
+                <select id="log-level-select">
+                    <option value="">All Levels</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                </select>
+                <input type="number" id="log-lines" value="50" min="10" max="1000" step="10">
+                <button id="refresh-logs">Refresh</button>
+                <label><input type="checkbox" id="auto-refresh"> Auto-refresh</label>
+            </div>
+            <div class="log-viewer">
+                <pre id="log-content" style="height: 400px; overflow: auto; background-color: #f8f8f8; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 12px;"></pre>
+            </div>
+        </div>
+
+        <div class="dashboard-section">
+            <h2>Stock Charts</h2>
+            <div class="stock-chart-tabs">
+                <button class="tab-button active" onclick="openTab(event, 'single-stock')">Single Stock</button>
+                <button class="tab-button" onclick="openTab(event, 'multi-stock')">Compare Stocks</button>
+            </div>
+            
+            <div id="single-stock" class="tab-content" style="display: block;">
+                <div class="chart-controls" style="margin-bottom: 15px;">
+                    <label for="stock-symbol">Symbol:</label>
+                    <input type="text" id="stock-symbol" value="AAPL" style="margin-right: 15px;">
+                    
+                    <label for="stock-timeframe">Timeframe:</label>
+                    <select id="stock-timeframe" style="margin-right: 15px;">
+                        <option value="1d">1 Day</option>
+                        <option value="5d">5 Days</option>
+                        <option value="1m">1 Month</option>
+                        <option value="3m">3 Months</option>
+                        <option value="1y">1 Year</option>
+                    </select>
+                    
+                    <label><input type="checkbox" id="include-volume" checked> Volume</label>
+                    <label><input type="checkbox" id="include-indicators" checked> Indicators</label>
+                    
+                    <button id="load-stock-chart" style="margin-left: 15px;">Load Chart</button>
+                </div>
+                <div id="stock-chart-container" class="chart-container" style="height: 600px;">
+                    <p>Enter a stock symbol and click "Load Chart" to view the stock chart.</p>
+                </div>
+            </div>
+            
+            <div id="multi-stock" class="tab-content" style="display: none;">
+                <div class="chart-controls" style="margin-bottom: 15px;">
+                    <label for="multi-stock-symbols">Symbols (comma-separated):</label>
+                    <input type="text" id="multi-stock-symbols" value="AAPL,MSFT,GOOGL" style="width: 250px; margin-right: 15px;">
+                    
+                    <label for="multi-stock-timeframe">Timeframe:</label>
+                    <select id="multi-stock-timeframe" style="margin-right: 15px;">
+                        <option value="1d">1 Day</option>
+                        <option value="5d">5 Days</option>
+                        <option value="1m">1 Month</option>
+                        <option value="3m">3 Months</option>
+                        <option value="1y">1 Year</option>
+                    </select>
+                    
+                    <label><input type="checkbox" id="normalize-prices" checked> Normalize Prices</label>
+                    
+                    <button id="load-multi-stock-chart" style="margin-left: 15px;">Compare Stocks</button>
+                </div>
+                <div id="multi-stock-chart-container" class="chart-container" style="height: 600px;">
+                    <p>Enter comma-separated stock symbols and click "Compare Stocks" to view the comparison chart.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        /* Tabs styling */
+        .stock-chart-tabs {
+            overflow: hidden;
+            border: 1px solid #ccc;
+            background-color: #f1f1f1;
+            border-radius: 5px 5px 0 0;
+        }
+        
+        .tab-button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 14px 16px;
+            transition: 0.3s;
+            font-size: 16px;
+        }
+        
+        .tab-button:hover {
+            background-color: #ddd;
+        }
+        
+        .tab-button.active {
+            background-color: #ccc;
+        }
+        
+        .tab-content {
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
+        }
+        
+        .chart-controls {
+            margin-bottom: 15px;
+        }
+        
+        .chart-controls label {
+            margin-right: 10px;
+        }
+    </style>
+
+    <script>
+        // Refresh charts every 1 second
+        NETDATA.options.current.update_every = 1;
+        
+        // Function to update system metrics
+        function updateSystemMetrics() {
+            fetch('http://localhost:19999/api/v1/data?chart=system.cpu&points=1&format=json')
+                .then(response => response.json())
+                .then(data => {
+                    const cpuUsage = data.data[0][1].toFixed(2);
+                    document.getElementById('cpu-usage').textContent = cpuUsage + '%';
+                })
+                .catch(error => console.error('Error fetching CPU data:', error));
+                
+            fetch('http://localhost:19999/api/v1/data?chart=system.ram&points=1&format=json')
+                .then(response => response.json())
+                .then(data => {
+                    const memoryUsage = data.data[0][1].toFixed(2);
+                    document.getElementById('memory-usage').textContent = memoryUsage + '%';
+                })
+                .catch(error => console.error('Error fetching memory data:', error));
+                
+            fetch('http://localhost:19999/api/v1/data?chart=disk_space._&points=1&format=json')
+                .then(response => response.json())
+                .then(data => {
+                    const diskUsage = data.data[0][1].toFixed(2);
+                    document.getElementById('disk-usage').textContent = diskUsage + '%';
+                })
+                .catch(error => console.error('Error fetching disk data:', error));
+                
+            // Update uptime (placeholder - would need a backend API for real data)
+            const uptime = Math.floor(Math.random() * 24) + 1; // Random hours for demo
+            document.getElementById('app-uptime').textContent = uptime + ' hours';
+            
+            // Update active models (placeholder)
+            const models = Math.floor(Math.random() * 5) + 1; // Random number for demo
+            document.getElementById('active-models').textContent = models;
+        }
+        
+        // Update metrics every 5 seconds
+        updateSystemMetrics();
+        setInterval(updateSystemMetrics, 5000);
+
+        // Log viewer functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Fetch available log files
+            fetch('http://localhost:8011/logs')
+                .then(response => response.json())
+                .then(data => {
+                    const select = document.getElementById('log-file-select');
+                    // Clear existing options except the first one (master.log)
+                    while (select.options.length > 1) {
+                        select.remove(1);
+                    }
+                    
+                    // Add options for each log file
+                    data.forEach(logFile => {
+                        if (logFile.name !== 'master.log') { // Skip master.log as it's already in the select
+                            const option = document.createElement('option');
+                            option.value = logFile.name;
+                            option.textContent = logFile.name;
+                            select.appendChild(option);
+                        }
+                    });
+                    
+                    // Load initial logs
+                    loadLogs();
+                })
+                .catch(error => console.error('Error fetching log files:', error));
+            
+            // Set up event listeners
+            document.getElementById('refresh-logs').addEventListener('click', loadLogs);
+            document.getElementById('log-file-select').addEventListener('change', loadLogs);
+            document.getElementById('log-level-select').addEventListener('change', loadLogs);
+            document.getElementById('log-lines').addEventListener('change', loadLogs);
+            
+            // Auto-refresh logs if enabled
+            setInterval(() => {
+                if (document.getElementById('auto-refresh').checked) {
+                    loadLogs();
+                }
+            }, 5000);
+            
+            // Function to load logs
+            function loadLogs() {
+                const filename = document.getElementById('log-file-select').value;
+                const level = document.getElementById('log-level-select').value;
+                const lines = document.getElementById('log-lines').value;
+                
+                let url = `http://localhost:8011/logs/${filename}?lines=${lines}`;
+                if (level) {
+                    url += `&level=${level}`;
+                }
+                
+                fetch(url)
+                    .then(response => response.json())
+                    .then(data => {
+                        const logContent = document.getElementById('log-content');
+                        logContent.textContent = data.content;
+                        logContent.scrollTop = logContent.scrollHeight; // Scroll to bottom
+                    })
+                    .catch(error => {
+                        console.error('Error fetching logs:', error);
+                        document.getElementById('log-content').textContent = 'Error loading logs. Make sure the log server is running.';
+                    });
+            }
+            
+            // Load logs initially
+            loadLogs();
+        });
+
+        // Tab switching function
+        function openTab(evt, tabName) {
+            // Hide all tab content
+            var tabcontent = document.getElementsByClassName("tab-content");
+            for (var i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].style.display = "none";
+            }
+
+            // Remove "active" class from all tab buttons
+            var tablinks = document.getElementsByClassName("tab-button");
+            for (var i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+
+            // Show the current tab and add "active" class to the button
+            document.getElementById(tabName).style.display = "block";
+            evt.currentTarget.className += " active";
+        }
+
+        // Stock chart functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set up event listeners for stock charts
+            document.getElementById('load-stock-chart').addEventListener('click', loadSingleStockChart);
+            document.getElementById('load-multi-stock-chart').addEventListener('click', loadMultiStockChart);
+
+            // Function to load a single stock chart
+            function loadSingleStockChart() {
+                const symbol = document.getElementById('stock-symbol').value.trim().toUpperCase();
+                if (!symbol) {
+                    alert('Please enter a valid stock symbol');
+                    return;
+                }
+
+                const timeframe = document.getElementById('stock-timeframe').value;
+                const includeVolume = document.getElementById('include-volume').checked;
+                const includeIndicators = document.getElementById('include-indicators').checked;
+                
+                const container = document.getElementById('stock-chart-container');
+                container.innerHTML = '<p>Loading chart for ' + symbol + '...</p>';
+                
+                // Call the API to get the chart
+                fetch(`/api/stock_chart?symbol=${symbol}&timeframe=${timeframe}&volume=${includeVolume}&indicators=${includeIndicators}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            container.innerHTML = data.html;
+                        } else {
+                            container.innerHTML = `<p>Error: ${data.error}</p>`;
+                        }
+                    })
+                    .catch(error => {
+                        container.innerHTML = `<p>Error: ${error.message}</p>`;
+                        console.error('Error loading stock chart:', error);
+                    });
+            }
+
+            // Function to load a multi-stock comparison chart
+            function loadMultiStockChart() {
+                const symbolsInput = document.getElementById('multi-stock-symbols').value.trim();
+                if (!symbolsInput) {
+                    alert('Please enter at least one stock symbol');
+                    return;
+                }
+
+                // Parse and validate symbols
+                const symbols = symbolsInput.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
+                if (symbols.length === 0) {
+                    alert('Please enter valid stock symbols');
+                    return;
+                }
+
+                const timeframe = document.getElementById('multi-stock-timeframe').value;
+                const normalize = document.getElementById('normalize-prices').checked;
+                
+                const container = document.getElementById('multi-stock-chart-container');
+                container.innerHTML = '<p>Loading comparison chart...</p>';
+                
+                // Call the API to get the chart
+                fetch(`/api/multi_stock_chart?symbols=${symbols.join(',')}&timeframe=${timeframe}&normalize=${normalize}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            container.innerHTML = data.html;
+                        } else {
+                            container.innerHTML = `<p>Error: ${data.error}</p>`;
+                        }
+                    })
+                    .catch(error => {
+                        container.innerHTML = `<p>Error: ${error.message}</p>`;
+                        console.error('Error loading comparison chart:', error);
+                    });
+            }
+
+            // Add keyboard event listeners for quick submission
+            document.getElementById('stock-symbol').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    loadSingleStockChart();
+                }
+            });
+
+            document.getElementById('multi-stock-symbols').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    loadMultiStockChart();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

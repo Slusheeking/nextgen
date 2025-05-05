@@ -6,7 +6,6 @@ to extract entities and determine sentiment scores using dedicated MCP tools.
 It also handles storage and retrieval of sentiment data for the trading system.
 """
 
-import logging
 import asyncio
 import json
 import time
@@ -16,8 +15,9 @@ load_dotenv()
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union, Set
 
-# Import monitoring
-from monitoring.system_monitor import MonitoringManager
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.stock_charts import StockChartGenerator
 
 # For Redis integration
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
@@ -57,28 +57,48 @@ class SentimentAnalysisModel:
                 - sentiment_ttl: Time-to-live for sentiment data in seconds (default: 86400 - 1 day).
                 - llm_config: Configuration for AutoGen LLM.
         """
-        self.config = config or {}
-        self.logger = logging.getLogger(__name__)
+        init_start_time = time.time()
+        # Initialize NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-sentiment-analysis-model")
 
-        # Initialize logging
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        # Initialize StockChartGenerator
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("StockChartGenerator initialized")
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="sentiment-analysis-model"
-        )
-        self.monitor.log_info(
-            "SentimentAnalysisModel initialized",
-            component="sentiment_analysis",
-            action="initialization",
-        )
+        # Initialize counters for sentiment analysis metrics
+        self.texts_analyzed_count = 0
+        self.entities_extracted_count = 0
+        self.sentiment_scores_generated_count = 0
+        self.positive_sentiment_count = 0
+        self.negative_sentiment_count = 0
+        self.neutral_sentiment_count = 0
+        self.llm_api_call_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.execution_errors = 0 # Errors during analysis process
+
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_sentiment_analysis", "sentiment_analysis_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.execution_errors += 1
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.execution_errors += 1
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize MCP clients
         self.entity_extraction_mcp = EntityExtractionMCP(
@@ -126,6 +146,9 @@ class SentimentAnalysisModel:
         self._register_functions()
 
         self.logger.info("SentimentAnalysisModel initialized.")
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("sentiment_analysis_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -621,11 +644,13 @@ class SentimentAnalysisModel:
         start_time = time.time()
         processed_items = []
 
-        self.monitor.log_info(
+        self.logger.info(
             f"Processing batch of {len(news_items)} news items",
-            component="sentiment_analysis",
-            action="process_news_batch",
-            batch_size=len(news_items),
+            extra={
+                "component": "sentiment_analysis",
+                "action": "process_news_batch",
+                "batch_size": len(news_items),
+            },
         )
 
         # Process each news item

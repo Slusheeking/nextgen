@@ -6,17 +6,16 @@ using scenario generation, risk attribution, and stress testing capabilities.
 It integrates with various MCP tools to provide comprehensive risk analysis.
 """
 
-import logging
 import json
 import time
 import os
-from dotenv import load_dotenv
-load_dotenv()
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
-# Import monitoring
-from monitoring.system_monitor import MonitoringManager
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.stock_charts import StockChartGenerator
 
 # For Redis integration
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
@@ -63,28 +62,45 @@ class RiskAssessmentModel:
                 - risk_data_ttl: Time-to-live for risk data in seconds (default: 86400 - 1 day)
                 - llm_config: Configuration for AutoGen LLM
         """
-        self.config = config or {}
-        self.logger = logging.getLogger(__name__)
+        init_start_time = time.time()
+        # Initialize NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-risk-assessment-model")
 
-        # Initialize logging
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        # Initialize StockChartGenerator
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("StockChartGenerator initialized")
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="nextgen_risk_assessment-risk-assessment-model"
-        )
-        self.monitor.log_info(
-            "RiskAssessmentModel initialized",
-            component="risk_assessment",
-            action="initialization",
-        )
+        # Initialize counters for risk assessment metrics
+        self.portfolio_analysis_count = 0
+        self.risk_limit_checks_count = 0
+        self.risk_limit_exceeded_count = 0
+        self.risk_alerts_generated_count = 0
+        self.llm_api_call_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.execution_errors = 0 # Errors during risk assessment process
+        self.total_risk_analysis_cycles = 0 # Total times analyze_portfolio_risk is called
+
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_risk_assessment", "risk_assessment_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize MCP clients
         self.scenario_generation_mcp = ScenarioGenerationMCP(
@@ -144,6 +160,9 @@ class RiskAssessmentModel:
         self._register_functions()
 
         self.logger.info("RiskAssessmentModel initialized.")
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("risk_assessment_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -165,7 +184,14 @@ class RiskAssessmentModel:
                         "base_url": "https://openrouter.ai/api/v1",
                         "api_type": "openai",
                         "api_version": None,
-                    }
+                    },
+                    {
+                        "model": "meta-llama/llama-3-70b-instruct",
+                        "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "api_type": "openai",
+                        "api_version": None,
+                    },
                 ],
             }
 
@@ -234,12 +260,28 @@ class RiskAssessmentModel:
             asset_returns: Dict[str, List[float]],
             lookback_days: Optional[int] = None,
         ) -> Dict[str, Any]:
-            result = self.scenario_generation_mcp.generate_historical_scenario(
-                event_name=event_name,
-                asset_returns=asset_returns,
-                lookback_days=lookback_days,
-            )
-            return result or {"error": "Historical scenario generation failed"}
+            start_time = time.time()
+            try:
+                result = self.scenario_generation_mcp.generate_historical_scenario(
+                    event_name=event_name,
+                    asset_returns=asset_returns,
+                    lookback_days=lookback_days,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_historical_scenario", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "generate_historical_scenario"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Historical scenario generation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in generate_historical_scenario: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_historical_scenario", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="generate_monte_carlo_scenario",
@@ -254,14 +296,30 @@ class RiskAssessmentModel:
             time_horizon_days: Optional[int] = None,
             confidence_level: Optional[float] = None,
         ) -> Dict[str, Any]:
-            result = self.scenario_generation_mcp.generate_monte_carlo_scenario(
-                asset_returns=asset_returns,
-                correlation_matrix=correlation_matrix,
-                num_scenarios=num_scenarios,
-                time_horizon_days=time_horizon_days or self.default_time_horizon,
-                confidence_level=confidence_level or self.default_confidence_level,
-            )
-            return result or {"error": "Monte Carlo scenario generation failed"}
+            start_time = time.time()
+            try:
+                result = self.scenario_generation_mcp.generate_monte_carlo_scenario(
+                    asset_returns=asset_returns,
+                    correlation_matrix=correlation_matrix,
+                    num_scenarios=num_scenarios,
+                    time_horizon_days=time_horizon_days or self.default_time_horizon,
+                    confidence_level=confidence_level or self.default_confidence_level,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_monte_carlo_scenario", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "generate_monte_carlo_scenario"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Monte Carlo scenario generation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in generate_monte_carlo_scenario: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_monte_carlo_scenario", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="generate_custom_scenario",
@@ -275,13 +333,29 @@ class RiskAssessmentModel:
             correlation_matrix: Optional[List[List[float]]] = None,
             propagate_shocks: bool = True,
         ) -> Dict[str, Any]:
-            result = self.scenario_generation_mcp.generate_custom_scenario(
-                asset_returns=asset_returns,
-                shock_factors=shock_factors,
-                correlation_matrix=correlation_matrix,
-                propagate_shocks=propagate_shocks,
-            )
-            return result or {"error": "Custom scenario generation failed"}
+            start_time = time.time()
+            try:
+                result = self.scenario_generation_mcp.generate_custom_scenario(
+                    asset_returns=asset_returns,
+                    shock_factors=shock_factors,
+                    correlation_matrix=correlation_matrix,
+                    propagate_shocks=propagate_shocks,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_custom_scenario", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "generate_custom_scenario"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Custom scenario generation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in generate_custom_scenario: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "generate_custom_scenario", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register risk attribution functions
         @register_function(
@@ -295,12 +369,28 @@ class RiskAssessmentModel:
             asset_returns: Dict[str, List[float]],
             use_correlation: bool = True,
         ) -> Dict[str, Any]:
-            result = self.risk_attribution_mcp.calculate_risk_contributions(
-                portfolio_weights=portfolio_weights,
-                asset_returns=asset_returns,
-                use_correlation=use_correlation,
-            )
-            return result or {"error": "Risk contribution calculation failed"}
+            start_time = time.time()
+            try:
+                result = self.risk_attribution_mcp.calculate_risk_contributions(
+                    portfolio_weights=portfolio_weights,
+                    asset_returns=asset_returns,
+                    use_correlation=use_correlation,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_risk_contributions", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "calculate_risk_contributions"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Risk contribution calculation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in calculate_risk_contributions: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_risk_contributions", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="perform_factor_analysis",
@@ -313,12 +403,28 @@ class RiskAssessmentModel:
             factor_returns: Dict[str, List[float]],
             factors: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
-            result = self.risk_attribution_mcp.perform_factor_analysis(
-                portfolio_returns=portfolio_returns,
-                factor_returns=factor_returns,
-                factors=factors,
-            )
-            return result or {"error": "Factor analysis failed"}
+            start_time = time.time()
+            try:
+                result = self.risk_attribution_mcp.perform_factor_analysis(
+                    portfolio_returns=portfolio_returns,
+                    factor_returns=factor_returns,
+                    factors=factors,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "perform_factor_analysis", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "perform_factor_analysis"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Factor analysis failed"}
+            except Exception as e:
+                self.logger.error(f"Error in perform_factor_analysis: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "perform_factor_analysis", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="decompose_asset_risk",
@@ -331,12 +437,28 @@ class RiskAssessmentModel:
             factor_returns: Dict[str, List[float]],
             factors: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
-            result = self.risk_attribution_mcp.decompose_asset_risk(
-                asset_returns=asset_returns,
-                factor_returns=factor_returns,
-                factors=factors,
-            )
-            return result or {"error": "Asset risk decomposition failed"}
+            start_time = time.time()
+            try:
+                result = self.risk_attribution_mcp.decompose_asset_risk(
+                    asset_returns=asset_returns,
+                    factor_returns=factor_returns,
+                    factors=factors,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "decompose_asset_risk", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "decompose_asset_risk"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Asset risk decomposition failed"}
+            except Exception as e:
+                self.logger.error(f"Error in decompose_asset_risk: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "decompose_asset_risk", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register risk metrics functions
         @register_function(
@@ -350,12 +472,28 @@ class RiskAssessmentModel:
             confidence_level: Optional[float] = None,
             method: str = "historical",
         ) -> Dict[str, Any]:
-            result = self.risk_metrics_mcp.calculate_var(
-                returns=portfolio_returns,
-                confidence_level=confidence_level or self.default_confidence_level,
-                method=method,
-            )
-            return result or {"error": "VaR calculation failed"}
+            start_time = time.time()
+            try:
+                result = self.risk_metrics_mcp.calculate_var(
+                    returns=portfolio_returns,
+                    confidence_level=confidence_level or self.default_confidence_level,
+                    method=method,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_var", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "calculate_var"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "VaR calculation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in calculate_var: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_var", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="calculate_expected_shortfall",
@@ -368,12 +506,28 @@ class RiskAssessmentModel:
             confidence_level: Optional[float] = None,
             method: str = "historical",
         ) -> Dict[str, Any]:
-            result = self.risk_metrics_mcp.calculate_expected_shortfall(
-                returns=portfolio_returns,
-                confidence_level=confidence_level or self.default_confidence_level,
-                method=method,
-            )
-            return result or {"error": "Expected Shortfall calculation failed"}
+            start_time = time.time()
+            try:
+                result = self.risk_metrics_mcp.calculate_expected_shortfall(
+                    returns=portfolio_returns,
+                    confidence_level=confidence_level or self.default_confidence_level,
+                    method=method,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_expected_shortfall", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "calculate_expected_shortfall"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Expected Shortfall calculation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in calculate_expected_shortfall: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_expected_shortfall", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register portfolio optimization functions
         @register_function(
@@ -388,13 +542,29 @@ class RiskAssessmentModel:
             constraints: Optional[Dict[str, Any]] = None,
             risk_aversion: float = 1.0,
         ) -> Dict[str, Any]:
-            result = self.portfolio_optimization_mcp.optimize_portfolio(
-                asset_returns=asset_returns,
-                optimization_objective=optimization_objective,
-                constraints=constraints,
-                risk_aversion=risk_aversion,
-            )
-            return result or {"error": "Portfolio optimization failed"}
+            start_time = time.time()
+            try:
+                result = self.portfolio_optimization_mcp.optimize_portfolio(
+                    asset_returns=asset_returns,
+                    optimization_objective=optimization_objective,
+                    constraints=constraints,
+                    risk_aversion=risk_aversion,
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "optimize_portfolio", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "optimize_portfolio"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Portfolio optimization failed"}
+            except Exception as e:
+                self.logger.error(f"Error in optimize_portfolio: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "optimize_portfolio", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register scenario impact function
         @register_function(
@@ -408,10 +578,26 @@ class RiskAssessmentModel:
             scenario: Dict[str, float],
             initial_value: float = 1000000,
         ) -> Dict[str, Any]:
-            result = self.scenario_generation_mcp.calculate_scenario_impact(
-                portfolio=portfolio, scenario=scenario, initial_value=initial_value
-            )
-            return result or {"error": "Scenario impact calculation failed"}
+            start_time = time.time()
+            try:
+                result = self.scenario_generation_mcp.calculate_scenario_impact(
+                    portfolio=portfolio, scenario=scenario, initial_value=initial_value
+                )
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_scenario_impact", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "calculate_scenario_impact"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result or {"error": "Scenario impact calculation failed"}
+            except Exception as e:
+                self.logger.error(f"Error in calculate_scenario_impact: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "calculate_scenario_impact", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register risk limit functions
         @register_function(
@@ -423,7 +609,24 @@ class RiskAssessmentModel:
         async def set_risk_limits(
             portfolio_id: str, risk_limits: Dict[str, Any]
         ) -> Dict[str, Any]:
-            return await self.set_risk_limits(portfolio_id, risk_limits)
+            start_time = time.time()
+            try:
+                result = await self.set_risk_limits(portfolio_id, risk_limits)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "set_risk_limits", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "set_risk_limits"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result
+            except Exception as e:
+                self.logger.error(f"Error in set_risk_limits: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "set_risk_limits", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="check_risk_limits",
@@ -434,7 +637,24 @@ class RiskAssessmentModel:
         async def check_risk_limits(
             portfolio_id: str, risk_metrics: Dict[str, Any]
         ) -> Dict[str, Any]:
-            return await self.check_risk_limits(portfolio_id, risk_metrics)
+            start_time = time.time()
+            try:
+                result = await self.check_risk_limits(portfolio_id, risk_metrics)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "check_risk_limits", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "check_risk_limits"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result
+            except Exception as e:
+                self.logger.error(f"Error in check_risk_limits: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "check_risk_limits", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register data storage and retrieval functions
         @register_function(
@@ -446,7 +666,24 @@ class RiskAssessmentModel:
         async def store_risk_analysis(
             portfolio_id: str, analysis_results: Dict[str, Any]
         ) -> Dict[str, Any]:
-            return await self.store_risk_analysis(portfolio_id, analysis_results)
+            start_time = time.time()
+            try:
+                result = await self.store_risk_analysis(portfolio_id, analysis_results)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "store_risk_analysis", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "store_risk_analysis"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result
+            except Exception as e:
+                self.logger.error(f"Error in store_risk_analysis: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "store_risk_analysis", "status": "failed"})
+                return {"error": str(e)}
+
 
         @register_function(
             name="get_risk_analysis",
@@ -455,7 +692,24 @@ class RiskAssessmentModel:
             executor=user_proxy,
         )
         async def get_risk_analysis(portfolio_id: str) -> Dict[str, Any]:
-            return await self.get_risk_analysis(portfolio_id)
+            start_time = time.time()
+            try:
+                result = await self.get_risk_analysis(portfolio_id)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "get_risk_analysis", "status": "success" if result and "error" not in result else "failed"})
+                self.logger.counter("risk_assessment_model.function_call_count", tags={"function": "get_risk_analysis"})
+                if result and "error" in result:
+                    self.execution_errors += 1
+                    self.logger.counter("risk_assessment_model.execution_errors")
+                return result
+            except Exception as e:
+                self.logger.error(f"Error in get_risk_analysis: {e}")
+                self.execution_errors += 1
+                self.logger.counter("risk_assessment_model.execution_errors")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.function_call_duration_ms", duration, tags={"function": "get_risk_analysis", "status": "failed"})
+                return {"error": str(e)}
+
 
         # Register MCP tool access functions
         self._register_mcp_tool_access()
@@ -477,7 +731,19 @@ class RiskAssessmentModel:
         def use_scenario_generation_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.scenario_generation_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.scenario_generation_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "scenario_generation", "tool": tool_name, "status": "success"})
+                self.logger.counter("risk_assessment_model.mcp_tool_call_count", tags={"server": "scenario_generation", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Scenario Generation tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("risk_assessment_model.mcp_tool_error_count", tags={"server": "scenario_generation", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "scenario_generation", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_risk_attribution_tool",
@@ -486,7 +752,19 @@ class RiskAssessmentModel:
             executor=user_proxy,
         )
         def use_risk_attribution_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.risk_attribution_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.risk_attribution_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "risk_attribution", "tool": tool_name, "status": "success"})
+                self.logger.counter("risk_assessment_model.mcp_tool_call_count", tags={"server": "risk_attribution", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Risk Attribution tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("risk_assessment_model.mcp_tool_error_count", tags={"server": "risk_attribution", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "risk_attribution", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_risk_metrics_tool",
@@ -495,7 +773,19 @@ class RiskAssessmentModel:
             executor=user_proxy,
         )
         def use_risk_metrics_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.risk_metrics_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.risk_metrics_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "risk_metrics", "tool": tool_name, "status": "success"})
+                self.logger.counter("risk_assessment_model.mcp_tool_call_count", tags={"server": "risk_metrics", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Risk Metrics tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("risk_assessment_model.mcp_tool_error_count", tags={"server": "risk_metrics", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "risk_metrics", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_portfolio_optimization_tool",
@@ -506,7 +796,19 @@ class RiskAssessmentModel:
         def use_portfolio_optimization_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.portfolio_optimization_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.portfolio_optimization_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "portfolio_optimization", "tool": tool_name, "status": "success"})
+                self.logger.counter("risk_assessment_model.mcp_tool_call_count", tags={"server": "portfolio_optimization", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Portfolio Optimization tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("risk_assessment_model.mcp_tool_error_count", tags={"server": "portfolio_optimization", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "portfolio_optimization", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
         @register_function(
             name="use_redis_tool",
@@ -515,7 +817,19 @@ class RiskAssessmentModel:
             executor=user_proxy,
         )
         def use_redis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.redis_mcp.call_tool(tool_name, arguments)
+            start_time = time.time()
+            try:
+                result = self.redis_mcp.call_tool(tool_name, arguments)
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "redis", "tool": tool_name, "status": "success"})
+                self.logger.counter("risk_assessment_model.mcp_tool_call_count", tags={"server": "redis", "tool": tool_name})
+                return result
+            except Exception as e:
+                self.logger.error(f"Error calling Redis tool {tool_name}: {e}", tool=tool_name, error=str(e))
+                self.logger.counter("risk_assessment_model.mcp_tool_error_count", tags={"server": "redis", "tool": tool_name, "error": str(e)})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.mcp_tool_call_duration_ms", duration, tags={"server": "redis", "tool": tool_name, "status": "failed"})
+                return {"error": str(e)}
 
     async def analyze_portfolio_risk(
         self,
@@ -540,6 +854,7 @@ class RiskAssessmentModel:
             portfolio_id = f"portfolio_{int(time.time())}"
 
         start_time = time.time()
+        self.total_risk_analysis_cycles += 1
 
         try:
             # 1. Calculate basic risk metrics
@@ -624,6 +939,14 @@ class RiskAssessmentModel:
                 "processing_time": time.time() - start_time,
             }
 
+            # Log risk metrics as gauges
+            self.logger.gauge("risk_assessment_model.portfolio_var", analysis_results["risk_metrics"].get("var", 0.0), tags={"portfolio_id": portfolio_id})
+            self.logger.gauge("risk_assessment_model.portfolio_es", analysis_results["risk_metrics"].get("expected_shortfall", 0.0), tags={"portfolio_id": portfolio_id})
+            self.logger.gauge("risk_assessment_model.portfolio_volatility", analysis_results["risk_metrics"].get("portfolio_volatility", 0.0), tags={"portfolio_id": portfolio_id})
+            self.logger.gauge("risk_assessment_model.diversification_ratio", analysis_results["risk_metrics"].get("diversification_ratio", 0.0), tags={"portfolio_id": portfolio_id})
+            self.logger.gauge("risk_assessment_model.historical_scenario_impact", analysis_results["historical_scenario"].get("impact", 0.0), tags={"portfolio_id": portfolio_id, "scenario": "2008_financial_crisis"})
+
+
             # 6. Store results
             await self.store_risk_analysis(portfolio_id, analysis_results)
 
@@ -633,10 +956,19 @@ class RiskAssessmentModel:
             )
             analysis_results["limits_check"] = limits_check
 
+            self.portfolio_analysis_count += 1
+            self.logger.counter("risk_assessment_model.portfolio_analysis_count")
+            self.logger.gauge("risk_assessment_model.analysis_error_rate", (self.analysis_errors_count / self.total_risk_analysis_cycles) * 100 if self.total_risk_analysis_cycles > 0 else 0)
+
+
             return analysis_results
 
         except Exception as e:
             self.logger.error(f"Error analyzing portfolio risk: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            self.logger.gauge("risk_assessment_model.analysis_error_rate", (self.analysis_errors_count / self.total_risk_analysis_cycles) * 100 if self.total_risk_analysis_cycles > 0 else 0)
+
             return {
                 "error": str(e),
                 "portfolio_id": portfolio_id,
@@ -686,6 +1018,7 @@ class RiskAssessmentModel:
         Returns:
             Status of the operation
         """
+        start_time = time.time()
         try:
             # Validate risk limits
             valid_limit_types = [
@@ -709,6 +1042,8 @@ class RiskAssessmentModel:
             limits_key = f"{self.redis_keys['risk_limits']}{portfolio_id}"
             self.redis_mcp.set_json(limits_key, validated_limits)
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.set_risk_limits_duration_ms", duration, tags={"status": "success"})
             return {
                 "status": "success",
                 "portfolio_id": portfolio_id,
@@ -717,6 +1052,10 @@ class RiskAssessmentModel:
 
         except Exception as e:
             self.logger.error(f"Error setting risk limits: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.set_risk_limits_duration_ms", duration, tags={"status": "failed"})
             return {"status": "error", "portfolio_id": portfolio_id, "error": str(e)}
 
     async def check_risk_limits(
@@ -732,12 +1071,18 @@ class RiskAssessmentModel:
         Returns:
             Dictionary with limit check results
         """
+        start_time = time.time()
+        self.risk_limit_checks_count += 1
+        self.logger.counter("risk_assessment_model.risk_limit_checks_count")
+
         try:
             # Get risk limits from Redis
             limits_key = f"{self.redis_keys['risk_limits']}{portfolio_id}"
             risk_limits = self.redis_mcp.get_json(limits_key) or {}
 
             if not risk_limits:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.check_risk_limits_duration_ms", duration, tags={"status": "no_limits"})
                 return {
                     "status": "no_limits",
                     "portfolio_id": portfolio_id,
@@ -747,6 +1092,7 @@ class RiskAssessmentModel:
             # Check each limit
             limit_checks = {}
             alerts = []
+            limits_exceeded = False
 
             if "max_var" in risk_limits and "var" in risk_metrics:
                 limit_checks["var"] = {
@@ -758,6 +1104,7 @@ class RiskAssessmentModel:
                     alerts.append(
                         f"VaR limit exceeded: {risk_metrics['var']:.2%} > {risk_limits['max_var']:.2%}"
                     )
+                    limits_exceeded = True
 
             if "max_es" in risk_limits and "expected_shortfall" in risk_metrics:
                 limit_checks["expected_shortfall"] = {
@@ -770,6 +1117,7 @@ class RiskAssessmentModel:
                     alerts.append(
                         f"Expected Shortfall limit exceeded: {risk_metrics['expected_shortfall']:.2%} > {risk_limits['max_es']:.2%}"
                     )
+                    limits_exceeded = True
 
             if (
                 "max_volatility" in risk_limits
@@ -785,6 +1133,7 @@ class RiskAssessmentModel:
                     alerts.append(
                         f"Volatility limit exceeded: {risk_metrics['portfolio_volatility']:.2%} > {risk_limits['max_volatility']:.2%}"
                     )
+                    limits_exceeded = True
 
             # Store alerts if any
             if alerts:
@@ -796,19 +1145,31 @@ class RiskAssessmentModel:
                 self.redis_mcp.add_to_list(
                     self.redis_keys["risk_alerts"], json.dumps(alert_data)
                 )
+                self.risk_alerts_generated_count += len(alerts)
+                self.logger.counter("risk_assessment_model.risk_alerts_generated_count", len(alerts))
+
+
+            if limits_exceeded:
+                self.risk_limit_exceeded_count += 1
+                self.logger.counter("risk_assessment_model.risk_limit_exceeded_count")
+
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.check_risk_limits_duration_ms", duration, tags={"status": "completed", "limits_exceeded": limits_exceeded})
 
             return {
                 "status": "completed",
                 "portfolio_id": portfolio_id,
                 "limit_checks": limit_checks,
                 "alerts": alerts,
-                "limits_exceeded": any(
-                    check["exceeded"] for check in limit_checks.values()
-                ),
+                "limits_exceeded": limits_exceeded,
             }
 
         except Exception as e:
             self.logger.error(f"Error checking risk limits: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.check_risk_limits_duration_ms", duration, tags={"status": "failed"})
             return {"status": "error", "portfolio_id": portfolio_id, "error": str(e)}
 
     async def store_risk_analysis(
@@ -824,6 +1185,7 @@ class RiskAssessmentModel:
         Returns:
             Status of the operation
         """
+        start_time = time.time()
         try:
             # Store full analysis
             analysis_key = f"{self.redis_keys['portfolio_risk']}{portfolio_id}"
@@ -862,6 +1224,8 @@ class RiskAssessmentModel:
                 {"timestamp": datetime.now().isoformat(), "portfolio_id": portfolio_id},
             )
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.store_risk_analysis_duration_ms", duration, tags={"status": "success"})
             return {
                 "status": "success",
                 "portfolio_id": portfolio_id,
@@ -870,6 +1234,10 @@ class RiskAssessmentModel:
 
         except Exception as e:
             self.logger.error(f"Error storing risk analysis: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.store_risk_analysis_duration_ms", duration, tags={"status": "failed"})
             return {"status": "error", "portfolio_id": portfolio_id, "error": str(e)}
 
     async def get_risk_analysis(self, portfolio_id: str) -> Dict[str, Any]:
@@ -882,17 +1250,22 @@ class RiskAssessmentModel:
         Returns:
             Dictionary with risk analysis results or error
         """
+        start_time = time.time()
         try:
             analysis_key = f"{self.redis_keys['portfolio_risk']}{portfolio_id}"
             analysis_results = self.redis_mcp.get_json(analysis_key)
 
             if analysis_results:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.get_risk_analysis_duration_ms", duration, tags={"status": "success"})
                 return {
                     "status": "success",
                     "portfolio_id": portfolio_id,
                     "analysis_results": analysis_results,
                 }
             else:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.get_risk_analysis_duration_ms", duration, tags={"status": "not_found"})
                 return {
                     "status": "not_found",
                     "portfolio_id": portfolio_id,
@@ -901,6 +1274,10 @@ class RiskAssessmentModel:
 
         except Exception as e:
             self.logger.error(f"Error retrieving risk analysis: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.get_risk_analysis_duration_ms", duration, tags={"status": "failed"})
             return {"status": "error", "portfolio_id": portfolio_id, "error": str(e)}
 
     async def collect_model_reports(self, symbols: List[str]) -> Dict[str, Any]:
@@ -984,6 +1361,8 @@ class RiskAssessmentModel:
             
         except Exception as e:
             self.logger.error(f"Error collecting model reports: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
             return {
                 "error": str(e),
                 "timestamp": datetime.now().isoformat(),
@@ -1026,6 +1405,8 @@ class RiskAssessmentModel:
             reports = await self.collect_model_reports(symbols)
             
             if "error" in reports:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.create_consolidated_package_duration_ms", duration, tags={"status": "failed", "reason": "collect_reports_error"})
                 return {"error": reports["error"], "request_id": request_id}
                 
             # 2. Get market conditions
@@ -1072,10 +1453,17 @@ class RiskAssessmentModel:
             )
             
             self.logger.info(f"Created consolidated package {package_id} with {len(symbols_analysis)} symbols")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.create_consolidated_package_duration_ms", duration, tags={"status": "success", "symbol_count": len(symbols_analysis)})
+
             return package
             
         except Exception as e:
             self.logger.error(f"Error creating consolidated package: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.create_consolidated_package_duration_ms", duration, tags={"status": "failed"})
             return {
                 "error": str(e),
                 "request_id": request_id,
@@ -1101,6 +1489,7 @@ class RiskAssessmentModel:
             Dictionary with comprehensive symbol analysis
         """
         self.logger.info(f"Processing symbol {symbol} for decision")
+        start_time = time.time()
         
         try:
             # Extract all reports for this symbol
@@ -1122,6 +1511,8 @@ class RiskAssessmentModel:
             # If we have no data for this symbol, skip it
             if not symbol_data["model_reports"]:
                 self.logger.warning(f"No model reports found for symbol {symbol}")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.process_symbol_for_decision_duration_ms", duration, tags={"status": "no_reports", "symbol": symbol})
                 return None
             
             # Calculate risk assessment
@@ -1197,10 +1588,17 @@ class RiskAssessmentModel:
                     "var_contribution": 0.08  # Placeholder
                 }
             
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.process_symbol_for_decision_duration_ms", duration, tags={"status": "success", "symbol": symbol})
+
             return symbol_data
             
         except Exception as e:
             self.logger.error(f"Error processing symbol {symbol} for decision: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.process_symbol_for_decision_duration_ms", duration, tags={"status": "failed", "symbol": symbol})
             return {
                 "error": str(e),
                 "symbol": symbol
@@ -1216,12 +1614,15 @@ class RiskAssessmentModel:
         Returns:
             Status of the notification
         """
+        start_time = time.time()
         try:
             # Get the package
             package_key = f"{self.redis_keys['consolidated_package']}{package_id}"
             package = self.redis_mcp.get_json(package_key)
             
             if not package:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.notify_decision_model_duration_ms", duration, tags={"status": "failed", "reason": "package_not_found"})
                 return {
                     "status": "error",
                     "message": f"Package {package_id} not found"
@@ -1241,6 +1642,8 @@ class RiskAssessmentModel:
             self.redis_mcp.add_to_stream(stream_key, notification)
             
             self.logger.info(f"Notified Decision Model about package {package_id}")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.notify_decision_model_duration_ms", duration, tags={"status": "success"})
             return {
                 "status": "success",
                 "notification": notification
@@ -1248,6 +1651,10 @@ class RiskAssessmentModel:
             
         except Exception as e:
             self.logger.error(f"Error notifying Decision Model: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.notify_decision_model_duration_ms", duration, tags={"status": "failed"})
             return {
                 "status": "error",
                 "message": str(e)
@@ -1265,12 +1672,15 @@ class RiskAssessmentModel:
         Returns:
             Status of the monitoring operation
         """
+        start_time = time.time()
         try:
             # Read from the selection responses stream
             stream_key = "selection:responses"
             responses = self.redis_mcp.read_from_stream(stream_key, count=5)
             
             if not responses:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.monitor_selection_responses_duration_ms", duration, tags={"status": "no_responses"})
                 return {"status": "no_responses"}
             
             results = []
@@ -1306,6 +1716,9 @@ class RiskAssessmentModel:
                 # Acknowledge the message
                 self.redis_mcp.acknowledge_from_stream(stream_key, response_id)
             
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.monitor_selection_responses_duration_ms", duration, tags={"status": "success", "processed_count": len(results)})
+
             return {
                 "status": "success",
                 "processed_count": len(results),
@@ -1314,6 +1727,10 @@ class RiskAssessmentModel:
             
         except Exception as e:
             self.logger.error(f"Error monitoring selection responses: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.monitor_selection_responses_duration_ms", duration, tags={"status": "failed"})
             return {
                 "status": "error",
                 "message": str(e)
@@ -1326,12 +1743,15 @@ class RiskAssessmentModel:
         Returns:
             Status of the monitoring operation
         """
+        start_time = time.time()
         try:
             # Read from the trade events stream
             stream_key = self.redis_keys["trade_events"]
             events = self.redis_mcp.read_from_stream(stream_key, count=5)
             
             if not events:
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.monitor_trade_events_duration_ms", duration, tags={"status": "no_events"})
                 return {"status": "no_events"}
             
             results = []
@@ -1357,6 +1777,9 @@ class RiskAssessmentModel:
                 # Acknowledge the message
                 self.redis_mcp.acknowledge_from_stream(stream_key, event_id)
             
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.monitor_trade_events_duration_ms", duration, tags={"status": "success", "processed_count": len(results)})
+
             return {
                 "status": "success",
                 "processed_count": len(results),
@@ -1365,6 +1788,10 @@ class RiskAssessmentModel:
             
         except Exception as e:
             self.logger.error(f"Error monitoring trade events: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.monitor_trade_events_duration_ms", duration, tags={"status": "failed"})
             return {
                 "status": "error",
                 "message": str(e)
@@ -1381,16 +1808,26 @@ class RiskAssessmentModel:
             Results of the risk analysis
         """
         self.logger.info(f"Running risk analysis with query: {query}")
+        start_time = time.time()
 
         risk_assistant = self.agents.get("risk_assistant")
         user_proxy = self.agents.get("user_proxy")
 
         if not risk_assistant or not user_proxy:
+            self.logger.error("AutoGen agents not initialized for run_risk_analysis_agent")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.run_risk_analysis_agent_duration_ms", duration, tags={"status": "failed", "reason": "agents_not_initialized"})
             return {"error": "AutoGen agents not initialized"}
 
         try:
-            # Initiate chat with the risk assistant
+            llm_call_start_time = time.time()
             user_proxy.initiate_chat(risk_assistant, message=query)
+            llm_call_duration = (time.time() - llm_call_start_time) * 1000
+            self.logger.timing("risk_assessment_model.llm_call_duration_ms", llm_call_duration)
+            self.llm_api_call_count += 1
+            self.logger.counter("risk_assessment_model.llm_api_call_count")
 
             # Get the last message from the assistant
             last_message = user_proxy.last_message(risk_assistant)
@@ -1404,13 +1841,24 @@ class RiskAssessmentModel:
                 if json_start != -1 and json_end != -1:
                     result_str = content[json_start:json_end]
                     result = json.loads(result_str)
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("risk_assessment_model.run_risk_analysis_agent_duration_ms", duration, tags={"status": "success"})
                     return result
             except json.JSONDecodeError:
                 # Return the raw content if JSON parsing fails
+                self.logger.warning("Could not parse JSON analysis from agent response")
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("risk_assessment_model.run_risk_analysis_agent_duration_ms", duration, tags={"status": "success_non_json"})
                 pass
 
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.run_risk_analysis_agent_duration_ms", duration, tags={"status": "success_non_json"})
             return {"analysis": content}
 
         except Exception as e:
             self.logger.error(f"Error during AutoGen chat: {e}")
+            self.analysis_errors_count += 1
+            self.logger.counter("risk_assessment_model.analysis_errors_count")
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("risk_assessment_model.run_risk_analysis_agent_duration_ms", duration, tags={"status": "failed", "reason": "autogen_chat_error"})
             return {"error": str(e)}

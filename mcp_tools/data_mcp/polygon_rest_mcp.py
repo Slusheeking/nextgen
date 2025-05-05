@@ -12,7 +12,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, Union
 from datetime import datetime, timedelta
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -38,15 +38,9 @@ class PolygonRestMCP(BaseDataMCP):
         """
         super().__init__(name="polygon_rest_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="polygon-rest-mcp"
-        )
-        self.monitor.log_info(
-            "PolygonRestMCP initialized",
-            component="polygon_rest_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="polygon-rest-mcp")
+        self.logger.info("PolygonRestMCP initialized")
 
         # Initialize the REST client
         self.rest_client = self._initialize_client()
@@ -58,13 +52,9 @@ class PolygonRestMCP(BaseDataMCP):
         self._register_specific_tools()
 
         self.logger.info(
-            "PolygonRestMCP initialized with %d endpoints", len(self.endpoints)
+            f"PolygonRestMCP initialized with {len(self.endpoints)} endpoints"
         )
-        self.monitor.log_info(
-            f"PolygonRestMCP initialized with {len(self.endpoints)} endpoints",
-            component="polygon_rest_mcp",
-            action="init_endpoints",
-        )
+        # Removed self.monitor.log_info for endpoints
 
     def _initialize_client(self) -> Union[Dict[str, Any], None]:
         """
@@ -489,6 +479,7 @@ class PolygonRestMCP(BaseDataMCP):
 
         while retry_count <= max_retries:
             try:
+                start_time = time.time()
                 if method == "GET":
                     response = requests.get(
                         url, params=query_params, headers=headers, timeout=15
@@ -500,9 +491,17 @@ class PolygonRestMCP(BaseDataMCP):
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
+                elapsed = (time.time() - start_time) * 1000  # ms
+                self.logger.counter("external_api_call_count", 1)
+                self.logger.timing("data_fetch_time_ms", elapsed)
+                self.logger.gauge("response_status_code", response.status_code)
+                if response.content:
+                    self.logger.gauge("data_volume_bytes", len(response.content))
+
                 if response.status_code == 200:
                     return response.json()
                 elif response.status_code == 429:  # Rate limit exceeded
+                    self.logger.counter("rate_limit_count", 1)
                     retry_count += 1
                     if retry_count <= max_retries:
                         sleep_time = retry_delay * (
@@ -515,6 +514,9 @@ class PolygonRestMCP(BaseDataMCP):
                         continue
 
                 # Handle other error codes
+                self.logger.error(
+                    f"API request failed: {response.status_code} - {response.text}"
+                )
                 raise Exception(
                     f"API request failed: {response.status_code} - {response.text}"
                 )
@@ -527,6 +529,7 @@ class PolygonRestMCP(BaseDataMCP):
                     )
                     time.sleep(sleep_time)
                 else:
+                    self.logger.error(f"Request failed after {max_retries} retries: {e}")
                     raise Exception(f"Request failed after {max_retries} retries: {e}")
 
     # Handler methods for specific endpoints
@@ -1010,13 +1013,7 @@ class PolygonRestMCP(BaseDataMCP):
             return data
         except Exception as e:
             self.logger.error(f"Error getting market movers: {e}")
-            if self.monitor:
-                self.monitor.log_error(
-                    f"Error getting market movers: {e}",
-                    component="polygon_rest_mcp",
-                    action="market_movers_error",
-                    error=str(e),
-                )
+            # Removed self.monitor.log_error for market movers
             return {}
 
     @property

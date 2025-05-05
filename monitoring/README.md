@@ -1,139 +1,175 @@
 # NextGen Monitoring System
 
-This directory contains a complete monitoring setup for the NextGen platform using:
-- **Prometheus**: For metrics collection and storage
-- **File-based Logging**: For log aggregation and storage
-- **Log API Server**: For accessing logs via a REST API
+A comprehensive monitoring system for the NextGen platform that provides real-time metrics, logs, and financial charts in a unified dashboard.
 
-Both services run as systemd services that start automatically on boot and run 24/7.
+## Features
 
-## Setup
+- **24/7 Monitoring**: Runs as a system service with automatic restart on failure
+- **System Metrics**: CPU, memory, disk, and network usage
+- **GPU Monitoring**: NVIDIA GPU metrics (utilization, memory, temperature)
+- **Application Metrics**: Process-level metrics for NextGen components
+- **Financial Charts**: Real-time and historical stock charts
+- **Unified Dashboard**: Single interface for all monitoring needs
+- **Logging Integration**: Centralized log collection and viewing
 
-To install both Prometheus and the Log API Server, simply run:
+## Components
 
-```bash
-./setup_monitoring_system.sh
-```
+1. **Netdata**: Core metrics collection and visualization
+2. **Custom Dashboard**: Web interface for NextGen-specific metrics and charts
+3. **Stock Charts**: Financial data visualization
+4. **Log Server**: Centralized log collection and viewing
+5. **System Metrics Collector**: Enhanced system metrics collection
 
-This script will:
-1. Download and install Prometheus
-2. Set up the Log API Server
-3. Configure them with the provided configuration files
-4. Set up systemd services to run them 24/7
-5. Start the services
+## Installation
 
-## Services
-
-### Prometheus
-- **Port**: 9090
-- **UI URL**: http://localhost:9090
-- **Service control**: `sudo systemctl [start|stop|restart|status] prometheus`
-- **Configuration**: `monitoring/prometheus/prometheus.yml`
-
-### Log API Server
-- **Port**: 8011
-- **API URL**: http://localhost:8011
-- **Service control**: `sudo systemctl [start|stop|restart|status] log-server`
-- **Log files**: `logs/` directory
-
-## Integration with system_monitor.py
-
-The `system_monitor.py` module is already configured to work with Prometheus and file-based logging:
-
-- It exposes metrics on port 8010 for Prometheus to scrape
-- It writes logs to files in the `logs/` directory
-- It writes to a master log file (`logs/master.log`) for centralized logging
-
-Example usage:
-
-```python
-from monitoring.system_monitor import MonitoringManager, SystemMetricsCollector
-
-# Initialize the monitoring manager
-monitor = MonitoringManager(service_name="my-service")
-
-# Log something (goes to log files)
-monitor.log_info("Service started", component="service", action="startup")
-
-# Update a metric (available to Prometheus)
-monitor.set_gauge("active_connections", 5)
-
-# Start system metrics collection (CPU, memory, disk)
-collector = SystemMetricsCollector(monitor)
-collector.start()
-```
-
-## Checking Logs and Metrics
-
-### View Metrics in Prometheus
-1. Open http://localhost:9090 in a browser
-2. Use the query interface to explore available metrics
-3. Example queries:
-   - `my_service_cpu_percent` - CPU usage
-   - `my_service_memory_percent` - Memory usage
-   - `my_service_uptime_seconds` - Service uptime
-
-### View Logs via API
-
-The Log API Server provides several endpoints for accessing logs:
-
-- `GET /logs` - Get a list of available log files
-- `GET /logs/{filename}` - Get the content of a specific log file
-- `GET /logs/{filename}/stream` - Stream updates to a log file using Server-Sent Events (SSE)
-- `GET /logs/master` - Get the content of the master log file
-- `GET /logs/master/stream` - Stream updates to the master log file
-
-Example usage:
-
-```javascript
-// Get a list of log files
-fetch('http://localhost:8011/logs')
-  .then(response => response.json())
-  .then(data => console.log(data));
-
-// Get the content of the master log file
-fetch('http://localhost:8011/logs/master')
-  .then(response => response.json())
-  .then(data => console.log(data.content));
-
-// Stream updates to the master log file
-const eventSource = new EventSource('http://localhost:8011/logs/master/stream');
-eventSource.onmessage = event => {
-  const data = JSON.parse(event.data);
-  console.log(data.line);
-};
-```
-
-### View Logs Directly
-
-You can also view the log files directly in the `logs/` directory:
+Run the setup script to install and configure the monitoring system:
 
 ```bash
-# View the master log file
-cat logs/master.log
-
-# View a specific service's log file
-cat logs/my-service.log
-
-# Tail the master log file
-tail -f logs/master.log
+cd /path/to/nextgen
+bash monitoring/setup_netdata.sh
 ```
 
-## File Structure
+This will:
+- Install Netdata
+- Configure GPU monitoring (if NVIDIA GPUs are detected)
+- Set up the custom dashboard
+- Install the 24/7 monitoring service
+- Start all components
 
-- `prometheus/`
-  - `prometheus.yml` - Prometheus configuration
-  - `prometheus.service` - Systemd service file
-- `log_api.py` - Log API Server implementation
-- `start_log_server.py` - Script to start the Log API Server
-- `log-server.service` - Systemd service file for the Log API Server
-- `setup_log_server.sh` - Log API Server installation script
-- `setup_prometheus.sh` - Prometheus installation script
-- `setup_monitoring_system.sh` - Master setup script
-- `system_monitor.py` - NextGen monitoring library
-- `fix_loki_endpoint.py` - Script to remove Loki handlers (transitional)
-- `LOGGING.md` - Detailed documentation on the logging system
+## Accessing the Dashboard
 
-## Additional Documentation
+After installation, the monitoring system is available at:
 
-For more detailed information about the logging system, see [LOGGING.md](LOGGING.md).
+- **Main Dashboard**: http://localhost:8080
+- **Netdata**: http://localhost:19999
+- **Log Server**: http://localhost:8011
+
+## Using Stock Charts
+
+The stock charts feature allows you to:
+
+1. **View Individual Stocks**:
+   - Enter a stock symbol (e.g., AAPL)
+   - Select a timeframe (1d, 5d, 1m, 3m, 1y)
+   - Toggle volume and technical indicators
+   - Click "Load Chart" to generate the chart
+
+2. **Compare Multiple Stocks**:
+   - Enter comma-separated symbols (e.g., AAPL,MSFT,GOOGL)
+   - Select a timeframe
+   - Toggle price normalization
+   - Click "Compare Stocks" to generate the comparison chart
+
+## System Requirements
+
+- Linux-based operating system
+- Python 3.6+
+- 2GB+ RAM
+- 1GB+ free disk space
+- NVIDIA drivers (optional, for GPU monitoring)
+
+## Service Management
+
+The monitoring system runs as a systemd service for 24/7 operation:
+
+```bash
+# Check status
+sudo systemctl status nextgen-monitoring.service
+
+# Start service
+sudo systemctl start nextgen-monitoring.service
+
+# Stop service
+sudo systemctl stop nextgen-monitoring.service
+
+# Restart service
+sudo systemctl restart nextgen-monitoring.service
+
+# View logs
+sudo journalctl -u nextgen-monitoring.service
+```
+
+Individual components can also be managed separately:
+
+```bash
+# Netdata
+sudo systemctl status netdata
+sudo systemctl restart netdata
+
+# Dashboard
+sudo systemctl status nextgen-dashboard.service
+sudo systemctl restart nextgen-dashboard.service
+
+# Log server
+sudo systemctl status log-server.service
+sudo systemctl restart log-server.service
+```
+
+## Exported Metrics
+
+The monitoring system exports the following metrics:
+
+### System Metrics
+- CPU usage (overall and per-core)
+- Memory usage (RAM, swap)
+- Disk usage and I/O
+- Network traffic
+- System load
+- Process metrics
+
+### GPU Metrics (if available)
+- GPU utilization
+- GPU memory usage
+- GPU temperature
+- GPU power consumption
+- Fan speed
+
+### Application Metrics
+- Process CPU usage
+- Process memory usage
+- Process disk I/O
+- Process network I/O
+- Custom application metrics
+
+## Troubleshooting
+
+If you encounter issues with the monitoring system:
+
+1. **Check service status**:
+   ```bash
+   sudo systemctl status nextgen-monitoring.service
+   ```
+
+2. **View logs**:
+   ```bash
+   sudo journalctl -u nextgen-monitoring.service
+   ```
+
+3. **Restart the service**:
+   ```bash
+   sudo systemctl restart nextgen-monitoring.service
+   ```
+
+4. **Check individual components**:
+   ```bash
+   sudo systemctl status netdata
+   sudo systemctl status nextgen-dashboard.service
+   sudo systemctl status log-server.service
+   ```
+
+5. **Verify Netdata is running**:
+   ```bash
+   curl http://localhost:19999
+   ```
+
+## Extending the Monitoring System
+
+The monitoring system can be extended with:
+
+1. **Custom Metrics**: Add new metrics to the `system_metrics.py` file
+2. **Dashboard Panels**: Add new panels to the dashboard in `dashboard/index.html`
+3. **Additional Charts**: Add new chart types to `stock_charts.py`
+
+## License
+
+This monitoring system is part of the NextGen platform and is subject to the same license terms.

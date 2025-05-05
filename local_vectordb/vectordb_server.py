@@ -8,9 +8,11 @@ It provides a centralized Vector DB instance for the NextGen system based on Chr
 
 import os
 import time
+import re
+import json
 import logging
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from dotenv import load_dotenv
 
 # Import ChromaDB - the vector database we'll be using
@@ -21,8 +23,8 @@ except ImportError:
     HAVE_CHROMA = False
     chromadb = None
 
-# Import the consolidated monitoring module
-from monitoring import setup_monitoring
+# Import will be done dynamically in _setup_monitoring to handle import errors gracefully
+# from monitoring.netdata_logger import NetdataLogger
 
 
 class VectorDBServer:
@@ -60,32 +62,49 @@ class VectorDBServer:
         # Load environment variables
         load_dotenv()
 
-        # Store configuration
-        self.config = config or {}
-
-        # Set up logging
+        # Initialize logging first for early debugging
         self.logger = logging.getLogger("vectordb_server")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        
+        # Load configuration from file if no config provided
+        if config is None:
+            config_path = os.path.join("config", "local_vectordb", "vectordb_server_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize monitoring
         self.monitor, self.metrics = self._setup_monitoring()
 
         # Initialize configuration values
-        self.db_path = self.config.get("db_path") or os.getenv("VECTORDB_PATH", "./vector_db_storage")
-        self.host = self.config.get("host") or os.getenv("VECTORDB_HOST", "localhost")
-        self.port = int(self.config.get("port") or os.getenv("VECTORDB_PORT", "8000"))
-        self.use_http_server = bool(
-            self.config.get("use_http_server", False) or
-            os.getenv("VECTORDB_USE_HTTP_SERVER", "False").lower() == "true"
-        )
+        connection_config = self.config.get("connection", {})
+        server_settings = self.config.get("server_settings", {})
+        
+        # Extract connection parameters with environment variable fallbacks
+        self.db_path = self._get_config_value(connection_config.get("db_path", "${VECTORDB_PATH:./vector_db_storage}"))
+        self.host = self._get_config_value(connection_config.get("host", "${VECTORDB_HOST:localhost}"))
+        self.port = int(self._get_config_value(connection_config.get("port", "${VECTORDB_PORT:8000}")))
+        self.use_http_server = self._get_config_value(connection_config.get("use_http_server", "${VECTORDB_USE_HTTP_SERVER:false}")).lower() == "true"
+        
         # Initialize the default collection name (MUST come before _initialize_db)
-        self.default_collection_name = self.config.get(
-            "default_collection", "financial_context"
-        )
+        self.default_collection_name = server_settings.get("default_collection", "financial_context")
 
         # Initialize Vector DB client
         self.client = self._initialize_db()
@@ -98,7 +117,7 @@ class VectorDBServer:
 
         self.logger.info("Vector DB server initialized with integrated monitoring")
         if self.monitor:
-            self.monitor.log_info(
+            self.monitor.info(
                 "Vector DB server initialized", 
                 component="vectordb_server", 
                 action="initialization"
@@ -106,50 +125,69 @@ class VectorDBServer:
 
     def _setup_monitoring(self):
         """
-        Set up monitoring for Vector DB server.
+        Set up monitoring for Vector DB server using NetdataLogger.
 
         Returns:
-            Tuple of (MonitoringManager, metrics_dict)
+            Tuple of (NetdataLogger instance, metrics_dict)
         """
         try:
             # Get configuration from environment variables or config
-            enable_prometheus = self.config.get("enable_prometheus") or os.getenv("ENABLE_PROMETHEUS", "False").lower() == "true"
+            monitoring_config = self.config.get("monitoring", {})
+            log_dir = monitoring_config.get("log_dir") or os.getenv("LOG_DIR")
+            statsd_host = monitoring_config.get("statsd_host") or os.getenv("STATSD_HOST", "localhost")
+            statsd_port = int(monitoring_config.get("statsd_port") or os.getenv("STATSD_PORT", "8125"))
             
-            
-            self.logger.info(f"Monitoring config: Prometheus={enable_prometheus}")
-
-            # Create a dummy monitor in case setup fails
-            class DummyMonitor:
-                def __getattr__(self, name):
-                    return lambda *args, **kwargs: None
-                
+            # Check if NetdataLogger is properly imported
             try:
-                # Set up monitoring with proper error handling
-                monitor, metrics = setup_monitoring(
-                    service_name="vector-db-server",
-                    enable_prometheus=enable_prometheus,
-                    
-                    default_labels={"component": "vectordb_server"}
+                from monitoring.netdata_logger import NetdataLogger
+                
+                # Initialize the NetdataLogger
+                monitor = NetdataLogger(
+                    component_name="vectordb-server",
+                    log_dir=log_dir,
+                    statsd_host=statsd_host,
+                    statsd_port=statsd_port
                 )
                 
-                # Test the monitor to make sure it's working
+                # Test the logger
+                monitor.info("VectorDB monitoring initialized")
+                self.logger.info("NetdataLogger initialized successfully")
+                
+                # Define a metrics dictionary for consistent metric naming
+                metrics = {
+                    'collection_count': "collection_count",
+                    'embeddings_count': "embeddings_count",
+                    'operations_total': "operations_total",
+                    'operation_duration_seconds': "operation_duration_seconds"
+                }
+                
+                # Start system metrics collection
                 try:
-                    monitor.log_info("Monitoring test message")
-                    self.logger.info("Monitoring initialized successfully")
-                    return monitor, metrics
+                    monitor.start_system_metrics(interval=15)
+                    self.logger.info("System metrics collection started")
                 except Exception as e:
-                    self.logger.warning(f"Monitoring connected but logging failed: {e}")
-                    return DummyMonitor(), metrics
-                    
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize monitoring (non-critical): {e}")
+                    self.logger.warning(f"Failed to start system metrics collection: {e}")
+                
+                return monitor, metrics
+                
+            except ImportError:
+                self.logger.warning("NetdataLogger not found, falling back to dummy monitor")
+                
+                # Create a dummy monitor in case NetdataLogger is not available
+                class DummyMonitor:
+                    def __getattr__(self, name):
+                        return lambda *args, **kwargs: None
+                
                 return DummyMonitor(), {}
                 
         except Exception as e:
             self.logger.error(f"Failed to initialize monitoring: {e}")
+            
+            # Create a dummy monitor in case of any failure
             class DummyMonitor:
                 def __getattr__(self, name):
                     return lambda *args, **kwargs: None
+                
             return DummyMonitor(), {}
 
     def _initialize_db(self):
@@ -185,7 +223,7 @@ class VectorDBServer:
             self._get_collection(client, self.default_collection_name)
             
             if self.monitor:
-                self.monitor.log_info(
+                self.monitor.info(
                     "Vector DB connection established",
                     component="vectordb_server",
                     action="connection",
@@ -197,7 +235,7 @@ class VectorDBServer:
         except Exception as e:
             self.logger.error(f"Failed to initialize vector database: {e}")
             if self.monitor:
-                self.monitor.log_error(
+                self.monitor.error(
                     f"Failed to initialize vector database: {e}",
                     component="vectordb_server",
                     action="connection_error", 
@@ -237,16 +275,19 @@ class VectorDBServer:
         if not self.monitor:
             return
 
-        # Add metrics to the metrics dictionary directly
-        # Note: The monitoring system expects metrics to be pre-registered
+        # Define the metrics dictionary for consistent naming
+        # NetdataLogger doesn't require pre-registration, but we use this for naming consistency
         self.metrics['collection_count'] = "collection_count"
         self.metrics['embeddings_count'] = "embeddings_count"
         self.metrics['operations_total'] = "operations_total"
         self.metrics['operation_duration_seconds'] = "operation_duration_seconds"
+        
+        # Log that metrics have been registered
+        self.logger.info("VectorDB metrics registered")
 
     def _start_metrics_collection(self):
         """Start a background thread to collect Vector DB metrics."""
-        if not self.client:
+        if not self.client or not self.monitor:
             return
 
         def collect_metrics():
@@ -266,14 +307,11 @@ class VectorDBServer:
                     # Only try to use monitoring if we haven't had too many failures
                     if monitoring_failures < max_failures:
                         try:
-                            # Try to update metrics but catch any errors
-                            try:
-                                if hasattr(self.monitor, 'set_gauge'):
-                                    self.monitor.set_gauge("collection_count", collection_count)
-                            except Exception:
-                                pass  # Silently ignore these errors
+                            # Update collection count metric using NetdataLogger gauge method
+                            self.monitor.gauge("collection_count", collection_count)
                             
                             # Update embeddings count for each collection
+                            total_embeddings = 0
                             for collection in collections:
                                 try:
                                     # Get collection by name
@@ -281,31 +319,29 @@ class VectorDBServer:
                                     if coll:
                                         # Get count of items in collection
                                         count = coll.count()
-                                        try:
-                                            if hasattr(self.monitor, 'set_gauge'):
-                                                self.monitor.set_gauge(
-                                                    "embeddings_count", count, collection=collection.name
-                                                )
-                                        except Exception:
-                                            pass  # Silently ignore these errors
+                                        total_embeddings += count
+                                        
+                                        # Record per-collection embedding count
+                                        self.monitor.gauge(
+                                            f"embeddings_count_{collection.name}", 
+                                            count
+                                        )
                                 except Exception as e:
                                     # Only log to standard logger, not monitoring
                                     self.logger.error(f"Error getting count for collection {collection.name}: {e}")
                             
-                            # Try to log to monitoring, but handle failures gracefully
-                            try:
-                                if hasattr(self.monitor, 'log_info'):
-                                    self.monitor.log_info(
-                                        "Vector DB metrics collected",
-                                        component="vectordb_server",
-                                        action="metrics_collection",
-                                        collection_count=collection_count
-                                    )
-                            except Exception:
-                                monitoring_failures += 1
-                                if monitoring_failures >= max_failures:
-                                    self.logger.warning("Too many monitoring failures, disabling monitoring metrics")
-                        
+                            # Record total embeddings across all collections
+                            self.monitor.gauge("embeddings_total", total_embeddings)
+                            
+                            # Log metrics collection success
+                            self.monitor.info(
+                                "Vector DB metrics collected",
+                                component="vectordb_server",
+                                action="metrics_collection",
+                                collection_count=collection_count,
+                                total_embeddings=total_embeddings
+                            )
+                            
                         except Exception as e:
                             monitoring_failures += 1
                             self.logger.error(f"Error updating monitoring metrics: {e}")
@@ -374,22 +410,24 @@ class VectorDBServer:
             return
 
         try:
-            # Increment operation counter
-            if hasattr(self.monitor, 'increment_counter'):
-                self.monitor.increment_counter(
-                    self.metrics.get('operations_total', 'operations_total'),
-                    1,
-                    operation=operation,
-                    status=status
-                )
+            # Increment operation counter - NetdataLogger uses counter() method
+            self.monitor.counter(
+                f"{self.metrics.get('operations_total', 'operations_total')}_{status}",
+                1
+            )
             
-            # Record operation duration
-            if hasattr(self.monitor, 'observe_histogram'):
-                self.monitor.observe_histogram(
-                    self.metrics.get('operation_duration_seconds', 'operation_duration_seconds'),
-                    duration,
-                    operation=operation
-                )
+            # Record operation duration - NetdataLogger uses timing() for durations
+            # Convert seconds to milliseconds for timing method
+            self.monitor.timing(
+                f"{self.metrics.get('operation_duration_seconds', 'operation_duration_seconds')}_{operation}",
+                duration * 1000  # Convert to milliseconds
+            )
+            
+            # Also record as histogram if needed for distribution stats
+            self.monitor.histogram(
+                f"vectordb_{operation}_duration",
+                duration * 1000  # Convert to milliseconds
+            )
         except Exception as e:
             self.logger.error(f"Error recording operation metrics: {e}")
 
@@ -407,6 +445,7 @@ class VectorDBServer:
             return
 
         try:
+            # Create structured log data
             log_data = {
                 "component": "vectordb_server",
                 "action": operation,
@@ -416,17 +455,45 @@ class VectorDBServer:
 
             if error:
                 log_data["error"] = error
-                if hasattr(self.monitor, 'log_error'):
-                    self.monitor.log_error(f"Vector DB operation {operation} failed: {error}", **log_data)
-                else:
-                    self.logger.error(f"Vector DB operation {operation} failed: {error}")
+                # NetdataLogger uses error() method
+                self.monitor.error(
+                    f"Vector DB operation {operation} failed", 
+                    **log_data
+                )
             else:
-                if hasattr(self.monitor, 'log_info'):
-                    self.monitor.log_info(f"Vector DB operation {operation} completed", **log_data)
-                else:
-                    self.logger.info(f"Vector DB operation {operation} completed for collection {collection}")
+                # NetdataLogger uses info() method
+                self.monitor.info(
+                    f"Vector DB operation {operation} completed", 
+                    **log_data
+                )
         except Exception as e:
             self.logger.error(f"Error logging operation: {e}")
+            
+    def _get_config_value(self, value: str) -> str:
+        """
+        Parse a configuration value that may contain environment variable references.
+        Supports the format ${ENV_VAR:default_value} where default_value is used
+        if ENV_VAR is not set.
+        
+        Args:
+            value: The configuration value to parse
+            
+        Returns:
+            The parsed value with environment variables replaced
+        """
+        if not isinstance(value, str):
+            return value
+            
+        # Match ${ENV_VAR:default} pattern
+        pattern = r'\${([^:{}]+)(?::([^{}]*))?}'
+        
+        def replace_env_var(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) is not None else ""
+            return os.getenv(env_var, default)
+            
+        # Replace all occurrences of the pattern
+        return re.sub(pattern, replace_env_var, value)
 
 
 # Example usage

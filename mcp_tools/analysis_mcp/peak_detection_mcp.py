@@ -15,14 +15,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Load configuration
-CONFIG_PATH = os.path.join("config", "analysis_mcp", "peak_detection_config.json")
-try:
-    with open(CONFIG_PATH, 'r') as f:
-        CONFIG = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError) as e:
-    print(f"Warning: Could not load config from {CONFIG_PATH}: {e}")
-    CONFIG = {}
 
 # GPU acceleration imports
 try:
@@ -68,20 +60,32 @@ class PeakDetectionMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
-        # Load configuration from file, with fallback to provided config
-        file_config = CONFIG.copy() if CONFIG else {}
-        
-        # Merge provided config with file config, with provided config taking precedence
-        if config:
-            for key, value in config.items():
-                file_config[key] = value
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "analysis_mcp", "peak_detection_mcp_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
         
         # Configure GPU usage
-        self.use_gpu = file_config.get("use_gpu", HAVE_GPU)
-        self.min_data_size_for_gpu = file_config.get("min_data_size_for_gpu", 1000)
+        self.use_gpu = self.config.get("use_gpu", HAVE_GPU)
+        self.min_data_size_for_gpu = self.config.get("min_data_size_for_gpu", 1000)
 
         if self.use_gpu and HAVE_GPU:
-            gpu_device = file_config.get("gpu_device", 0)
+            gpu_device = self.config.get("gpu_device", 0)
             try:
                 # Set the active CUDA device
                 cp.cuda.Device(gpu_device).use()
@@ -168,7 +172,7 @@ class PeakDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        peak_detection_config = CONFIG.get("peak_detection", {})
+        peak_detection_config = self.config.get("peak_detection", {})
         default_window_size = peak_detection_config.get("default_window_size", 5)
         default_prominence = peak_detection_config.get("default_prominence", 0.5)
         default_width = peak_detection_config.get("default_width", 1)
@@ -214,7 +218,7 @@ class PeakDetectionMCP(BaseMCPServer):
         volumes = params.get("volumes", [])
         
         # Get default values from config
-        support_resistance_config = CONFIG.get("support_resistance", {})
+        support_resistance_config = self.config.get("support_resistance", {})
         default_window_size = support_resistance_config.get("default_window_size", 10)
         default_num_levels = support_resistance_config.get("default_num_levels", 3)
         default_price_threshold = support_resistance_config.get("default_price_threshold", 0.01)
@@ -254,7 +258,7 @@ class PeakDetectionMCP(BaseMCPServer):
         volumes = params.get("volumes", [])
         
         # Get default values from config
-        breakout_config = CONFIG.get("breakout", {})
+        breakout_config = self.config.get("breakout", {})
         default_lookback_period = breakout_config.get("default_lookback_period", 20)
         default_volume_factor = breakout_config.get("default_volume_factor", 1.5)
         default_price_threshold = breakout_config.get("default_price_threshold", 0.02)
@@ -289,7 +293,7 @@ class PeakDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        consolidation_config = CONFIG.get("consolidation", {})
+        consolidation_config = self.config.get("consolidation", {})
         default_window_size = consolidation_config.get("default_window_size", 10)
         default_volatility_threshold = consolidation_config.get("default_volatility_threshold", 0.01)
         

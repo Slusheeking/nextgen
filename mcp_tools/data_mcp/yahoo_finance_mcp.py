@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 from dotenv import load_dotenv
 load_dotenv()
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -36,15 +36,9 @@ class YahooFinanceMCP(BaseDataMCP):
         """
         super().__init__(name="yahoo_finance_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="yahoo-finance-mcp"
-        )
-        self.monitor.log_info(
-            "YahooFinanceMCP initialized",
-            component="yahoo_finance_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="yahoo-finance-mcp")
+        self.logger.info("YahooFinanceMCP initialized")
 
         # Initialize client configuration
         self.finance_client = self._initialize_client()
@@ -56,13 +50,9 @@ class YahooFinanceMCP(BaseDataMCP):
         self._register_specific_tools()
 
         self.logger.info(
-            "YahooFinanceMCP initialized with %d endpoints", len(self.endpoints)
+            f"YahooFinanceMCP initialized with {len(self.endpoints)} endpoints"
         )
-        self.monitor.log_info(
-            f"YahooFinanceMCP initialized with {len(self.endpoints)} endpoints",
-            component="yahoo_finance_mcp",
-            action="init_endpoints",
-        )
+        # Removed self.monitor.log_info for endpoints
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -254,14 +244,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching stock data for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching stock data for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="stock_data_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch stock data: {str(e)}"}
 
     def _handle_company_info(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -286,14 +269,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching company info for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching company info for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="company_info_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch company info: {str(e)}"}
 
     def _handle_financial_statements(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -350,14 +326,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching financial statements for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching financial statements for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="financial_statements_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch financial statements: {str(e)}"}
 
     def _handle_earnings(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -407,14 +376,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching earnings for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching earnings for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="earnings_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch earnings: {str(e)}"}
 
     def _handle_recommendations(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -444,14 +406,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching recommendations for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching recommendations for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="recommendations_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch recommendations: {str(e)}"}
 
     def _handle_holders(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -501,14 +456,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching holders for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching holders for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="holders_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch holders: {str(e)}"}
 
     def _handle_options(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -566,14 +514,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error fetching options for {ticker}: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error fetching options for {ticker}: {e}",
-                    component="yahoo_finance_mcp",
-                    action="options_error",
-                    error=str(e),
-                    ticker=ticker,
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to fetch options: {str(e)}"}
 
     def _handle_market_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -607,13 +548,7 @@ class YahooFinanceMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error checking market status: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Error checking market status: {e}",
-                    component="yahoo_finance_mcp",
-                    action="market_status_error",
-                    error=str(e),
-                )
+            self.logger.counter("error_count", 1)
             return {"error": f"Failed to check market status: {str(e)}"}
 
     # Public API methods for models to use directly

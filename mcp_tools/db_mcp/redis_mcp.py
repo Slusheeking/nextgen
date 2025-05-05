@@ -43,6 +43,24 @@ class RedisMCP(BaseMCPServer):
 
         super().__init__(name="redis_mcp", config=config)
 
+        # Load configuration if not provided
+        if config is None:
+            config_path = os.path.join("config", "db_mcp", "redis_mcp_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+
         # Initialize monitoring
         self.monitor, self.metrics = self._setup_monitoring()
 

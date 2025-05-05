@@ -14,14 +14,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Load configuration
-CONFIG_PATH = os.path.join("config", "analysis_mcp", "drift_detection_config.json")
-try:
-    with open(CONFIG_PATH, 'r') as f:
-        CONFIG = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError) as e:
-    print(f"Warning: Could not load config from {CONFIG_PATH}: {e}")
-    CONFIG = {}
 
 # GPU acceleration imports
 try:
@@ -67,17 +59,29 @@ class DriftDetectionMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
-        # Load configuration from file, with fallback to provided config
-        file_config = CONFIG.copy() if CONFIG else {}
-        
-        # Merge provided config with file config, with provided config taking precedence
-        if config:
-            for key, value in config.items():
-                file_config[key] = value
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "analysis_mcp", "drift_detection_mcp_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
         
         # GPU configuration
-        self.use_gpu = file_config.get("use_gpu", True)
-        gpu_device = file_config.get("gpu_device", 0)
+        self.use_gpu = self.config.get("use_gpu", True)
+        gpu_device = self.config.get("gpu_device", 0)
 
         # Check if we have GPU and whether we should use it
         self.gpu_available = HAVE_GPU and self.use_gpu
@@ -92,20 +96,20 @@ class DriftDetectionMCP(BaseMCPServer):
                 self.logger.info(f"GPU detected: {gpu_name}")
 
                 # Set GPU-specific parameters
-                if self.has_a100 and file_config.get("a100_optimizations", {}).get("enabled", True):
+                if self.has_a100 and self.config.get("a100_optimizations", {}).get("enabled", True):
                     # A100 is more efficient with GPU computation even for smaller datasets
-                    self.min_gpu_data_size = file_config.get("a100_optimizations", {}).get("min_gpu_data_size", 500)
+                    self.min_gpu_data_size = self.config.get("a100_optimizations", {}).get("min_gpu_data_size", 500)
                     self.logger.info(
                         f"A100 GPU detected - optimizing for high throughput (min_gpu_data_size: {self.min_gpu_data_size})"
                     )
                 else:
-                    self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
+                    self.min_gpu_data_size = self.config.get("min_gpu_data_size", 1000)
                     self.logger.info(f"Standard GPU detected (min_gpu_data_size: {self.min_gpu_data_size})")
             except Exception as e:
                 self.logger.warning(f"Failed to detect GPU type: {e}")
-                self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
+                self.min_gpu_data_size = self.config.get("min_gpu_data_size", 1000)
         else:
-            self.min_gpu_data_size = file_config.get("min_gpu_data_size", 1000)
+            self.min_gpu_data_size = self.config.get("min_gpu_data_size", 1000)
 
         # Initialize execution tracking
         self.execution_stats = {
@@ -178,7 +182,7 @@ class DriftDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        ma_drift_config = CONFIG.get("ma_drift", {})
+        ma_drift_config = self.config.get("ma_drift", {})
         default_short_window = ma_drift_config.get("default_short_window", 5)
         default_long_window = ma_drift_config.get("default_long_window", 20)
         default_drift_threshold = ma_drift_config.get("default_drift_threshold", 0.02)
@@ -215,7 +219,7 @@ class DriftDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        trend_change_config = CONFIG.get("trend_change", {})
+        trend_change_config = self.config.get("trend_change", {})
         default_window_size = trend_change_config.get("default_window_size", 10)
         default_change_threshold = trend_change_config.get("default_change_threshold", 0.03)
         
@@ -246,7 +250,7 @@ class DriftDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        momentum_config = CONFIG.get("momentum", {})
+        momentum_config = self.config.get("momentum", {})
         default_window_size = momentum_config.get("default_window_size", 14)
         default_momentum_threshold = momentum_config.get("default_momentum_threshold", 0.1)
         
@@ -277,7 +281,7 @@ class DriftDetectionMCP(BaseMCPServer):
         prices = params.get("prices", [])
         
         # Get default values from config
-        volatility_config = CONFIG.get("volatility", {})
+        volatility_config = self.config.get("volatility", {})
         default_window_size = volatility_config.get("default_window_size", 10)
         default_shift_threshold = volatility_config.get("default_shift_threshold", 0.5)
         

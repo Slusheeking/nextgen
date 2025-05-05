@@ -13,7 +13,7 @@ import asyncio
 from typing import Dict, List, Any, Optional, Union
 import websockets
 from uuid import uuid4
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -41,15 +41,9 @@ class PolygonWsMCP(BaseDataMCP):
         """
         super().__init__(name="polygon_ws_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="polygon-ws-mcp"
-        )
-        self.monitor.log_info(
-            "PolygonWsMCP initialized",
-            component="polygon_ws_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="polygon-ws-mcp")
+        self.logger.info("PolygonWsMCP initialized")
 
         # Initialize the WS client
         self.ws_client = self._initialize_client()
@@ -73,13 +67,9 @@ class PolygonWsMCP(BaseDataMCP):
         self._register_specific_tools()
 
         self.logger.info(
-            "PolygonWsMCP initialized with %d stream types", len(self.endpoints)
+            f"PolygonWsMCP initialized with {len(self.endpoints)} stream types"
         )
-        self.monitor.log_info(
-            f"PolygonWsMCP initialized with {len(self.endpoints)} stream types",
-            component="polygon_ws_mcp",
-            action="init_endpoints",
-        )
+        # Removed self.monitor.log_info for endpoints
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -241,6 +231,7 @@ class PolygonWsMCP(BaseDataMCP):
 
             # Keep track of this connection
             self.active_connections[subscription_id] = ws
+            self.logger.gauge("active_connections", len(self.active_connections))
 
             # Authenticate
             await ws.send(json.dumps({"action": "auth", "params": self.api_key}))
@@ -273,6 +264,7 @@ class PolygonWsMCP(BaseDataMCP):
             asyncio.create_task(self._handle_messages(ws, subscription_id, stream_type))
 
             self.logger.info(f"Subscribed to {len(channels)} {stream_type} channels")
+            self.logger.counter("ws_subscribe_count", 1)
 
         except Exception as e:
             self.logger.error(f"Error in WebSocket connection: {e}")
@@ -297,6 +289,8 @@ class PolygonWsMCP(BaseDataMCP):
                 try:
                     # Wait for a message with timeout
                     message = await asyncio.wait_for(ws.recv(), timeout=60)
+                    self.logger.counter("ws_message_receive_count", 1)
+                    self.logger.gauge("ws_message_size_bytes", len(message.encode("utf-8")))
 
                     # Parse and process the message
                     data = json.loads(message)
@@ -329,11 +323,13 @@ class PolygonWsMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Error in message handling: {e}")
+            self.logger.counter("ws_error_count", 1)
         finally:
             # Clean up connection
             if subscription_id in self.active_connections:
                 await ws.close()
                 del self.active_connections[subscription_id]
+                self.logger.gauge("active_connections", len(self.active_connections))
                 self.logger.info(f"Closed WebSocket connection for {subscription_id}")
 
     def _is_auth_successful(

@@ -9,6 +9,7 @@ import os
 import json
 import logging
 import datetime
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 
@@ -39,7 +40,7 @@ def get_api_key(key_name: str, default: str = "") -> str:
     env_var = key_map.get(key_name, key_name.upper())
     return os.environ.get(env_var, default)
 
-def get_env(key: str, default: str = "") -> str:
+def get_env(key: str, default: Optional[str] = None) -> str:
     """
     Get environment variable.
     
@@ -53,7 +54,8 @@ def get_env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 # Import monitoring
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
 
 # Note: autogen is installed as package 'pyautogen' but imported as 'autogen'
 from autogen import (  # type: ignore
@@ -79,15 +81,29 @@ class AutoGenOrchestrator:
         Args:
             config_path: Path to configuration JSON file (optional)
         """
-        self.logger = self._setup_logging()
+        init_start_time = time.time()
+        self.logger = NetdataLogger(component_name="autogen-orchestrator")
+
+        # Initialize system metrics collector
+        self.metrics_collector = SystemMetricsCollector(self.logger)
+
+        # Start collecting system metrics
+        self.metrics_collector.start()
+
+        # Initialize counters for orchestrator metrics
+        self.trading_cycles_run = 0
+        self.decisions_made_count = 0
+        self.execution_errors = 0
+        self.llm_api_call_count = 0 # This might be better tracked by the LLM config itself or agents
+
         self.config = self._load_config(config_path)
         self.llm_config = self._get_llm_config()
 
-        # Set up monitoring
-        self.monitor, self.metrics = self._setup_monitoring()
-
         self.agents = {}
         self._setup_agents()
+
+        # Log initialization
+        self.logger.info("AutoGenOrchestrator initialized")
         self.group_chat = None
         self.chat_manager = None
         self._setup_group_chat()
@@ -95,22 +111,10 @@ class AutoGenOrchestrator:
         # Configuration for selection model integration
         self.max_candidates = self.config.get("selection", {}).get("max_candidates", 20)
         self.models = {}  # Will store model instances
+        
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("orchestrator.initialization_time_ms", init_duration)
 
-    def _setup_logging(self) -> logging.Logger:
-        """Set up logging for the orchestrator."""
-        logger = logging.getLogger("nextgen_models.autogen_orchestrator")
-        logger.setLevel(logging.INFO)
-
-        # Add console handler if none exists
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
-        return logger
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """
@@ -122,6 +126,7 @@ class AutoGenOrchestrator:
         Returns:
             Configuration dictionary
         """
+        # Define default config as fallback
         default_config = {
             "llm": {
                 "temperature": 0.1,
@@ -188,35 +193,58 @@ class AutoGenOrchestrator:
                 "max_spread_pct": 0.5,
             },
         }
-
-        if not config_path or not os.path.exists(config_path):
-            self.logger.warning(
-                f"Config file not found at {config_path}. Using default configuration."
-            )
-            return default_config
-
-        try:
-            with open(config_path, "r") as f:
-                user_config = json.load(f)
-
-            # Deep merge of default and user configs
-            merged_config = default_config.copy()
-            for key, value in user_config.items():
-                if (
-                    isinstance(value, dict)
-                    and key in default_config
-                    and isinstance(default_config[key], dict)
-                ):
-                    merged_config[key] = {**default_config[key], **value}
-                else:
-                    merged_config[key] = value
-
-            return merged_config
-        except Exception as e:
-            self.logger.error(
-                f"Error loading config: {e}. Using default configuration."
-            )
-            return default_config
+        
+        # First try to load from the specified config_path if provided
+        if config_path and os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    user_config = json.load(f)
+                    
+                # Deep merge of default and user configs
+                merged_config = default_config.copy()
+                for key, value in user_config.items():
+                    if (
+                        isinstance(value, dict)
+                        and key in default_config
+                        and isinstance(default_config[key], dict)
+                    ):
+                        merged_config[key] = {**default_config[key], **value}
+                    else:
+                        merged_config[key] = value
+                        
+                self.logger.info(f"Loaded configuration from {config_path}")
+                return merged_config
+            except Exception as e:
+                self.logger.error(f"Error loading config from {config_path}: {e}")
+                # Fall through to standard config path
+        
+        # If no config_path provided or it failed, try the standard location
+        standard_config_path = os.path.join("config", "autogen_orchestrator", "autogen_model_config.json")
+        if os.path.exists(standard_config_path):
+            try:
+                with open(standard_config_path, "r") as f:
+                    standard_config = json.load(f)
+                
+                # Deep merge of default and standard configs
+                merged_config = default_config.copy()
+                for key, value in standard_config.items():
+                    if (
+                        isinstance(value, dict)
+                        and key in default_config
+                        and isinstance(default_config[key], dict)
+                    ):
+                        merged_config[key] = {**default_config[key], **value}
+                    else:
+                        merged_config[key] = value
+                        
+                self.logger.info(f"Loaded configuration from {standard_config_path}")
+                return merged_config
+            except Exception as e:
+                self.logger.error(f"Error loading standard config: {e}")
+        
+        # If we get here, use default configuration
+        self.logger.warning("Using default configuration")
+        return default_config
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -234,12 +262,7 @@ class AutoGenOrchestrator:
             if redacted_key:
                 redacted_key = redacted_key[:8] + "..." + redacted_key[-4:]
             self.logger.info(
-                f"LLM Config {i + 1}: model={config.get('model')}, api_type={config.get('api_type')}, api_key={redacted_key}"
-            )
-            self.monitor.log_info(
                 f"LLM Config {i + 1}: model={config.get('model')}, api_type={config.get('api_type')}, api_key={redacted_key}",
-                component="orchestrator",
-                action="llm_config",
                 model=config.get('model'),
                 api_type=config.get('api_type')
             )
@@ -251,34 +274,12 @@ class AutoGenOrchestrator:
             "seed": 42,  # Adding seed for reproducibility
         }
 
-    def _setup_monitoring(self) -> Tuple[MonitoringManager, Dict[str, Any]]:
+    def shutdown(self):
         """
-        Set up monitoring for the orchestrator.
-
-        Returns:
-            Tuple of monitor instance and metrics dictionary
+        Shutdown the orchestrator and stop metrics collection.
         """
-        # Set up monitoring using the MonitoringManager
-        monitor = MonitoringManager(
-            service_name="autogen-orchestrator"
-        )
-        
-        # Log initialization
-        monitor.log_info(
-            "AutoGenOrchestrator monitoring initialized",
-            component="orchestrator",
-            action="initialization"
-        )
-        
-        # Create a metrics dictionary for compatibility with existing code
-        metrics = {
-            "api_calls": "api_calls_total",
-            "tokens_used": "tokens_used_total",
-            "decisions_made": "decisions_made_total",
-            "execution_time": "execution_time_seconds"
-        }
-        
-        return monitor, metrics
+        self.logger.info("Shutting down AutoGenOrchestrator")
+        self.metrics_collector.stop()
 
     def _setup_agents(self):
         """
@@ -355,6 +356,10 @@ class AutoGenOrchestrator:
         Returns:
             Results of the trading cycle including decisions
         """
+        # Increment trading cycle counter
+        self.trading_cycles_run += 1
+        self.logger.counter("orchestrator.trading_cycles_run")
+
         if mock:
             self.logger.warning("Running in MOCK mode - no API calls will be made")
             # Return mock result
@@ -366,6 +371,8 @@ class AutoGenOrchestrator:
 
         self.logger.info("Running with REAL LLM API calls to OpenRouter")
         self.logger.info("Starting new trading cycle")
+
+        start_time = time.time() # Start timing the cycle
 
         # Connect to models if not already connected
         if not hasattr(self, "models") or not self.models:
@@ -384,6 +391,7 @@ class AutoGenOrchestrator:
                 self.logger.info(
                     f"Retrieved selection data with {len(selection_data.get('candidates', []))} candidates"
                 )
+                self.logger.gauge("orchestrator.selected_candidates_count", len(selection_data.get('candidates', [])))
 
                 # Extract market context and candidates
                 market_context = selection_data.get("market_context", {})
@@ -402,6 +410,8 @@ class AutoGenOrchestrator:
                     self.logger.info(
                         f"SelectionModel identified {len(selected_candidates)} candidates"
                     )
+                    self.logger.gauge("orchestrator.selected_candidates_count", len(selected_candidates))
+
             except Exception as e:
                 self.logger.error(f"Error getting selection data: {e}")
                 self.logger.exception("Exception details:")
@@ -494,9 +504,13 @@ class AutoGenOrchestrator:
             human_proxy = self.agents.get("human_proxy")
 
             if selection_agent and human_proxy:
-                # Start with a direct message to initiate the workflow
-                self.logger.info("Sending direct message to selection agent...")
+                # Measure LLM call time
+                llm_call_start_time = time.time()
                 human_proxy.initiate_chat(selection_agent, message=initial_prompt)
+                llm_call_duration = (time.time() - llm_call_start_time) * 1000
+                self.logger.timing("orchestrator.llm_call_duration_ms", llm_call_duration)
+                self.llm_api_call_count += 1
+                self.logger.counter("orchestrator.llm_api_call_count")
 
                 # Get the chat history
                 messages = selection_agent.chat_history[human_proxy]
@@ -509,12 +523,30 @@ class AutoGenOrchestrator:
             else:
                 # Fallback to standard group chat if agents not found
                 self.logger.info("Falling back to standard group chat...")
+                
+                # Measure LLM call time
+                llm_call_start_time = time.time()
                 response = self.chat_manager.run(initial_prompt)
+                llm_call_duration = (time.time() - llm_call_start_time) * 1000
+                self.logger.timing("orchestrator.llm_call_duration_ms", llm_call_duration)
+                self.llm_api_call_count += 1
+                self.logger.counter("orchestrator.llm_api_call_count")
+                
                 self.logger.info(f"Response type: {type(response)}")
 
         except Exception as e:
             self.logger.error(f"Error in chat execution: {str(e)}")
             self.logger.exception("Exception details:")
+
+            # Increment error counter
+            self.execution_errors += 1
+            self.logger.counter("orchestrator.execution_errors")
+            self.logger.gauge("orchestrator.execution_error_rate", (self.execution_errors / self.trading_cycles_run) * 100)
+
+            # Calculate and log duration even on error
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.trading_cycle_duration_ms", duration)
+
             return {
                 "chat_result": f"Error: {str(e)}",
                 "decisions": [],
@@ -550,8 +582,19 @@ class AutoGenOrchestrator:
         # Extract and process results
         decisions = self._extract_trading_decisions(chat_result)
 
-        # Log the outcomes
+        # Log the outcomes and metrics
         self.logger.info(f"Trading cycle completed with {len(decisions)} decisions")
+
+        # Increment decisions made counter
+        self.decisions_made_count += len(decisions)
+        self.logger.counter("orchestrator.decisions_made_count", len(decisions))
+        self.logger.gauge("orchestrator.selected_candidates_count", len(selected_candidates))
+
+        # Calculate and log duration
+        duration = (time.time() - start_time) * 1000
+        self.logger.timing("orchestrator.trading_cycle_duration_ms", duration)
+        self.logger.gauge("orchestrator.execution_error_rate", (self.execution_errors / self.trading_cycles_run) * 100)
+
 
         return {
             "chat_result": chat_result,
@@ -650,42 +693,70 @@ class AutoGenOrchestrator:
 
             # Initialize the Selection Model
             selection_config = self._prepare_model_config("selection", model_config)
+            start_time = time.time()
             self.models["selection"] = SelectionModel(selection_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "selection"})
             self.logger.info("Initialized SelectionModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "selection"})
 
             # Initialize Sentiment Analysis Model
             sentiment_config = self._prepare_model_config(
                 "sentiment_analysis", model_config
             )
+            start_time = time.time()
             self.models["sentiment"] = SentimentAnalysisModel(sentiment_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "sentiment"})
             self.logger.info("Initialized SentimentAnalysisModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "sentiment"})
 
             # Initialize Market Analysis Model
             market_config = self._prepare_model_config("market_analysis", model_config)
+            start_time = time.time()
             self.models["market"] = MarketAnalysisModel(market_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "market"})
             self.logger.info("Initialized MarketAnalysisModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "market"})
 
             # Initialize Fundamental Analysis Model
             fundamental_config = self._prepare_model_config(
                 "fundamental_analysis", model_config
             )
+            start_time = time.time()
             self.models["fundamental"] = FundamentalAnalysisModel(fundamental_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "fundamental"})
             self.logger.info("Initialized FundamentalAnalysisModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "fundamental"})
 
             # Initialize Risk Assessment Model
             risk_config = self._prepare_model_config("risk_assessment", model_config)
+            start_time = time.time()
             self.models["risk"] = RiskAssessmentModel(risk_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "risk"})
             self.logger.info("Initialized RiskAssessmentModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "risk"})
 
             # Initialize Trade Model
             trade_config = self._prepare_model_config("trade", model_config)
+            start_time = time.time()
             self.models["trade"] = TradeModel(trade_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "trade"})
             self.logger.info("Initialized TradeModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "trade"})
 
             # Initialize Decision Model
             decision_config = self._prepare_model_config("decision", model_config)
+            start_time = time.time()
             self.models["decision"] = DecisionModel(decision_config)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.model_init_time_ms", duration, tags={"model": "decision"})
             self.logger.info("Initialized DecisionModel")
+            self.logger.counter("orchestrator.models_connected", tags={"model": "decision"})
 
             # Set up bidirectional communication between models
             self._setup_model_communication()
@@ -697,6 +768,7 @@ class AutoGenOrchestrator:
             self.logger.warning(
                 f"Could not import NextGen models: {e}. Running in standalone mode."
             )
+            self.logger.counter("orchestrator.model_connection_errors")
 
     def _prepare_model_config(
         self, model_name: str, base_config: Dict[str, Any]
@@ -847,7 +919,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def run_selection_cycle() -> List[Dict[str, Any]]:
-            return selection_model.run_selection_cycle()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "run_selection_cycle"})
+            start_time = time.time()
+            result = selection_model.run_selection_cycle()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "run_selection_cycle"})
+            return result
 
         @register_function(
             name="get_selection_data",
@@ -857,7 +934,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_selection_data() -> Dict[str, Any]:
-            return selection_model.get_selection_data()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_selection_data"})
+            start_time = time.time()
+            result = selection_model.get_selection_data()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_selection_data"})
+            return result
 
         # Data gathering methods
         @register_function(
@@ -868,7 +950,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def get_market_data() -> List[Dict[str, Any]]:
-            return selection_model.get_market_data()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_market_data"})
+            start_time = time.time()
+            result = selection_model.get_market_data()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_market_data"})
+            return result
 
         @register_function(
             name="get_technical_indicators",
@@ -883,7 +970,12 @@ class AutoGenOrchestrator:
         def get_technical_indicators(
             stocks: List[Dict[str, Any]],
         ) -> List[Dict[str, Any]]:
-            return selection_model.get_technical_indicators(stocks)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_technical_indicators"})
+            start_time = time.time()
+            result = selection_model.get_technical_indicators(stocks)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_technical_indicators"})
+            return result
 
         @register_function(
             name="get_unusual_activity",
@@ -896,7 +988,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def get_unusual_activity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            return selection_model.get_unusual_activity(stocks)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_unusual_activity"})
+            start_time = time.time()
+            result = selection_model.get_unusual_activity(stocks)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_unusual_activity"})
+            return result
 
         # Filtering and scoring methods
         @register_function(
@@ -910,7 +1007,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def filter_by_liquidity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            return selection_model.filter_by_liquidity(stocks)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "filter_by_liquidity"})
+            start_time = time.time()
+            result = selection_model.filter_by_liquidity(stocks)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "filter_by_liquidity"})
+            return result
 
         @register_function(
             name="score_candidates",
@@ -920,10 +1022,15 @@ class AutoGenOrchestrator:
             parameters={
                 "stocks": {"type": "array", "description": "List of stock dictionaries"}
             },
-            return_type=List[Dict[str, Any]],
+            return_type=Dict[str, Any],
         )
-        def score_candidates(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            return selection_model.score_candidates(stocks)
+        def score_candidates(stocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "score_candidates"})
+            start_time = time.time()
+            result = selection_model.score_candidates(stocks)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "score_candidates"})
+            return result
 
         # Storage and retrieval methods
         @register_function(
@@ -940,7 +1047,12 @@ class AutoGenOrchestrator:
             return_type=bool,
         )
         def store_candidates(candidates: List[Dict[str, Any]]) -> bool:
-            return selection_model.store_candidates(candidates)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "store_candidates"})
+            start_time = time.time()
+            result = selection_model.store_candidates(candidates)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "store_candidates"})
+            return result
 
         @register_function(
             name="get_candidates",
@@ -950,7 +1062,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def get_candidates() -> List[Dict[str, Any]]:
-            return selection_model.get_candidates()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_candidates"})
+            start_time = time.time()
+            result = selection_model.get_candidates()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_candidates"})
+            return result
 
         @register_function(
             name="get_top_candidates",
@@ -967,7 +1084,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def get_top_candidates(limit: int = 10) -> List[Dict[str, Any]]:
-            return selection_model.get_top_candidates(limit)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_top_candidates"})
+            start_time = time.time()
+            result = selection_model.get_top_candidates(limit)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_top_candidates"})
+            return result
 
         @register_function(
             name="get_candidate",
@@ -978,7 +1100,12 @@ class AutoGenOrchestrator:
             return_type=Optional[Dict[str, Any]],
         )
         def get_candidate(symbol: str) -> Optional[Dict[str, Any]]:
-            return selection_model.get_candidate(symbol)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_candidate"})
+            start_time = time.time()
+            result = selection_model.get_candidate(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_candidate"})
+            return result
 
         @register_function(
             name="get_market_context",
@@ -988,7 +1115,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_market_context() -> Dict[str, Any]:
-            return selection_model._get_market_context()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_market_context"})
+            start_time = time.time()
+            result = selection_model._get_market_context()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_market_context"})
+            return result
 
         #
         # Update the selection agent's system message to include available
@@ -1065,7 +1197,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def analyze_news_sentiment(symbol: str, days: int = 7) -> Dict[str, Any]:
-            return sentiment_model.analyze_news_sentiment(symbol, days)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "analyze_news_sentiment"})
+            start_time = time.time()
+            result = sentiment_model.analyze_news_sentiment(symbol, days)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "analyze_news_sentiment"})
+            return result
 
         @register_function(
             name="analyze_social_sentiment",
@@ -1085,7 +1222,12 @@ class AutoGenOrchestrator:
         def analyze_social_sentiment(
             symbol: str, source: str = "reddit"
         ) -> Dict[str, Any]:
-            return sentiment_model.analyze_social_sentiment(symbol, source)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "analyze_social_sentiment"})
+            start_time = time.time()
+            result = sentiment_model.analyze_social_sentiment(symbol, source)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "analyze_social_sentiment"})
+            return result
 
         @register_function(
             name="get_sentiment_summary",
@@ -1096,7 +1238,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_sentiment_summary(symbol: str) -> Dict[str, Any]:
-            return sentiment_model.get_sentiment_summary(symbol)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_sentiment_summary"})
+            start_time = time.time()
+            result = sentiment_model.get_sentiment_summary(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_sentiment_summary"})
+            return result
 
         # Update the sentiment agent's system message
         if sentiment_agent:
@@ -1158,7 +1305,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def analyze_market_trends(timeframe: str = "day") -> Dict[str, Any]:
-            return market_model.analyze_market_trends(timeframe)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "analyze_market_trends"})
+            start_time = time.time()
+            result = market_model.analyze_market_trends(timeframe)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "analyze_market_trends"})
+            return result
 
         @register_function(
             name="predict_price_movement",
@@ -1178,7 +1330,12 @@ class AutoGenOrchestrator:
         def predict_price_movement(
             symbol: str, timeframe: str = "day"
         ) -> Dict[str, Any]:
-            return market_model.predict_price_movement(symbol, timeframe)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "predict_price_movement"})
+            start_time = time.time()
+            result = market_model.predict_price_movement(symbol, timeframe)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "predict_price_movement"})
+            return result
 
         @register_function(
             name="get_technical_analysis",
@@ -1189,7 +1346,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_technical_analysis(symbol: str) -> Dict[str, Any]:
-            return market_model.get_technical_analysis(symbol)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_technical_analysis"})
+            start_time = time.time()
+            result = market_model.get_technical_analysis(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_technical_analysis"})
+            return result
 
         # Update the market agent's system message
         if market_agent:
@@ -1254,7 +1416,12 @@ class AutoGenOrchestrator:
         def analyze_company(
             symbol: str, sector: Optional[str] = None
         ) -> Dict[str, Any]:
-            return fundamental_model.analyze_company(symbol, sector)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "analyze_company"})
+            start_time = time.time()
+            result = fundamental_model.analyze_company(symbol, sector)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "analyze_company"})
+            return result
 
         @register_function(
             name="get_financial_statements",
@@ -1279,9 +1446,14 @@ class AutoGenOrchestrator:
         def get_financial_statements(
             symbol: str, statement_type: str = "all", period: str = "annual"
         ) -> Dict[str, Any]:
-            return fundamental_model.get_financial_statements(
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_financial_statements"})
+            start_time = time.time()
+            result = fundamental_model.get_financial_statements(
                 symbol, statement_type, period
             )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_financial_statements"})
+            return result
 
         @register_function(
             name="calculate_financial_ratios",
@@ -1301,7 +1473,12 @@ class AutoGenOrchestrator:
         def calculate_financial_ratios(
             symbol: str, ratios: Optional[List[str]] = None
         ) -> Dict[str, Any]:
-            return fundamental_model.calculate_financial_ratios(symbol, ratios)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "calculate_financial_ratios"})
+            start_time = time.time()
+            result = fundamental_model.calculate_financial_ratios(symbol, ratios)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "calculate_financial_ratios"})
+            return result
 
         @register_function(
             name="analyze_growth_metrics",
@@ -1321,7 +1498,12 @@ class AutoGenOrchestrator:
         def analyze_growth_metrics(
             symbol: str, metrics: Optional[List[str]] = None
         ) -> Dict[str, Any]:
-            return fundamental_model.analyze_growth_metrics(symbol, metrics)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "analyze_growth_metrics"})
+            start_time = time.time()
+            result = fundamental_model.analyze_growth_metrics(symbol, metrics)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "analyze_growth_metrics"})
+            return result
 
         # Update the fundamental agent's system message
         if fundamental_agent:
@@ -1378,7 +1560,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def assess_portfolio_risk() -> Dict[str, Any]:
-            return risk_model.assess_portfolio_risk()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "assess_portfolio_risk"})
+            start_time = time.time()
+            result = risk_model.assess_portfolio_risk()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "assess_portfolio_risk"})
+            return result
 
         @register_function(
             name="calculate_position_risk",
@@ -1397,7 +1584,12 @@ class AutoGenOrchestrator:
         def calculate_position_risk(
             symbol: str, position_size: float
         ) -> Dict[str, Any]:
-            return risk_model.calculate_position_risk(symbol, position_size)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "calculate_position_risk"})
+            start_time = time.time()
+            result = risk_model.calculate_position_risk(symbol, position_size)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "calculate_position_risk"})
+            return result
 
         @register_function(
             name="get_risk_metrics",
@@ -1408,7 +1600,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_risk_metrics(symbol: str) -> Dict[str, Any]:
-            return risk_model.get_risk_metrics(symbol)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_risk_metrics"})
+            start_time = time.time()
+            result = risk_model.get_risk_metrics(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_risk_metrics"})
+            return result
 
         # Update the risk agent's system message
         if risk_agent:
@@ -1487,9 +1684,14 @@ class AutoGenOrchestrator:
             order_type: str = "market",
             price: Optional[float] = None,
         ) -> Dict[str, Any]:
-            return trade_model.execute_trade(
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "execute_trade"})
+            start_time = time.time()
+            result = trade_model.execute_trade(
                 symbol, action, quantity, order_type, price
             )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "execute_trade"})
+            return result
 
         @register_function(
             name="get_order_status",
@@ -1500,7 +1702,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_order_status(order_id: str) -> Dict[str, Any]:
-            return trade_model.get_order_status(order_id)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_order_status"})
+            start_time = time.time()
+            result = trade_model.get_order_status(order_id)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_order_status"})
+            return result
 
         @register_function(
             name="get_positions",
@@ -1510,7 +1717,12 @@ class AutoGenOrchestrator:
             return_type=List[Dict[str, Any]],
         )
         def get_positions() -> List[Dict[str, Any]]:
-            return trade_model.get_positions()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_positions"})
+            start_time = time.time()
+            result = trade_model.get_positions()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_positions"})
+            return result
 
         @register_function(
             name="get_account_info",
@@ -1520,7 +1732,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def get_account_info() -> Dict[str, Any]:
-            return trade_model.get_account_info()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "get_account_info"})
+            start_time = time.time()
+            result = trade_model.get_account_info()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_account_info"})
+            return result
 
         # Update the trade agent's system message
         if trade_agent:
@@ -1595,9 +1812,14 @@ class AutoGenOrchestrator:
             forecaster_data: Dict[str, Any],
             rag_data: Dict[str, Any],
         ) -> Dict[str, Any]:
-            return decision_model.process_analysis_results(
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "process_analysis_results"})
+            start_time = time.time()
+            result = decision_model.process_analysis_results(
                 selection_data, finnlp_data, forecaster_data, rag_data
             )
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "process_analysis_results"})
+            return result
 
         @register_function(
             name="evaluate_market_conditions",
@@ -1607,7 +1829,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def evaluate_market_conditions() -> Dict[str, Any]:
-            return decision_model.evaluate_market_conditions()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "evaluate_market_conditions"})
+            start_time = time.time()
+            result = decision_model.evaluate_market_conditions()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "evaluate_market_conditions"})
+            return result
 
         @register_function(
             name="check_portfolio_constraints",
@@ -1617,7 +1844,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def check_portfolio_constraints() -> Dict[str, Any]:
-            return decision_model.check_portfolio_constraints()
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "check_portfolio_constraints"})
+            start_time = time.time()
+            result = decision_model.check_portfolio_constraints()
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "check_portfolio_constraints"})
+            return result
 
         @register_function(
             name="make_trade_decision",
@@ -1628,7 +1860,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def make_trade_decision(symbol: str) -> Dict[str, Any]:
-            return decision_model.make_trade_decision(symbol)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "make_trade_decision"})
+            start_time = time.time()
+            result = decision_model.make_trade_decision(symbol)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "make_trade_decision"})
+            return result
 
         @register_function(
             name="handle_position_update",
@@ -1641,7 +1878,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def handle_position_update(update_data: Dict[str, Any]) -> Dict[str, Any]:
-            return decision_model.handle_position_update(update_data)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "handle_position_update"})
+            start_time = time.time()
+            result = decision_model.handle_position_update(update_data)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "handle_position_update"})
+            return result
 
         @register_function(
             name="request_new_selections",
@@ -1657,7 +1899,12 @@ class AutoGenOrchestrator:
             return_type=Dict[str, Any],
         )
         def request_new_selections(available_capital: float) -> Dict[str, Any]:
-            return decision_model.request_new_selections(available_capital)
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "request_new_selections"})
+            start_time = time.time()
+            result = decision_model.request_new_selections(available_capital)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "request_new_selections"})
+            return result
 
         self.logger.info("Registered DecisionModel methods with user proxy agent")
 
@@ -1673,6 +1920,8 @@ class AutoGenOrchestrator:
         @register_function(
             name="use_mcp_tool",
             description="Use a tool provided by an MCP server",
+            caller=user_proxy, # MCP tool calls are initiated by the user proxy
+            executor=user_proxy,
             parameters={
                 "server_name": {
                     "type": "string",
@@ -1703,6 +1952,9 @@ class AutoGenOrchestrator:
             Returns:
                 Result of the tool execution
             """
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "use_mcp_tool"})
+            start_time = time.time()
+            
             # Get the MCP server instance
             if "selection" in self.models:
                 selection_model = self.models["selection"]
@@ -1719,19 +1971,37 @@ class AutoGenOrchestrator:
                 elif server_name == "unusual_whales":
                     mcp_server = selection_model.unusual_whales_mcp
                 else:
+                    self.logger.warning(f"MCP server not found: {server_name}", server=server_name)
+                    self.logger.counter("orchestrator.mcp_tool_error_count", tags={"server": server_name, "tool": tool_name, "reason": "server_not_found"})
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_tool_call_duration_ms", duration, tags={"server": server_name, "tool": tool_name, "status": "failed"})
                     return {"error": f"MCP server not found: {server_name}"}
 
                 # Call the tool
                 try:
-                    return mcp_server.call_tool(tool_name, arguments)
+                    result = mcp_server.call_tool(tool_name, arguments)
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_tool_call_duration_ms", duration, tags={"server": server_name, "tool": tool_name, "status": "success"})
+                    self.logger.counter("orchestrator.mcp_tool_call_count", tags={"server": server_name, "tool": tool_name})
+                    return result
                 except Exception as e:
+                    self.logger.error(f"Error calling MCP tool {tool_name} on {server_name}: {e}", server=server_name, tool=tool_name, error=str(e))
+                    self.logger.counter("orchestrator.mcp_tool_error_count", tags={"server": server_name, "tool": tool_name, "error": str(e)})
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_tool_call_duration_ms", duration, tags={"server": server_name, "tool": tool_name, "status": "failed"})
                     return {"error": str(e)}
             else:
+                self.logger.warning("Could not use MCP tool: Selection model not initialized", server=server_name, tool=tool_name)
+                self.logger.counter("orchestrator.mcp_tool_error_count", tags={"server": server_name, "tool": tool_name, "reason": "selection_model_not_initialized"})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("orchestrator.mcp_tool_call_duration_ms", duration, tags={"server": server_name, "tool": tool_name, "status": "failed"})
                 return {"error": "Selection model not initialized"}
 
         @register_function(
             name="list_mcp_tools",
             description="List all available tools on an MCP server",
+            caller=user_proxy, # MCP tool calls are initiated by the user proxy
+            executor=user_proxy,
             parameters={
                 "server_name": {
                     "type": "string",
@@ -1750,6 +2020,9 @@ class AutoGenOrchestrator:
             Returns:
                 List of tool information dictionaries
             """
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "list_mcp_tools"})
+            start_time = time.time()
+            
             # Get the MCP server instance
             if "selection" in self.models:
                 selection_model = self.models["selection"]
@@ -1766,14 +2039,30 @@ class AutoGenOrchestrator:
                 elif server_name == "unusual_whales":
                     mcp_server = selection_model.unusual_whales_mcp
                 else:
+                    self.logger.warning(f"MCP server not found for listing tools: {server_name}", server=server_name)
+                    self.logger.counter("orchestrator.mcp_tool_error_count", tags={"server": server_name, "tool": "list_tools", "reason": "server_not_found"})
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_list_tools_duration_ms", duration, tags={"server": server_name, "status": "failed"})
                     return [{"error": f"MCP server not found: {server_name}"}]
 
                 # List the tools
                 try:
-                    return mcp_server.list_tools()
+                    result = mcp_server.list_tools()
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_list_tools_duration_ms", duration, tags={"server": server_name, "status": "success"})
+                    self.logger.counter("orchestrator.mcp_list_tools_count", tags={"server": server_name})
+                    return result
                 except Exception as e:
+                    self.logger.error(f"Error listing tools on MCP server {server_name}: {e}", server=server_name, error=str(e))
+                    self.logger.counter("orchestrator.mcp_tool_error_count", tags={"server": server_name, "tool": "list_tools", "error": str(e)})
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.mcp_list_tools_duration_ms", duration, tags={"server": server_name, "status": "failed"})
                     return [{"error": str(e)}]
             else:
+                self.logger.warning("Could not list MCP tools: Selection model not initialized", server=server_name, tool="list_tools")
+                self.logger.counter("orchestrator.mcp_tool_error_count", tags={"tool": "list_tools", "reason": "selection_model_not_initialized"})
+                duration = (time.time() - start_time) * 1000
+                self.logger.timing("orchestrator.mcp_list_tools_duration_ms", duration, tags={"server": server_name, "status": "failed"})
                 return [{"error": "Selection model not initialized"}]
 
         # Register the MCP tool access functions

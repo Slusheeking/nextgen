@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 
 
@@ -48,15 +48,9 @@ class PolygonNewsMCP(BaseDataMCP):
 
         super().__init__(name="polygon_news_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="polygon-news-mcp"
-        )
-        self.monitor.log_info(
-            "PolygonNewsMCP initialized",
-            component="polygon_news_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="polygon-news-mcp")
+        self.logger.info("PolygonNewsMCP initialized")
 
         # Set default result limits
         self.default_results_limit = self.config.get("default_results_limit", 50)
@@ -595,13 +589,21 @@ class PolygonNewsMCP(BaseDataMCP):
 
         while retry_count <= max_retries:
             try:
+                start_time = time.time()
                 response = requests.get(
                     url, params=query_params, headers=headers, timeout=15
                 )
+                elapsed = (time.time() - start_time) * 1000  # ms
+                self.logger.counter("external_api_call_count", 1)
+                self.logger.timing("data_fetch_time_ms", elapsed)
+                self.logger.gauge("response_status_code", response.status_code)
+                if response.content:
+                    self.logger.gauge("data_volume_bytes", len(response.content))
 
                 if response.status_code == 200:
                     return self._process_news_response(response.json())
                 elif response.status_code == 429:  # Rate limit exceeded
+                    self.logger.counter("rate_limit_count", 1)
                     retry_count += 1
                     if retry_count <= max_retries:
                         sleep_time = retry_delay * (
@@ -614,6 +616,9 @@ class PolygonNewsMCP(BaseDataMCP):
                         continue
 
                 # Handle other error codes
+                self.logger.error(
+                    f"API request failed: {response.status_code} - {response.text}"
+                )
                 raise Exception(
                     f"API request failed: {response.status_code} - {response.text}"
                 )
@@ -626,6 +631,7 @@ class PolygonNewsMCP(BaseDataMCP):
                     )
                     time.sleep(sleep_time)
                 else:
+                    self.logger.error(f"Request failed after {max_retries} retries: {e}")
                     raise Exception(f"Request failed after {max_retries} retries: {e}")
 
     # Public API methods for models to use directly

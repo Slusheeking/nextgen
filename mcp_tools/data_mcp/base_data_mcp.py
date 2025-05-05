@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mcp_tools.base_mcp_server import BaseMCPServer
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 
 
@@ -39,15 +39,9 @@ class BaseDataMCP(BaseMCPServer):
         """
         super().__init__(name=name, config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="base-data-mcp"
-        )
-        self.monitor.log_info(
-            "BaseDataMCP initialized",
-            component="base_data_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="base-data-mcp")
+        self.logger.info("BaseDataMCP initialized")
 
         # Set up data cache with configurable TTL
         self.cache_enabled = self.config.get("cache_enabled", True)
@@ -123,13 +117,7 @@ class BaseDataMCP(BaseMCPServer):
         if endpoint not in self.endpoints:
             error_msg = f"Unknown endpoint: {endpoint}"
             self.logger.error(error_msg)
-            self.monitor.log_error(
-                error_msg,
-                component="base_data_mcp",
-                action="unknown_endpoint_error",
-                error=error_msg,
-                endpoint=endpoint,
-            )
+            # Removed self.monitor.log_error for unknown endpoint
             return {
                 "error": error_msg,
                 "available_endpoints": list(self.endpoints.keys()),
@@ -192,13 +180,7 @@ class BaseDataMCP(BaseMCPServer):
 
                     error_msg = f"Error fetching data from {endpoint} after {attempt} attempts: {e}"
                     self.logger.error(error_msg)
-                    self.monitor.log_error(
-                        error_msg,
-                        component="base_data_mcp",
-                        action="fetch_data_error",
-                        error=str(e),
-                        endpoint=endpoint,
-                    )
+                    # Removed self.monitor.log_error for fetch_data_error
                     return {"error": error_msg, "endpoint": endpoint}
 
                 # Exponential backoff for retries
@@ -452,19 +434,7 @@ class BaseDataMCP(BaseMCPServer):
                 self.logger.error(
                     f"Cannot convert data of type {type(data)} to DataFrame"
                 )
-                self.monitor.log_error(
-                    f"Cannot convert data of type {type(data)} to DataFrame",
-                    component="base_data_mcp",
-                    action="convert_to_dataframe_error",
-                    error=f"Type: {type(data)}",
-                )
                 return pd.DataFrame()
         except Exception as e:
             self.logger.error(f"Error converting to DataFrame: {e}")
-            self.monitor.log_error(
-                f"Error converting to DataFrame: {e}",
-                component="base_data_mcp",
-                action="convert_to_dataframe_exception",
-                error=str(e),
-            )
             return pd.DataFrame()

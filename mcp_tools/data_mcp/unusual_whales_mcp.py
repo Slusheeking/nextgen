@@ -11,7 +11,7 @@ load_dotenv()
 import time
 import requests
 from typing import Dict, Any, Optional
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
 
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
@@ -37,15 +37,9 @@ class UnusualWhalesMCP(BaseDataMCP):
         """
         super().__init__(name="unusual_whales_mcp", config=config)
 
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name="unusual-whales-mcp"
-        )
-        self.monitor.log_info(
-            "UnusualWhalesMCP initialized",
-            component="unusual_whales_mcp",
-            action="initialization",
-        )
+        # Initialize monitoring/logger
+        self.logger = NetdataLogger(component_name="unusual-whales-mcp")
+        self.logger.info("UnusualWhalesMCP initialized")
 
         # Initialize client configuration
         self.whales_client = self._initialize_client()
@@ -57,13 +51,9 @@ class UnusualWhalesMCP(BaseDataMCP):
         self._register_specific_tools()
 
         self.logger.info(
-            "UnusualWhalesMCP initialized with %d endpoints", len(self.endpoints)
+            f"UnusualWhalesMCP initialized with {len(self.endpoints)} endpoints"
         )
-        self.monitor.log_info(
-            f"UnusualWhalesMCP initialized with {len(self.endpoints)} endpoints",
-            component="unusual_whales_mcp",
-            action="init_endpoints",
-        )
+        # Removed self.monitor.log_info for endpoints
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -93,12 +83,7 @@ class UnusualWhalesMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"Failed to initialize Unusual Whales client: {e}")
-            self.monitor.log_error(
-                f"Failed to initialize Unusual Whales client: {e}",
-                component="unusual_whales_mcp",
-                action="client_init_error",
-                error=str(e),
-            )
+            self.logger.counter("error_count", 1)
             return None
 
     def _verify_api_connectivity(self, api_key: str, base_url: str) -> bool:
@@ -137,13 +122,8 @@ class UnusualWhalesMCP(BaseDataMCP):
 
         except Exception as e:
             self.logger.error(f"API connectivity check failed: {e}")
-            self.monitor.log_error(
-                f"API connectivity check failed: {e}",
-                component="unusual_whales_mcp",
-                action="api_connectivity_error",
-                error=str(e),
-                base_url=base_url,
-            )
+            self.logger.error(f"API connectivity check failed: {e}")
+            self.logger.counter("error_count", 1)
             self.logger.error(
                 f"Please verify the API base URL ({base_url}) is accessible"
             )
@@ -303,6 +283,7 @@ class UnusualWhalesMCP(BaseDataMCP):
 
         while retry_count <= max_retries:
             try:
+                start_time = time.time()
                 if method == "GET":
                     response = requests.get(
                         url, params=params, headers=headers, timeout=15
@@ -314,9 +295,17 @@ class UnusualWhalesMCP(BaseDataMCP):
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
+                elapsed = (time.time() - start_time) * 1000  # ms
+                self.logger.counter("external_api_call_count", 1)
+                self.logger.timing("data_fetch_time_ms", elapsed)
+                self.logger.gauge("response_status_code", response.status_code)
+                if response.content:
+                    self.logger.gauge("data_volume_bytes", len(response.content))
+
                 if response.status_code == 200:
                     return response.json()
                 elif response.status_code == 429:  # Rate limit exceeded
+                    self.logger.counter("rate_limit_count", 1)
                     retry_count += 1
                     if retry_count <= max_retries:
                         sleep_time = retry_delay * (
@@ -346,6 +335,7 @@ class UnusualWhalesMCP(BaseDataMCP):
                 else:
                     error_msg = f"Request failed after {max_retries} retries: {e}"
                     self.logger.error(error_msg)
+                    self.logger.counter("error_count", 1)
                     return {"error": error_msg}
 
     # Handler methods for specific endpoints

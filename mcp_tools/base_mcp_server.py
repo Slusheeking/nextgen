@@ -7,11 +7,13 @@ in the FinGPT trading system.
 
 import logging
 import os
+import time
 from typing import Dict, List, Any, Optional, Callable
 
 # Import dotenv for environment variables
 from dotenv import load_dotenv
-from monitoring.system_monitor import MonitoringManager
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
 
 
 class BaseMCPServer:
@@ -32,38 +34,35 @@ class BaseMCPServer:
         """
         self.name = name
         self.config = config or {}
-        self.logger = self._setup_logging()
         self.tools = {}
         self.resources = {}
         
-        # Initialize monitoring
-        self.monitor = MonitoringManager(
-            service_name=f"{self.name}-mcp-server"
-        )
-        self.monitor.log_info(
-            f"{self.name} MCP server initialized",
-            component="base_mcp_server",
-            action="initialization"
-        )
+        # Initialize NetdataLogger for logging and metrics
+        self.logger = NetdataLogger(component_name=f"{self.name}-mcp-server")
+        
+        # Initialize system metrics collector
+        self.metrics_collector = SystemMetricsCollector(self.logger)
+        
+        # Start collecting system metrics
+        self.metrics_collector.start()
+        
+        # Initialize counters
+        self.request_count = 0
+        self.error_count = 0
+        self.active_connections = 0
+        
+        # Log initialization
+        self.logger.info(f"{self.name} MCP server initialized")
         
         # Ensure environment variables are loaded
         load_dotenv()
 
-    def _setup_logging(self) -> logging.Logger:
-        """Set up logging for the MCP server."""
-        logger = logging.getLogger(f"mcp_tools.{self.name}")
-        logger.setLevel(logging.INFO)
-
-        # Add console handler if none exists
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
-        return logger
+    def shutdown(self):
+        """
+        Shutdown the MCP server and stop metrics collection.
+        """
+        self.logger.info(f"Shutting down {self.name} MCP server")
+        self.metrics_collector.stop()
 
     def register_tool(
         self,
@@ -87,13 +86,10 @@ class BaseMCPServer:
             "description": tool_description,
         }
 
-        self.logger.info(f"Registered tool: {tool_name}")
-        self.monitor.log_info(
-            f"Registered tool: {tool_name}",
-            component="base_mcp_server",
-            action="register_tool",
-            tool_name=tool_name
-        )
+        self.logger.info(f"Registered tool: {tool_name}", tool_name=tool_name)
+        
+        # Track metrics
+        self.logger.gauge("mcp.tools_count", len(self.tools))
 
     def register_resource(
         self, name: str, resource: Any, description: Optional[str] = None
@@ -111,13 +107,10 @@ class BaseMCPServer:
             "description": description or f"Resource: {name}",
         }
 
-        self.logger.info(f"Registered resource: {name}")
-        self.monitor.log_info(
-            f"Registered resource: {name}",
-            component="base_mcp_server",
-            action="register_resource",
-            resource_name=name
-        )
+        self.logger.info(f"Registered resource: {name}", resource_name=name)
+        
+        # Track metrics
+        self.logger.gauge("mcp.resources_count", len(self.resources))
 
     def list_tools(self) -> List[Dict[str, str]]:
         """
@@ -157,42 +150,60 @@ class BaseMCPServer:
         Raises:
             ValueError: If the tool doesn't exist
         """
-        if tool_name not in self.tools:
-            error_msg = f"Tool not found: {tool_name}"
-            self.monitor.log_error(
-                error_msg,
-                component="base_mcp_server",
-                action="call_tool_error",
-                tool_name=tool_name
-            )
-            raise ValueError(error_msg)
-
-        tool = self.tools[tool_name]["func"]
-        args = args or {}
-
-        self.logger.info(f"Calling tool: {tool_name} with args: {args}")
-        self.monitor.log_info(
-            f"Calling tool: {tool_name}",
-            component="base_mcp_server",
-            action="call_tool",
-            tool_name=tool_name,
-            args=str(args)
-        )
+        # Increment active connections and request count
+        self.active_connections += 1
+        self.request_count += 1
+        self.logger.counter("mcp.request_count")
+        self.logger.gauge("mcp.active_connections", self.active_connections)
+        self.logger.gauge("mcp.queue_length", self.active_connections) # Use active connections as proxy for queue length
         
         try:
-            result = tool(**args)
-            return result
-        except Exception as e:
-            error_msg = f"Error calling tool {tool_name}: {e}"
-            self.logger.error(error_msg)
-            self.monitor.log_error(
-                error_msg,
-                component="base_mcp_server",
-                action="call_tool_exception",
-                tool_name=tool_name,
-                error=str(e)
-            )
-            return {"error": str(e), "tool": tool_name}
+            if tool_name not in self.tools:
+                error_msg = f"Tool not found: {tool_name}"
+                self.logger.error(error_msg, tool_name=tool_name)
+                
+                # Track error metrics
+                self.error_count += 1
+                self.logger.counter("mcp.error_count")
+                self.logger.gauge("mcp.error_rate", (self.error_count / self.request_count) * 100)
+                
+                raise ValueError(error_msg)
+
+            tool = self.tools[tool_name]["func"]
+            args = args or {}
+
+            self.logger.info(f"Calling tool: {tool_name}", tool_name=tool_name, args=str(args))
+            
+            # Measure response time
+            start_time = time.time()
+            
+            try:
+                result = tool(**args)
+                
+                # Calculate and record response time
+                response_time = (time.time() - start_time) * 1000  # Convert to ms
+                self.logger.timing("mcp.response_time_ms", response_time)
+                
+                return result
+            except Exception as e:
+                error_msg = f"Error calling tool {tool_name}: {e}"
+                self.logger.error(error_msg, tool_name=tool_name, error=str(e))
+                
+                # Track error metrics
+                self.error_count += 1
+                self.logger.counter("mcp.error_count")
+                self.logger.gauge("mcp.error_rate", (self.error_count / self.request_count) * 100)
+                
+                # Calculate and record response time even for errors
+                response_time = (time.time() - start_time) * 1000  # Convert to ms
+                self.logger.timing("mcp.error_response_time_ms", response_time)
+                
+                return {"error": str(e), "tool": tool_name}
+        finally:
+            # Decrement active connections
+            self.active_connections -= 1
+            self.logger.gauge("mcp.active_connections", self.active_connections)
+            self.logger.gauge("mcp.queue_length", self.active_connections) # Update queue length metric
 
     def access_resource(self, resource_name: str) -> Any:
         """
@@ -207,24 +218,44 @@ class BaseMCPServer:
         Raises:
             ValueError: If the resource doesn't exist
         """
-        if resource_name not in self.resources:
-            error_msg = f"Resource not found: {resource_name}"
-            self.monitor.log_error(
-                error_msg,
-                component="base_mcp_server",
-                action="access_resource_error",
-                resource_name=resource_name
-            )
-            raise ValueError(error_msg)
+        # Increment active connections and request count
+        self.active_connections += 1
+        self.request_count += 1
+        self.logger.counter("mcp.request_count")
+        self.logger.gauge("mcp.active_connections", self.active_connections)
+        self.logger.gauge("mcp.queue_length", self.active_connections) # Use active connections as proxy for queue length
+        
+        try:
+            if resource_name not in self.resources:
+                error_msg = f"Resource not found: {resource_name}"
+                self.logger.error(error_msg, resource_name=resource_name)
+                
+                # Track error metrics
+                self.error_count += 1
+                self.logger.counter("mcp.error_count")
+                
+                raise ValueError(error_msg)
 
-        self.logger.info(f"Accessing resource: {resource_name}")
-        self.monitor.log_info(
-            f"Accessing resource: {resource_name}",
-            component="base_mcp_server",
-            action="access_resource",
-            resource_name=resource_name
-        )
-        return self.resources[resource_name]["resource"]
+            # Measure access time
+            start_time = time.time()
+            
+            self.logger.info(f"Accessing resource: {resource_name}", resource_name=resource_name)
+            
+            # Track resource access metrics
+            self.logger.counter("mcp.resource_access_count")
+            
+            resource = self.resources[resource_name]["resource"]
+            
+            # Calculate and record access time
+            access_time = (time.time() - start_time) * 1000  # Convert to ms
+            self.logger.timing("mcp.resource_access_time_ms", access_time)
+            
+            return resource
+        finally:
+            # Decrement active connections
+            self.active_connections -= 1
+            self.logger.gauge("mcp.active_connections", self.active_connections)
+            self.logger.gauge("mcp.queue_length", self.active_connections) # Update queue length metric
         
     def get_api_key(self, service_name: str, default: str = "") -> str:
         """
@@ -256,13 +287,10 @@ class BaseMCPServer:
         # Log a warning if no API key found and no default provided
         if not default:
             warning_msg = f"API key for {service_name} not found in config or environment"
-            self.logger.warning(warning_msg)
-            self.monitor.log_error(
-                warning_msg,
-                component="base_mcp_server",
-                action="api_key_missing",
-                service_name=service_name
-            )
+            self.logger.warning(warning_msg, service_name=service_name)
+            
+            # Track missing API key metric
+            self.logger.counter("mcp.missing_api_key_count")
             
         return default
         

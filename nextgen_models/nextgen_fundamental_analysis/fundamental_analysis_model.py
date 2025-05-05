@@ -9,11 +9,15 @@ It integrates with AutoGen for advanced analysis and decision making.
 import os
 from dotenv import load_dotenv
 load_dotenv()
-import logging
 import json
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.stock_charts import StockChartGenerator
 
 # For Redis integration
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
@@ -56,18 +60,42 @@ class FundamentalAnalysisModel:
                 - analysis_interval: Interval for periodic analysis in seconds (default: 86400)
                 - max_companies: Maximum number of companies to analyze (default: 50)
         """
-        self.config = config or {}
-        self.logger = logging.getLogger(__name__)
+        init_start_time = time.time()
+        # Initialize NetdataLogger for monitoring and logging
+        self.logger = NetdataLogger(component_name="nextgen-fundamental-analysis-model")
 
-        # Initialize logging
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        # Initialize StockChartGenerator
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("StockChartGenerator initialized")
+
+        # Initialize counters for fundamental analysis metrics
+        self.companies_analyzed_count = 0
+        self.analysis_errors_count = 0
+        self.llm_api_call_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.total_analysis_cycles = 0 # Total times run_periodic_analysis completes a cycle
+
+
+        # Load configuration - if no config provided, try to load from standard location
+        if config is None:
+            config_path = os.path.join("config", "nextgen_fundamental_analysis", "fundamental_analysis_model_config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                    self.logger.info(f"Configuration loaded from {config_path}")
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
+                    self.config = {}
+                except Exception as e:
+                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
+                    self.config = {}
+            else:
+                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
+                self.config = {}
+        else:
+            self.config = config
 
         # Initialize MCP clients
         self.fundamental_scoring_mcp = FundamentalScoringMCP(
