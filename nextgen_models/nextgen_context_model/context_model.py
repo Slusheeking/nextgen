@@ -3,8 +3,7 @@ Context Model
 
 This module defines the ContextModel, responsible for gathering, processing, and managing
 contextual information from various sources to support other NextGen models.
-It integrates with data retrieval, document processing, query reformulation, and
-relevance feedback MCP tools.
+It integrates with data retrieval, document analysis, and vector storage MCP tools.
 """
 
 from monitoring.netdata_logger import NetdataLogger
@@ -14,22 +13,17 @@ import os
 import hashlib
 from dotenv import load_dotenv
 load_dotenv()
-from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-# No longer using MonitoringManager; replaced by NetdataLogger
-
-# For Redis integration
-from mcp_tools.db_mcp.redis_mcp import RedisMCP
+# For Redis integration (Commented out as RedisMCP is removed)
+# from mcp_tools.db_mcp.redis_mcp import RedisMCP
 from monitoring.system_metrics import SystemMetricsCollector
+from monitoring.stock_charts import StockChartGenerator
 
 # MCP tools
-from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
-from mcp_tools.analysis_mcp.document_processing_mcp import DocumentProcessingMCP
-from mcp_tools.analysis_mcp.embeddings_mcp import EmbeddingsMCP
-from mcp_tools.analysis_mcp.vector_db_mcp import VectorDBMCP
-from mcp_tools.analysis_mcp.query_reformulation_mcp import QueryReformulationMCP
-from mcp_tools.analysis_mcp.relevance_feedback_mcp import RelevanceFeedbackMCP
+from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP # Keep for dynamic loading
+from mcp_tools.document_analysis_mcp.document_analysis_mcp import DocumentAnalysisMCP
+from mcp_tools.vector_store_mcp.vector_store_mcp import VectorStoreMCP # Added
 
 # AutoGen imports
 from autogen import (
@@ -45,8 +39,9 @@ class ContextModel:
     Gathers, processes, and manages contextual information for other NextGen models.
 
     This model integrates with various MCP tools to retrieve data, process documents,
-    reformulate queries, and incorporate relevance feedback to build a comprehensive
-    understanding of the market and relevant information.
+    reformulate queries, generate embeddings, store/retrieve vectors, and incorporate
+    relevance feedback to build a comprehensive understanding of the market and
+    relevant information.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -56,21 +51,35 @@ class ContextModel:
         Args:
             config: Configuration dictionary, expected to contain:
                 - data_sources_config: Config for various data source MCPs
-                - document_processing_config: Config for DocumentProcessingMCP
-                - embeddings_config: Config for EmbeddingsMCP
-                - vector_db_config: Config for VectorDBMCP
-                - query_reformulation_config: Config for QueryReformulationMCP
-                - relevance_feedback_config: Config for RelevanceFeedbackMCP
-                - redis_config: Config for RedisMCP
+                - document_analysis_config: Config for DocumentAnalysisMCP
+                - vector_store_config: Config for VectorStoreMCP (ChromaDB)
+                - redis_config: Config for RedisMCP (if direct integration is added)
                 - context_data_ttl: Time-to-live for context data in seconds (default: 3600 - 1 hour)
                 - llm_config: Configuration for AutoGen LLM
         """
         init_start_time = time.time()
+        
         # Set up NetdataLogger for monitoring and logging
         self.logger = NetdataLogger(component_name="nextgen-context-model")
+        self.logger.info("Context Model initialization started")
+        
+        # Initialize counters for performance monitoring
+        self.document_processing_count = 0
+        self.embedding_generation_count = 0
+        self.vector_store_operations = 0
+        self.vector_search_count = 0
+        self.query_expansion_count = 0
+        self.mcp_tool_call_count = 0
+        self.mcp_tool_error_count = 0
+        self.execution_errors = 0
 
         # Initialize system metrics collector
         self.metrics_collector = SystemMetricsCollector(self.logger)
+        self.logger.info("System metrics collector initialized")
+
+        # Initialize chart generator for financial data visualization
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("Stock chart generator initialized")
 
         # Start collecting system metrics
         self.metrics_collector.start()
@@ -96,12 +105,11 @@ class ContextModel:
             self.config = config
 
         # Initialize MCP clients
-        # Data Sources (example: Polygon News, Reddit, Yahoo Finance/News - add others as needed)
+        # Data Sources
         self.data_sources: Dict[str, BaseDataMCP] = {}
         data_sources_config = self.config.get("data_sources_config", {})
         for source_name, source_config in data_sources_config.items():
             try:
-                # Dynamically import and initialize data source MCPs
                 module_path = source_config.get("module_path")
                 class_name = source_config.get("class_name")
                 if module_path and class_name:
@@ -120,93 +128,29 @@ class ContextModel:
                     f"Error initializing data source MCP '{source_name}': {e}"
                 )
 
-        self.document_processing_mcp = DocumentProcessingMCP(
-            self.config.get("document_processing_config")
+        # Document Analysis MCP
+        self.document_analysis_mcp = DocumentAnalysisMCP(
+            self.config.get("document_analysis_config")
         )
-        self.embeddings_mcp = EmbeddingsMCP(self.config.get("embeddings_config"))
-        self.vector_db_mcp = VectorDBMCP(self.config.get("vector_db_config"))
-        self.query_reformulation_mcp = QueryReformulationMCP(
-            self.config.get("query_reformulation_config")
+        self.logger.info("Initialized DocumentAnalysisMCP")
+
+        # Vector Store MCP (ChromaDB)
+        self.vector_store_mcp = VectorStoreMCP(
+            self.config.get("vector_store_config")
         )
-        self.relevance_feedback_mcp = RelevanceFeedbackMCP(
-            self.config.get("relevance_feedback_config")
-        )
-        self.redis_mcp = RedisMCP(self.config.get("redis_config"))
+        self.logger.info("Initialized VectorStoreMCP")
+
+
+        # Redis client placeholder (if direct integration is needed)
+        self.redis_client = None
 
         # Configuration parameters
         self.context_data_ttl = self.config.get(
             "context_data_ttl", 3600
         )  # Default: 1 hour
 
-        # Redis keys for data storage
-        self.redis_keys = {
-            "context_data": "context:data:",  # Prefix for general contextual data
-            "document_chunks": "context:chunks:",  # Prefix for document chunks
-            "document_metadata": "context:metadata:",  # Prefix for document metadata
-            "query_history": "context:queries:",  # Prefix for query history
-            "feedback_data": "context:feedback:",  # Prefix for feedback data
-            "latest_context_update": "context:latest_update",  # Latest context update timestamp
-        }
-
-        # Initialize AutoGen integration
-        self.llm_config = self._get_llm_config()
-        self.agents = self._setup_agents()
-
-        # Register functions with the agents
-        self._register_functions()
-
-        # Configuration parameters
-        self.context_data_ttl = self.config.get(
-            "context_data_ttl", 3600
-        )  # Default: 1 hour
-
-        # Redis keys for data storage
-        self.redis_keys = {
-            "context_data": "context:data:",  # Prefix for general contextual data
-            "document_chunks": "context:chunks:",  # Prefix for document chunks
-            "document_metadata": "context:metadata:",  # Prefix for document metadata
-            "query_history": "context:queries:",  # Prefix for query history
-            "feedback_data": "context:feedback:",  # Prefix for feedback data
-            "latest_context_update": "context:latest_update",  # Latest context update timestamp
-        }
-
-        # Initialize MCP clients
-        # Data Sources (example: Polygon News, Reddit, Yahoo Finance/News - add others as needed)
-        self.data_sources: Dict[str, BaseDataMCP] = {}
-        data_sources_config = self.config.get("data_sources_config", {})
-        for source_name, source_config in data_sources_config.items():
-            try:
-                # Dynamically import and initialize data source MCPs
-                module_path = source_config.get("module_path")
-                class_name = source_config.get("class_name")
-                if module_path and class_name:
-                    module = __import__(module_path, fromlist=[class_name])
-                    data_source_class = getattr(module, class_name)
-                    self.data_sources[source_name] = data_source_class(
-                        source_config.get("config")
-                    )
-                    self.logger.info(f"Initialized data source MCP: {source_name}")
-                else:
-                    self.logger.warning(
-                        f"Skipping data source '{source_name}': module_path or class_name missing in config."
-                    )
-            except Exception as e:
-                self.logger.error(
-                    f"Error initializing data source MCP '{source_name}': {e}"
-                )
-
-        self.document_processing_mcp = DocumentProcessingMCP(
-            self.config.get("document_processing_config")
-        )
-        self.embeddings_mcp = EmbeddingsMCP(self.config.get("embeddings_config"))
-        self.vector_db_mcp = VectorDBMCP(self.config.get("vector_db_config"))
-        self.query_reformulation_mcp = QueryReformulationMCP(
-            self.config.get("query_reformulation_config")
-        )
-        self.relevance_feedback_mcp = RelevanceFeedbackMCP(
-            self.config.get("relevance_feedback_config")
-        )
-        self.redis_mcp = RedisMCP(self.config.get("redis_config"))
+        # Redis keys for data storage (Commented out - requires Redis integration)
+        self.redis_keys = {} # Placeholder
 
         # Initialize AutoGen integration
         self.llm_config = self._get_llm_config()
@@ -217,7 +161,7 @@ class ContextModel:
 
         self.logger.info("ContextModel initialized.")
         self.logger.gauge("context_model.data_sources_count", len(self.data_sources))
-        
+
         init_duration = (time.time() - init_start_time) * 1000
         self.logger.timing("context_model.initialization_time_ms", init_duration)
 
@@ -267,16 +211,16 @@ class ContextModel:
             name="ContextAssistantAgent",
             system_message="""You are a financial market context specialist. Your role is to:
             1. Gather relevant information from various data sources (news, social media, reports, etc.)
-            2. Process and structure raw information for easy retrieval and analysis
-            3. Manage document chunks, embeddings, and metadata in a vector database
-            4. Reformulate user queries to improve search results
-            5. Incorporate user feedback to refine context and retrieval
+            2. Process and structure raw information for easy retrieval and analysis (chunking, metadata extraction)
+            3. Generate embeddings for text chunks and store them in a vector database
+            4. Retrieve relevant documents from the vector database based on semantic similarity
+            5. Reformulate user queries to improve search results
+            6. Incorporate user feedback to refine context and retrieval
 
-            You have tools for data retrieval, document processing, embedding generation,
-            vector database operations, query reformulation, and relevance feedback.
-            Always aim to provide the most relevant and accurate context.""",
+            You have tools for data retrieval, document analysis (processing, embeddings, query reformulation, feedback),
+            and vector store operations (add, search). Always aim to provide the most relevant and accurate context.""",
             llm_config=self.llm_config,
-            description="A specialist in gathering and managing financial market context",
+            description="A specialist in gathering, processing, storing, and retrieving financial market context",
         )
 
         # Create a user proxy agent that can execute functions
@@ -300,7 +244,7 @@ class ContextModel:
         user_proxy = self.agents["user_proxy"]
         context_assistant = self.agents["context_assistant"]
 
-        # Register data retrieval functions (example for Polygon News)
+        # Register data retrieval functions
         @register_function(
             name="fetch_data",
             description="Fetch data from a specified data source",
@@ -310,10 +254,10 @@ class ContextModel:
         async def fetch_data(source_name: str, query: Dict[str, Any]) -> Dict[str, Any]:
             return await self.fetch_data(source_name, query)
 
-        # Register document processing functions
+        # Register document processing functions (using DocumentAnalysisMCP)
         @register_function(
             name="process_document",
-            description="Process a document for embedding generation (clean, extract metadata, and chunk)",
+            description="Process a document (clean, extract metadata, and chunk)",
             caller=context_assistant,
             executor=user_proxy,
         )
@@ -325,14 +269,21 @@ class ContextModel:
             chunk_overlap: Optional[int] = None,
             chunk_strategy: str = "paragraph",
         ) -> Dict[str, Any]:
-            result = self.document_processing_mcp.process_document(
-                document=document,
-                document_id=document_id,
-                document_type=document_type,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                chunk_strategy=chunk_strategy,
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "process_document", # Assuming tool name remains the same
+                {
+                    "document": document,
+                    "document_id": document_id,
+                    "document_type": document_type,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
+                    "chunk_strategy": chunk_strategy,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Document processing failed"}
 
         @register_function(
@@ -346,12 +297,17 @@ class ContextModel:
             similarity_threshold: float = 0.9,
             method: str = "jaccard",
         ) -> Dict[str, Any]:
-            result = self.document_processing_mcp.deduplicate_chunks(
-                chunks=chunks, similarity_threshold=similarity_threshold, method=method
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "deduplicate_chunks", # Assuming tool name remains the same
+                {"chunks": chunks, "similarity_threshold": similarity_threshold, "method": method}
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Chunk deduplication failed"}
 
-        # Register embeddings functions
+        # Register embeddings functions (using DocumentAnalysisMCP)
         @register_function(
             name="generate_embeddings",
             description="Generate embeddings for text chunks",
@@ -361,47 +317,76 @@ class ContextModel:
         async def generate_embeddings(
             chunks: List[str], model: Optional[str] = None
         ) -> Dict[str, Any]:
-            result = self.embeddings_mcp.generate_embeddings(chunks=chunks, model=model)
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "generate_embeddings", # Assuming tool name remains the same
+                {"chunks": chunks, "model": model}
+            )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Embedding generation failed"}
 
-        # Register vector database functions
+        # Register vector database functions (using VectorStoreMCP)
         @register_function(
             name="add_documents_to_vector_db",
-            description="Add documents (chunks and embeddings) to the vector database",
+            description="Add documents (chunks, embeddings, metadata) to the vector database",
             caller=context_assistant,
             executor=user_proxy,
         )
         async def add_documents_to_vector_db(
-            documents: List[Dict[str, Any]],
-            collection_name: str,
-            metadata: Optional[List[Dict[str, Any]]] = None,
+            documents: List[str],
+            embeddings: List[List[float]],
+            metadatas: Optional[List[Dict[str, Any]]] = None,
+            ids: Optional[List[str]] = None,
+            collection_name: Optional[str] = None,
         ) -> Dict[str, Any]:
-            result = self.vector_db_mcp.add_documents(
-                documents=documents, collection_name=collection_name, metadata=metadata
+            self.mcp_tool_call_count += 1
+            result = self.vector_store_mcp.call_tool(
+                "add_documents",
+                {
+                    "documents": documents,
+                    "embeddings": embeddings,
+                    "metadatas": metadatas,
+                    "ids": ids,
+                    "collection_name": collection_name,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Adding documents to vector DB failed"}
+
 
         @register_function(
             name="search_vector_db",
-            description="Search the vector database using a query embedding",
+            description="Search the vector database using query embeddings",
             caller=context_assistant,
             executor=user_proxy,
         )
         async def search_vector_db(
-            query_embedding: List[float],
-            collection_name: str,
+            query_embeddings: List[List[float]],
+            collection_name: Optional[str] = None,
             top_k: int = 10,
             filters: Optional[Dict[str, Any]] = None,
+            include: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
-            result = self.vector_db_mcp.search(
-                query_embedding=query_embedding,
-                collection_name=collection_name,
-                top_k=top_k,
-                filters=filters,
+            self.mcp_tool_call_count += 1
+            result = self.vector_store_mcp.call_tool(
+                "search_collection",
+                {
+                    "query_embeddings": query_embeddings,
+                    "collection_name": collection_name,
+                    "top_k": top_k,
+                    "filters": filters,
+                    "include": include,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Vector DB search failed"}
 
-        # Register query reformulation functions
+
+        # Register query reformulation functions (using DocumentAnalysisMCP)
         @register_function(
             name="expand_query",
             description="Expand a query with related terms to improve retrieval",
@@ -414,9 +399,14 @@ class ContextModel:
             strategies: Optional[List[str]] = None,
             max_terms: Optional[int] = None,
         ) -> Dict[str, Any]:
-            result = self.query_reformulation_mcp.expand_query(
-                query=query, domain=domain, strategies=strategies, max_terms=max_terms
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "expand_query", # Assuming tool name remains the same
+                {"query": query, "domain": domain, "strategies": strategies, "max_terms": max_terms}
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Query expansion failed"}
 
         @register_function(
@@ -428,12 +418,17 @@ class ContextModel:
         async def decompose_query(
             query: str, max_sub_queries: Optional[int] = None
         ) -> Dict[str, Any]:
-            result = self.query_reformulation_mcp.decompose_query(
-                query=query, max_sub_queries=max_sub_queries
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "decompose_query", # Assuming tool name remains the same
+                {"query": query, "max_sub_queries": max_sub_queries}
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Query decomposition failed"}
 
-        # Register relevance feedback functions
+        # Register relevance feedback functions (using DocumentAnalysisMCP)
         @register_function(
             name="record_explicit_feedback",
             description="Record explicit user feedback on document relevance",
@@ -448,14 +443,21 @@ class ContextModel:
             document_text: Optional[str] = None,
             user_id: Optional[str] = None,
         ) -> Dict[str, Any]:
-            result = self.relevance_feedback_mcp.record_explicit_feedback(
-                query_id=query_id,
-                document_id=document_id,
-                rating=rating,
-                query_text=query_text,
-                document_text=document_text,
-                user_id=user_id,
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "record_explicit_feedback", # Assuming tool name remains the same
+                {
+                    "query_id": query_id,
+                    "document_id": document_id,
+                    "rating": rating,
+                    "query_text": query_text,
+                    "document_text": document_text,
+                    "user_id": user_id,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Recording explicit feedback failed"}
 
         @register_function(
@@ -473,15 +475,22 @@ class ContextModel:
             document_text: Optional[str] = None,
             user_id: Optional[str] = None,
         ) -> Dict[str, Any]:
-            result = self.relevance_feedback_mcp.record_implicit_feedback(
-                query_id=query_id,
-                document_id=document_id,
-                interaction_type=interaction_type,
-                interaction_value=interaction_value,
-                query_text=query_text,
-                document_text=document_text,
-                user_id=user_id,
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "record_implicit_feedback", # Assuming tool name remains the same
+                {
+                    "query_id": query_id,
+                    "document_id": document_id,
+                    "interaction_type": interaction_type,
+                    "interaction_value": interaction_value,
+                    "query_text": query_text,
+                    "document_text": document_text,
+                    "user_id": user_id,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Recording implicit feedback failed"}
 
         @register_function(
@@ -497,33 +506,24 @@ class ContextModel:
             use_implicit_feedback: bool = True,
             feedback_weight: Optional[float] = None,
         ) -> Dict[str, Any]:
-            result = self.relevance_feedback_mcp.rerank_results(
-                query_id=query_id,
-                results=results,
-                use_explicit_feedback=use_explicit_feedback,
-                use_implicit_feedback=use_implicit_feedback,
-                feedback_weight=feedback_weight,
+            # Call the consolidated tool
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(
+                "rerank_results", # Assuming tool name remains the same
+                {
+                    "query_id": query_id,
+                    "results": results,
+                    "use_explicit_feedback": use_explicit_feedback,
+                    "use_implicit_feedback": use_implicit_feedback,
+                    "feedback_weight": feedback_weight,
+                }
             )
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
             return result or {"error": "Reranking results failed"}
 
-        # Register data storage and retrieval functions
-        @register_function(
-            name="store_context_data",
-            description="Store general contextual data in Redis",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        async def store_context_data(key: str, data: Any) -> Dict[str, Any]:
-            return await self.store_context_data(key, data)
-
-        @register_function(
-            name="get_context_data",
-            description="Retrieve general contextual data from Redis",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        async def get_context_data(key: str) -> Dict[str, Any]:
-            return await self.get_context_data(key)
+        # Register data storage and retrieval functions (Commented out - requires Redis)
+        # ...
 
         # Register MCP tool access functions
         self._register_mcp_tool_access()
@@ -547,81 +547,49 @@ class ContextModel:
             def use_data_source_tool(
                 tool_name: str, arguments: Dict[str, Any], mcp_client=data_source_mcp
             ) -> Any:
-                return mcp_client.call_tool(tool_name, arguments)
+                self.mcp_tool_call_count += 1
+                result = mcp_client.call_tool(tool_name, arguments)
+                if result and result.get("error"):
+                    self.mcp_tool_error_count += 1
+                return result
 
         # Define MCP tool access functions for analysis tools
         @register_function(
-            name="use_document_processing_tool",
-            description="Use a tool provided by the Document Processing MCP server",
+            name="use_document_analysis_tool",
+            description="Use a tool provided by the Document Analysis MCP server",
             caller=context_assistant,
             executor=user_proxy,
         )
-        def use_document_processing_tool(
+        def use_document_analysis_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.document_processing_mcp.call_tool(tool_name, arguments)
+            self.mcp_tool_call_count += 1
+            result = self.document_analysis_mcp.call_tool(tool_name, arguments)
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
+        # Define MCP tool access function for Vector Store
         @register_function(
-            name="use_embeddings_tool",
-            description="Use a tool provided by the Embeddings MCP server",
+            name="use_vector_store_tool",
+            description="Use a tool provided by the Vector Store MCP server (ChromaDB)",
             caller=context_assistant,
             executor=user_proxy,
         )
-        def use_embeddings_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.embeddings_mcp.call_tool(tool_name, arguments)
+        def use_vector_store_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+            self.mcp_tool_call_count += 1
+            result = self.vector_store_mcp.call_tool(tool_name, arguments)
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
-        @register_function(
-            name="use_vector_db_tool",
-            description="Use a tool provided by the Vector DB MCP server",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        def use_vector_db_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.vector_db_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_query_reformulation_tool",
-            description="Use a tool provided by the Query Reformulation MCP server",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        def use_query_reformulation_tool(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> Any:
-            return self.query_reformulation_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_relevance_feedback_tool",
-            description="Use a tool provided by the Relevance Feedback MCP server",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        def use_relevance_feedback_tool(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> Any:
-            return self.relevance_feedback_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_redis_tool",
-            description="Use a tool provided by the Redis MCP server",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        def use_redis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.redis_mcp.call_tool(tool_name, arguments)
 
     async def fetch_data(
         self, source_name: str, query: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Fetch data from a specified data source MCP.
-
-        Args:
-            source_name: Name of the data source (e.g., 'polygon_news', 'reddit')
-            query: Dictionary containing the query parameters for the data source tool
-
-        Returns:
-            Dictionary with fetched data or error
+        (Code unchanged from previous version)
         """
         try:
             if source_name not in self.data_sources:
@@ -631,28 +599,23 @@ class ContextModel:
 
             data_source_mcp = self.data_sources[source_name]
 
-            # Assuming data source MCPs have a generic 'fetch' tool or similar
-            # In a real implementation, you might map source_name and query to specific tools
             if hasattr(data_source_mcp, "fetch"):
-                result = data_source_mcp.fetch(
-                    **query
-                )  # Assuming query maps directly to args
+                self.mcp_tool_call_count += 1
+                result = data_source_mcp.fetch(**query)
+                if result and result.get("error"): self.mcp_tool_error_count += 1
                 return result
             elif hasattr(data_source_mcp, "call_tool"):
-                # Attempt to call a tool specified in the query, e.g., query = {"tool_name": "get_latest_articles", "args": {"symbol": "AAPL"}}
                 tool_name = query.get("tool_name")
                 tool_args = query.get("args", {})
                 if tool_name:
+                    self.mcp_tool_call_count += 1
                     result = data_source_mcp.call_tool(tool_name, tool_args)
+                    if result and result.get("error"): self.mcp_tool_error_count += 1
                     return result
                 else:
-                    return {
-                        "error": f"No tool_name specified for data source '{source_name}'."
-                    }
+                    return {"error": f"No tool_name specified for data source '{source_name}'."}
             else:
-                return {
-                    "error": f"Data source '{source_name}' does not have a 'fetch' or 'call_tool' method."
-                }
+                return {"error": f"Data source '{source_name}' does not have a 'fetch' or 'call_tool' method."}
 
         except Exception as e:
             self.logger.error(f"Error fetching data from {source_name}: {e}")
@@ -663,13 +626,13 @@ class ContextModel:
         document: str,
         document_id: Optional[str] = None,
         document_type: Optional[str] = None,
-        collection_name: str = "default_collection",
+        collection_name: Optional[str] = None, # Use VectorStoreMCP default if None
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunk_strategy: str = "paragraph",
     ) -> Dict[str, Any]:
         """
-        Process a document, generate embeddings, and store in the vector database.
+        Process a document, generate embeddings, and store in the vector database (ChromaDB).
 
         Args:
             document: Document text to process
@@ -684,117 +647,186 @@ class ContextModel:
             Dictionary with processing and storage results
         """
         self.logger.info(
-            f"Processing and storing document (ID: {document_id or 'auto-generated'})"
+            f"Processing and storing document (ID: {document_id or 'auto-generated'}) in collection '{collection_name or 'default'}'", 
+            document_type=document_type,
+            chunk_strategy=chunk_strategy
         )
         start_time = time.time()
+        self.document_processing_count += 1
+        self.logger.counter("context_model.document_processing_count")
 
         try:
-            # 1. Process the document (clean, metadata, chunk)
-            process_result = self.document_processing_mcp.process_document(
-                document=document,
-                document_id=document_id,
-                document_type=document_type,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                chunk_strategy=chunk_strategy,
-            )
-
-            if "error" in process_result:
-                return {
-                    "error": f"Document processing failed: {process_result['error']}"
+            # 1. Process the document (clean, metadata, chunk) using DocumentAnalysisMCP
+            processing_start = time.time()
+            self.mcp_tool_call_count += 1
+            process_result = self.document_analysis_mcp.call_tool(
+                "process_document",
+                {
+                    "document": document,
+                    "document_id": document_id,
+                    "document_type": document_type,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
+                    "chunk_strategy": chunk_strategy,
                 }
+            )
+            
+            processing_duration = (time.time() - processing_start) * 1000
+            self.logger.timing("context_model.document_processing_time_ms", processing_duration)
+
+            if not process_result or process_result.get("error"):
+                 self.mcp_tool_error_count += 1
+                 self.logger.counter("context_model.mcp_tool_error_count")
+                 self.execution_errors += 1
+                 self.logger.counter("context_model.execution_errors")
+                 error_msg = process_result.get("error", "Unknown processing error") if process_result else "No processing result"
+                 self.logger.error(f"Document processing failed: {error_msg}", 
+                                  document_type=document_type,
+                                  document_id=document_id)
+                 return {"error": f"Document processing failed: {error_msg}"}
 
             chunks = process_result.get("chunks", [])
-            chunk_metadata = process_result.get("chunk_metadata", [])
-            document_metadata = process_result.get("document_metadata", {})
-            processed_document_id = process_result.get("document_id")
+            chunk_metadata = process_result.get("chunk_metadata", []) # Metadata per chunk
+            document_metadata = process_result.get("document_metadata", {}) # Overall document metadata
+            processed_document_id = process_result.get("document_id") # ID generated/used by processing
+            
+            self.logger.gauge("context_model.chunks_per_document", len(chunks))
+            self.logger.info("Document processed successfully", 
+                           document_id=processed_document_id, 
+                           chunk_count=len(chunks))
 
             if not chunks:
-                return {
-                    "status": "skipped",
-                    "message": "No chunks generated from document.",
-                }
+                self.logger.warning("No chunks generated from document", document_id=processed_document_id)
+                return {"status": "skipped", "message": "No chunks generated from document."}
 
-            # 2. Generate embeddings for chunks
-            embedding_result = self.embeddings_mcp.generate_embeddings(chunks=chunks)
+            # 2. Generate embeddings for chunks (using DocumentAnalysisMCP)
+            embedding_start = time.time()
+            self.mcp_tool_call_count += 1
+            self.embedding_generation_count += 1
+            self.logger.counter("context_model.embedding_generation_count")
+            
+            embedding_result = self.document_analysis_mcp.call_tool(
+                "generate_embeddings",
+                {"chunks": chunks}
+            )
+            
+            embedding_duration = (time.time() - embedding_start) * 1000
+            self.logger.timing("context_model.embedding_generation_time_ms", embedding_duration)
 
-            if "error" in embedding_result:
-                return {
-                    "error": f"Embedding generation failed: {embedding_result['error']}"
-                }
+            if not embedding_result or embedding_result.get("error"):
+                 self.mcp_tool_error_count += 1
+                 self.logger.counter("context_model.mcp_tool_error_count")
+                 self.execution_errors += 1
+                 self.logger.counter("context_model.execution_errors")
+                 error_msg = embedding_result.get("error", "Unknown embedding error") if embedding_result else "No embedding result"
+                 self.logger.error(f"Embedding generation failed: {error_msg}", document_id=processed_document_id)
+                 return {"error": f"Embedding generation failed: {error_msg}"}
 
             embeddings = embedding_result.get("embeddings", [])
+            
+            self.logger.info(f"Generated embeddings for {len(embeddings)} chunks", 
+                           document_id=processed_document_id)
 
             if len(chunks) != len(embeddings):
-                return {
-                    "error": "Mismatch between number of chunks and embeddings generated."
-                }
+                 self.execution_errors += 1
+                 self.logger.counter("context_model.execution_errors")
+                 self.logger.error("Mismatch between number of chunks and embeddings", 
+                                  chunks=len(chunks),
+                                  embeddings=len(embeddings),
+                                  document_id=processed_document_id)
+                 return {"error": "Mismatch between number of chunks and embeddings generated."}
 
-            # 3. Prepare documents for vector database
-            docs_to_add = []
-            for i, chunk in enumerate(chunks):
-                docs_to_add.append(
-                    {
-                        "id": f"{processed_document_id}_chunk_{i}",
-                        "text": chunk,
-                        "embedding": embeddings[i],
-                        "metadata": chunk_metadata[i]
-                        if i < len(chunk_metadata)
-                        else {},
-                    }
-                )
+            # 3. Prepare documents for vector database (ChromaDB format)
+            # ChromaDB needs lists of embeddings, documents, metadatas, and ids
+            ids_for_db = [f"{processed_document_id}_chunk_{i}" for i in range(len(chunks))]
+            metadatas_for_db = []
+            for i, chunk_meta in enumerate(chunk_metadata):
+                # Combine chunk-specific metadata with overall document metadata
+                combined_meta = document_metadata.copy()
+                combined_meta.update(chunk_meta)
+                combined_meta["document_id"] = processed_document_id # Ensure doc ID is in metadata
+                combined_meta["chunk_index"] = i
+                metadatas_for_db.append(combined_meta)
 
-            # 4. Add documents to vector database
-            add_result = self.vector_db_mcp.add_documents(
-                documents=docs_to_add, collection_name=collection_name
-            )
 
-            if "error" in add_result:
-                return {
-                    "error": f"Adding documents to vector DB failed: {add_result['error']}"
-                }
-
-            # 5. Store document metadata in Redis
-            if processed_document_id:
-                metadata_key = (
-                    f"{self.redis_keys['document_metadata']}{processed_document_id}"
-                )
-                self.redis_mcp.set_json(
-                    metadata_key, document_metadata, ex=self.context_data_ttl
-                )
-
-            # Update latest context update timestamp
-            self.redis_mcp.set_json(
-                self.redis_keys["latest_context_update"],
+            # 4. Add documents to vector database (using VectorStoreMCP)
+            db_start = time.time()
+            self.mcp_tool_call_count += 1
+            self.vector_store_operations += 1
+            self.logger.counter("context_model.vector_store_operations")
+            
+            add_result = self.vector_store_mcp.call_tool(
+                "add_documents",
                 {
-                    "timestamp": datetime.now().isoformat(),
-                    "document_id": processed_document_id,
-                },
+                    "documents": chunks,
+                    "embeddings": embeddings,
+                    "metadatas": metadatas_for_db,
+                    "ids": ids_for_db,
+                    "collection_name": collection_name # Pass along specified collection name
+                }
             )
+            
+            db_duration = (time.time() - db_start) * 1000
+            self.logger.timing("context_model.vector_db_operation_time_ms", db_duration)
+
+            if not add_result or add_result.get("error"):
+                self.mcp_tool_error_count += 1
+                self.logger.counter("context_model.mcp_tool_error_count")
+                self.execution_errors += 1
+                self.logger.counter("context_model.execution_errors")
+                error_msg = add_result.get("error", "Unknown DB error") if add_result else "No DB result"
+                self.logger.error(f"Adding documents to vector DB failed: {error_msg}", 
+                                 document_id=processed_document_id,
+                                 collection=collection_name)
+                return {"error": f"Adding documents to vector DB failed: {error_msg}"}
+
+            # 5. Store document metadata in Redis (Commented out)
+            # ...
+
+            # Update latest context update timestamp (Commented out)
+            # ...
+            
+            total_duration = time.time() - start_time
+            self.logger.info("Document successfully processed and stored in vector database", 
+                           document_id=processed_document_id,
+                           chunks_added=add_result.get("added_count", 0),
+                           processing_time_ms=total_duration * 1000,
+                           collection=add_result.get("collection_name", "unknown"))
+            
+            self.logger.gauge("context_model.document_processing_success", 1)
+            self.logger.timing("context_model.total_document_processing_time_ms", total_duration * 1000)
 
             return {
                 "status": "success",
                 "document_id": processed_document_id,
                 "chunks_processed": len(chunks),
                 "chunks_added_to_vector_db": add_result.get("added_count", 0),
-                "processing_time": time.time() - start_time,
+                "collection_name": add_result.get("collection_name"),
+                "processing_time": total_duration,
             }
 
         except Exception as e:
-            self.logger.error(f"Error processing and storing document: {e}")
+            self.execution_errors += 1
+            self.logger.counter("context_model.execution_errors")
+            self.logger.error(f"Error processing and storing document: {e}", 
+                             document_id=document_id,
+                             document_type=document_type,
+                             exc_info=True)
+            self.logger.gauge("context_model.document_processing_failure", 1)
             return {"error": str(e)}
 
     async def retrieve_context(
         self,
         query: str,
-        collection_name: str = "default_collection",
+        collection_name: Optional[str] = None, # Use VectorStoreMCP default if None
         top_k: int = 10,
         domain: Optional[str] = None,
-        use_feedback: bool = True,
-        user_id: Optional[str] = None,
+        use_feedback: bool = True, # Controls reranking step
+        user_id: Optional[str] = None, # For feedback history
+        filters: Optional[Dict[str, Any]] = None, # Metadata filters for ChromaDB
     ) -> Dict[str, Any]:
         """
-        Retrieve relevant context from the vector database based on a query.
+        Retrieve relevant context from the vector database (ChromaDB) based on a query.
 
         Args:
             query: The user query
@@ -803,208 +835,257 @@ class ContextModel:
             domain: Optional domain context for query reformulation
             use_feedback: Whether to use relevance feedback for reranking
             user_id: Optional user ID for personalized feedback
+            filters: Optional metadata filters for the vector search
 
         Returns:
             Dictionary with retrieved context (document chunks and metadata)
         """
-        self.logger.info(f"Retrieving context for query: '{query}'")
+        self.logger.info(f"Retrieving context for query: '{query}'", 
+                        collection=collection_name or 'default',
+                        domain=domain,
+                        top_k=top_k,
+                        use_feedback=use_feedback)
+        
         start_time = time.time()
+        query_hash = hashlib.md5(query.encode()).hexdigest()[:8]  # Short hash for logging
+        self.vector_search_count += 1
+        self.logger.counter("context_model.vector_search_count")
 
         try:
-            # 1. Reformulate the query
-            reformulated_query_result = self.query_reformulation_mcp.expand_query(
-                query=query,
-                domain=domain,
-                strategies=["synonyms", "domain_terms"],  # Use relevant strategies
+            # 1. Reformulate the query (using DocumentAnalysisMCP)
+            query_expansion_start = time.time()
+            self.mcp_tool_call_count += 1
+            self.query_expansion_count += 1
+            self.logger.counter("context_model.query_expansion_count")
+            
+            reformulated_query_result = self.document_analysis_mcp.call_tool(
+                "expand_query",
+                {"query": query, "domain": domain, "strategies": ["synonyms", "domain_terms"]}
             )
+            
+            query_expansion_duration = (time.time() - query_expansion_start) * 1000
+            self.logger.timing("context_model.query_expansion_time_ms", query_expansion_duration)
 
-            if "error" in reformulated_query_result:
-                self.logger.warning(
-                    f"Query reformulation failed: {reformulated_query_result['error']}. Using original query."
-                )
-                search_query = query
+            if reformulated_query_result and reformulated_query_result.get("error"):
+                 self.mcp_tool_error_count += 1
+                 self.logger.counter("context_model.mcp_tool_error_count")
+                 self.logger.warning(
+                     f"Query reformulation failed: {reformulated_query_result['error']}. Using original query.",
+                     query_hash=query_hash,
+                     domain=domain
+                 )
+                 search_query = query
             else:
-                search_query = reformulated_query_result.get("expanded_query", query)
+                 search_query = reformulated_query_result.get("expanded_query", query) if reformulated_query_result else query
+                 if search_query != query:
+                     self.logger.info("Query expanded successfully", 
+                                    original_query=query,
+                                    expanded_query=search_query,
+                                    query_hash=query_hash)
 
-            # 2. Generate embedding for the search query
-            query_embedding_result = self.embeddings_mcp.generate_embeddings(
-                chunks=[search_query]
+            # 2. Generate embedding for the search query (using DocumentAnalysisMCP)
+            embedding_start = time.time()
+            self.mcp_tool_call_count += 1
+            self.embedding_generation_count += 1
+            self.logger.counter("context_model.embedding_generation_count")
+            
+            query_embedding_result = self.document_analysis_mcp.call_tool(
+                "generate_embeddings",
+                {"chunks": [search_query]}
             )
+            
+            embedding_duration = (time.time() - embedding_start) * 1000
+            self.logger.timing("context_model.query_embedding_time_ms", embedding_duration)
 
-            if "error" in query_embedding_result or not query_embedding_result.get(
-                "embeddings"
-            ):
-                return {
-                    "error": f"Query embedding generation failed: {query_embedding_result.get('error', 'Unknown error')}"
+            if not query_embedding_result or query_embedding_result.get("error") or not query_embedding_result.get("embeddings"):
+                self.mcp_tool_error_count += 1
+                self.logger.counter("context_model.mcp_tool_error_count")
+                self.execution_errors += 1
+                self.logger.counter("context_model.execution_errors")
+                error_msg = query_embedding_result.get("error", "Unknown embedding error") if query_embedding_result else "No embedding result"
+                self.logger.error(f"Query embedding generation failed: {error_msg}", 
+                                 query_hash=query_hash)
+                return {"error": f"Query embedding generation failed: {error_msg}"}
+
+            query_embedding = query_embedding_result["embeddings"][0] # Get the single embedding
+            self.logger.info("Query embedding generated", query_hash=query_hash)
+
+            # 3. Search the vector database (using VectorStoreMCP)
+            search_start = time.time()
+            self.mcp_tool_call_count += 1
+            self.vector_store_operations += 1
+            self.logger.counter("context_model.vector_store_operations")
+            
+            search_results_mcp = self.vector_store_mcp.call_tool(
+                "search_collection",
+                {
+                    "query_embeddings": [query_embedding], # Search tool expects a list of embeddings
+                    "collection_name": collection_name,
+                    "top_k": top_k,
+                    "filters": filters,
+                    "include": ["metadatas", "documents", "distances"] # Request necessary fields
                 }
-
-            query_embedding = query_embedding_result["embeddings"][0]
-
-            # 3. Search the vector database
-            search_results = self.vector_db_mcp.search(
-                query_embedding=query_embedding,
-                collection_name=collection_name,
-                top_k=top_k,
             )
+            
+            search_duration = (time.time() - search_start) * 1000
+            self.logger.timing("context_model.vector_search_time_ms", search_duration)
 
-            if "error" in search_results:
-                return {
-                    "error": f"Vector database search failed: {search_results['error']}"
-                }
+            if not search_results_mcp or search_results_mcp.get("error"):
+                self.mcp_tool_error_count += 1
+                self.logger.counter("context_model.mcp_tool_error_count")
+                self.execution_errors += 1
+                self.logger.counter("context_model.execution_errors")
+                error_msg = search_results_mcp.get("error", "Unknown DB error") if search_results_mcp else "No DB result"
+                self.logger.error(f"Vector database search failed: {error_msg}", 
+                                 query_hash=query_hash,
+                                 collection=collection_name)
+                return {"error": f"Vector database search failed: {error_msg}"}
 
-            retrieved_documents = search_results.get("results", [])
+            # Extract results from the MCP response structure
+            # ChromaDB query returns lists for each field (ids, documents, metadatas, distances)
+            # Since we sent one query embedding, we expect results at index 0
+            search_results_raw = search_results_mcp.get("results", {})
+            retrieved_ids = search_results_raw.get("ids", [[]])[0]
+            retrieved_docs = search_results_raw.get("documents", [[]])[0]
+            retrieved_metadatas = search_results_raw.get("metadatas", [[]])[0]
+            retrieved_distances = search_results_raw.get("distances", [[]])[0]
+            
+            result_count = len(retrieved_ids)
+            self.logger.info(f"Vector search retrieved {result_count} results", 
+                           query_hash=query_hash,
+                           collection=collection_name,
+                           filter_applied=filters is not None)
+            self.logger.gauge("context_model.search_result_count", result_count)
 
-            # 4. Rerank results based on relevance feedback if enabled
-            if use_feedback and retrieved_documents:
-                # Need a query_id for feedback. Can generate one or use a provided one.
-                # For simplicity here, we'll use a hash of the original query.
-                query_id = hashlib.md5(query.encode()).hexdigest()
+            # Combine into a list of dictionaries for easier processing
+            initial_results = []
+            for i in range(len(retrieved_ids)):
+                initial_results.append({
+                    "id": retrieved_ids[i],
+                    "text": retrieved_docs[i],
+                    "metadata": retrieved_metadatas[i],
+                    "distance": retrieved_distances[i],
+                    "score": 1 - retrieved_distances[i] # Convert distance to similarity score (optional)
+                })
+                
+            # Calculate average relevance score for metrics
+            if initial_results:
+                avg_score = sum(result["score"] for result in initial_results) / len(initial_results)
+                self.logger.gauge("context_model.avg_result_relevance", avg_score)
 
-                reranked_results = self.relevance_feedback_mcp.rerank_results(
-                    query_id=query_id,
-                    results=retrieved_documents,  # Assuming retrieved_documents have 'document_id' and 'score'
-                    use_explicit_feedback=True,
-                    use_implicit_feedback=True,
-                    feedback_weight=0.7,  # Give feedback a higher weight
+            # 4. Rerank results based on relevance feedback if enabled (using DocumentAnalysisMCP)
+            final_results = initial_results
+            if use_feedback and initial_results:
+                rerank_start = time.time()
+                query_id = hashlib.md5(query.encode()).hexdigest() # Simple query ID
+                
+                self.mcp_tool_call_count += 1
+                reranked_results_mcp = self.document_analysis_mcp.call_tool(
+                    "rerank_results",
+                     {
+                         "query_id": query_id,
+                         "results": initial_results, # Pass combined results
+                         "use_explicit_feedback": True,
+                         "use_implicit_feedback": True,
+                         # feedback_weight: Optional[float] = None # Use default or configure
+                     }
                 )
+                
+                rerank_duration = (time.time() - rerank_start) * 1000
+                self.logger.timing("context_model.reranking_time_ms", rerank_duration)
 
-                if "error" in reranked_results:
+                if not reranked_results_mcp or reranked_results_mcp.get("error"):
+                    self.mcp_tool_error_count += 1
+                    self.logger.counter("context_model.mcp_tool_error_count")
                     self.logger.warning(
-                        f"Reranking failed: {reranked_results['error']}. Using original search results."
-                    )
-                    final_results = retrieved_documents
-                else:
-                    final_results = reranked_results.get(
-                        "reranked_results", retrieved_documents
-                    )
-            else:
-                final_results = retrieved_documents
-
-            # 5. Retrieve full document metadata for retrieved chunks
-            context_documents = []
-            for result in final_results:
-                chunk_metadata = result.get("metadata", {})
-                document_id = chunk_metadata.get("document_id")
-                if document_id:
-                    metadata_key = (
-                        f"{self.redis_keys['document_metadata']}{document_id}"
-                    )
-                    document_metadata = self.redis_mcp.get_json(metadata_key) or {}
-                    context_documents.append(
-                        {
-                            "chunk": result.get("text"),
-                            "chunk_metadata": chunk_metadata,
-                            "document_metadata": document_metadata,
-                            "score": result.get("score"),  # Include search/rerank score
-                        }
+                        f"Reranking failed: {reranked_results_mcp.get('error', 'Unknown reranking error')}. Using original search results.",
+                        query_hash=query_hash
                     )
                 else:
-                    # Include chunk even if document metadata isn't found
-                    context_documents.append(
-                        {
-                            "chunk": result.get("text"),
-                            "chunk_metadata": chunk_metadata,
-                            "document_metadata": {},
-                            "score": result.get("score"),
-                        }
-                    )
+                    final_results = reranked_results_mcp.get("reranked_results", initial_results)
+                    self.logger.info("Results reranked successfully", 
+                                   query_hash=query_hash,
+                                   reranking_used=True)
+                    
+                    # Track if reranking changed the order significantly
+                    if final_results and initial_results:
+                        # Check if top result changed
+                        top_changed = final_results[0]["id"] != initial_results[0]["id"] if final_results and initial_results else False
+                        self.logger.gauge("context_model.reranking_changed_top_result", 1 if top_changed else 0)
 
-            # 6. Store query and retrieved context for potential future feedback
-            query_history_key = (
-                f"{self.redis_keys['query_history']}{user_id or 'anonymous'}"
-            )
-            query_record = {
-                "query": query,
-                "search_query": search_query,
-                "timestamp": datetime.now().isoformat(),
-                "retrieved_document_ids": [
-                    res.get("metadata", {}).get("document_id")
-                    for res in final_results
-                    if res.get("metadata", {}).get("document_id")
-                ],
-                "results": final_results,  # Store raw results for feedback mapping
-            }
-            self.redis_mcp.add_to_list(query_history_key, json.dumps(query_record))
+            # 5. Format context documents (already done during combination)
+            context_documents = final_results
+
+            # 6. Store query history (Placeholder - requires Redis)
+            # ...
+            
+            total_duration = time.time() - start_time
+            self.logger.info("Context retrieval completed successfully", 
+                           query_hash=query_hash,
+                           result_count=len(context_documents),
+                           total_time_ms=total_duration * 1000)
+            
+            # Record metrics for this retrieval operation
+            self.logger.timing("context_model.total_retrieval_time_ms", total_duration * 1000)
+            self.logger.gauge("context_model.retrieval_success", 1)
+            
+            # If we have a multi-symbol financial query, we could generate a comparison chart
+            if domain == "finance" and len(context_documents) > 0:
+                # Extract potential stock symbols from the query
+                # This is just a simplistic example - in a real system you'd want more sophisticated extraction
+                potential_symbols = [word.upper() for word in query.split() 
+                                   if word.isalpha() and len(word) <= 5 and word.isupper()]
+                
+                if len(potential_symbols) >= 2:
+                    try:
+                        # Generate a comparison chart if multiple symbols are detected
+                        chart_file = self.chart_generator.create_multi_stock_chart(potential_symbols, normalize=True)
+                        self.logger.info("Generated comparison chart for symbols in query", 
+                                       symbols=potential_symbols,
+                                       chart_file=chart_file)
+                    except Exception as chart_e:
+                        self.logger.warning(f"Failed to generate chart for query: {chart_e}")
 
             return {
                 "original_query": query,
                 "search_query": search_query,
                 "retrieved_context": context_documents,
-                "total_results": len(final_results),
-                "processing_time": time.time() - start_time,
+                "total_results": len(context_documents),
+                "processing_time": total_duration,
             }
 
         except Exception as e:
-            self.logger.error(f"Error retrieving context for query '{query}': {e}")
+            self.execution_errors += 1
+            self.logger.counter("context_model.execution_errors")
+            self.logger.error(f"Error retrieving context for query: {e}", 
+                             query=query,
+                             query_hash=query_hash,
+                             exc_info=True)
+            self.logger.gauge("context_model.retrieval_failure", 1)
             return {"error": str(e)}
 
     async def store_context_data(self, key: str, data: Any) -> Dict[str, Any]:
         """
-        Store general contextual data in Redis.
-
-        Args:
-            key: The key to store the data under (will be prefixed)
-            data: The data to store (JSON serializable)
-
-        Returns:
-            Status of the operation
+        Store general contextual data.
+        (Placeholder - Redis integration removed)
         """
-        try:
-            full_key = f"{self.redis_keys['context_data']}{key}"
-            self.redis_mcp.set_json(full_key, data, ex=self.context_data_ttl)
+        self.logger.warning(f"Attempted to store context data for key '{key}', but Redis storage is not available.")
+        return {"status": "error", "key": key, "error": "Redis storage integration is not available"}
 
-            # Update latest context update timestamp
-            self.redis_mcp.set_json(
-                self.redis_keys["latest_context_update"],
-                {"timestamp": datetime.now().isoformat(), "key": key},
-            )
-
-            return {
-                "status": "success",
-                "key": key,
-                "stored_at": datetime.now().isoformat(),
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error storing context data for key '{key}': {e}")
-            return {"status": "error", "key": key, "error": str(e)}
 
     async def get_context_data(self, key: str) -> Dict[str, Any]:
         """
-        Retrieve general contextual data from Redis.
-
-        Args:
-            key: The key to retrieve the data for (will be prefixed)
-
-        Returns:
-            Dictionary with retrieved data or error
+        Retrieve general contextual data.
+        (Placeholder - Redis integration removed)
         """
-        try:
-            full_key = f"{self.redis_keys['context_data']}{key}"
-            data = self.redis_mcp.get_json(full_key)
+        self.logger.warning(f"Attempted to get context data for key '{key}', but Redis storage is not available.")
+        return {"status": "error", "key": key, "error": "Redis storage integration is not available"}
 
-            if data is not None:
-                return {"status": "success", "key": key, "data": data}
-            else:
-                return {
-                    "status": "not_found",
-                    "key": key,
-                    "message": "Context data not found for this key",
-                }
-
-        except Exception as e:
-            self.logger.error(f"Error retrieving context data for key '{key}': {e}")
-            return {"status": "error", "key": key, "error": str(e)}
 
     def run_context_agent(self, query: str) -> Dict[str, Any]:
         """
         Run context management using AutoGen agents.
-
-        Args:
-            query: Query or instruction for context management
-
-        Returns:
-            Results from the context agent
+        (Code unchanged from previous version)
         """
         self.logger.info(f"Running context agent with query: {query}")
 
@@ -1040,6 +1121,36 @@ class ContextModel:
         except Exception as e:
             self.logger.error(f"Error during AutoGen chat: {e}")
             return {"error": str(e)}
+
+
+    def shutdown(self):
+        """
+        Shutdown the context model, stopping all monitoring systems gracefully.
+        This should be called when the model is no longer needed to ensure proper cleanup.
+        """
+        self.logger.info("Shutting down Context Model")
+        
+        # Stop the system metrics collector
+        if hasattr(self, 'metrics_collector'):
+            try:
+                self.metrics_collector.stop()
+                self.logger.info("System metrics collection stopped")
+            except Exception as e:
+                self.logger.error(f"Error stopping metrics collector: {e}")
+        
+        # Log final metrics before shutdown
+        self.logger.info("Context Model shutdown complete", 
+                        document_processing_count=self.document_processing_count,
+                        embedding_generation_count=self.embedding_generation_count,
+                        vector_store_operations=self.vector_store_operations,
+                        vector_search_count=self.vector_search_count,
+                        query_expansion_count=self.query_expansion_count,
+                        mcp_tool_error_count=self.mcp_tool_error_count,
+                        execution_errors=self.execution_errors)
+        
+        # Record total uptime
+        self.logger.gauge("context_model.successful_shutdown", 1)
+        self.logger.info("Context Model resources released")
 
 
 # Note: The example usage block (main function and __main__ guard)

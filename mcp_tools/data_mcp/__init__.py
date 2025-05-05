@@ -5,6 +5,10 @@ This package contains Model Context Protocol (MCP) servers for accessing
 various financial data sources. These servers provide a unified interface
 for models to access data from different providers dynamically.
 
+All MCP servers in this package use the NetdataLogger system for monitoring,
+logging, and metrics collection, providing consistent performance tracking
+and unified logging across all data sources.
+
 Available MCP Servers:
 - PolygonRestMCP: Access to Polygon.io REST API for market data
 - PolygonWsMCP: Access to Polygon.io WebSocket API for real-time data

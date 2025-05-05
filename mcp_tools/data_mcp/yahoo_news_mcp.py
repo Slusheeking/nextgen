@@ -5,15 +5,30 @@ This module implements a Model Context Protocol (MCP) server for Yahoo News
 API, providing access to financial news and articles.
 """
 
-import os
-from typing import Dict, Any, Optional
+import time
 from datetime import datetime
-import yfinance as yf
-from dotenv import load_dotenv
-load_dotenv()
-from monitoring.netdata_logger import NetdataLogger
+from typing import Dict, Any, Optional
 
+# Direct imports with graceful error handling
+import importlib
+
+# Try to import required dependencies
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class YahooNewsMCP(BaseDataMCP):
@@ -293,6 +308,9 @@ class YahooNewsMCP(BaseDataMCP):
         limit = int(params.get("limit", self.default_news_limit))
 
         try:
+            # Start timing the operation
+            start_time = time.time()
+            
             ticker_obj = yf.Ticker(ticker)
             news = ticker_obj.news
 
@@ -321,11 +339,16 @@ class YahooNewsMCP(BaseDataMCP):
                         clean_item[k] = str(v)
                 clean_news.append(clean_item)
 
+            # Calculate and record operation time
+            operation_time = time.time() - start_time
+            self.logger.timing("news_fetch_time_ms", operation_time * 1000, ticker=ticker)
+            
             return {
                 "ticker": ticker,
                 "news_items": clean_news,
                 "count": len(clean_news),
                 "source": "yahoo_finance",
+                "processing_time": operation_time
             }
 
         except Exception as e:
@@ -430,6 +453,9 @@ class YahooNewsMCP(BaseDataMCP):
         limit = int(params.get("limit", self.default_news_limit))
 
         try:
+            # Start timing the sentiment analysis operation
+            start_time = time.time()
+            
             # Get news for the ticker
             news_data = self._handle_ticker_news({"ticker": ticker, "limit": limit})
 
@@ -490,7 +516,11 @@ class YahooNewsMCP(BaseDataMCP):
                     "overall_sentiment": overall_label,
                     "news_count": len(sentiment_results),
                     "sentiment_details": sentiment_results,
+                    "processing_time": time.time() - start_time
                 }
+                
+                # Record sentiment analysis timing
+                self.logger.timing("sentiment_analysis_time_ms", (time.time() - start_time) * 1000, ticker=ticker)
             else:
                 return {"error": f"No news found for sentiment analysis for {ticker}"}
 

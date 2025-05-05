@@ -17,8 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Import the Redis server
 from local_redis.redis_server import RedisServer
-# Import monitoring utilities
-from monitoring import setup_monitoring
+# Import monitoring utilities directly
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
 
 
 # Configure logging
@@ -29,14 +30,10 @@ logging.basicConfig(
 logger = logging.getLogger("redis_starter")
 
 
+# Set up monitoring directly
+logger = NetdataLogger(component_name="local_redis-start-redis-server")
+metrics_collector = SystemMetricsCollector(logger)
 
-# Set up monitoring
-monitor, metrics = setup_monitoring(
-    service_name="local_redis-start-redis-server",
-    enable_prometheus=True,
-    enable_loki=True,
-    default_labels={"component": "local_redis/local_redis"}
-)
 
 
 def handle_signal(signum, frame):

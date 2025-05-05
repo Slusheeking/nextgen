@@ -13,7 +13,8 @@ import random
 import os
 import subprocess
 import threading
-from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
 
 # Import monitoring components
 from monitoring.netdata_logger import NetdataLogger

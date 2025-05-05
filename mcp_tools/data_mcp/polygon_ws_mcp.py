@@ -6,16 +6,31 @@ WebSocket API, providing access to real-time market data streams.
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import json
 import asyncio
-from typing import Dict, List, Any, Optional, Union
-import websockets
+import importlib
+# Import time module for performance monitoring
+import time
 from uuid import uuid4
-from monitoring.netdata_logger import NetdataLogger
+from typing import Dict, List, Any, Optional, Union
 
+# Try to import required dependencies
+try:
+    import websockets
+except ImportError:
+    websockets = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class PolygonWsMCP(BaseDataMCP):
@@ -292,6 +307,10 @@ class PolygonWsMCP(BaseDataMCP):
                     self.logger.counter("ws_message_receive_count", 1)
                     self.logger.gauge("ws_message_size_bytes", len(message.encode("utf-8")))
 
+                    # Start timing the message processing
+                    time_module = time  # Local reference to time module
+                    process_start_time = time_module.time()
+                    
                     # Parse and process the message
                     data = json.loads(message)
 
@@ -307,6 +326,10 @@ class PolygonWsMCP(BaseDataMCP):
                         buffer.append(data)
                         if len(buffer) > buffer_limit:
                             buffer.pop(0)
+                            
+                    # Measure and record message processing time
+                    processing_time = time_module.time() - process_start_time
+                    self.logger.timing("message_processing_time_ms", processing_time * 1000)
 
                 except asyncio.TimeoutError:
                     #

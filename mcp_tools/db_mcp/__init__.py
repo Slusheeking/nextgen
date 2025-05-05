@@ -6,16 +6,18 @@ various database systems. These servers provide a unified interface
 for models to interact with different database technologies.
 
 Available MCP Servers:
-- RedisMCP: Access to Redis for state management, caching, and pub/sub messaging
+- RedisMCP: Access to Redis for state management, caching, and pub/sub messaging.
+  Integrated with NetdataLogger for monitoring and metrics collection.
+  Connects to the local Redis server for centralized Redis access.
 """
 
 # Version
 __version__ = "0.1.0"
 
-# Don't eagerly import all classes to avoid circular dependencies
-# Import specific modules only when needed
+# Import the RedisMCP class for easier access
+from .redis_mcp import RedisMCP
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "RedisMCP"]
 
 # Function to lazily import database MCP classes
 def get_db_mcp(class_name):

@@ -1,9 +1,16 @@
 """
 Redis Server Module
 
-This module implements a Redis server with integrated monitoring using the consolidated
-monitoring module that provides both Loki logging and Prometheus metrics.
-It provides a centralized Redis instance for the NextGen FinGPT system.
+This module implements a Redis server with integrated monitoring using NetdataLogger
+for metrics collection and logging. It provides a centralized Redis instance for the 
+NextGen FinGPT system with automatic metrics collection and performance monitoring.
+
+Features:
+- Singleton pattern to ensure only one Redis server instance
+- Integrated monitoring with NetdataLogger
+- Automatic metrics collection for Redis operations
+- Configuration via JSON files or environment variables
+- Thread-safe operation recording and logging
 """
 
 import os
@@ -16,19 +23,27 @@ import json
 import redis as redis_client
 import logging
 import threading
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-# Import the consolidated monitoring module
-from monitoring import setup_monitoring
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
 
 
 class RedisServer:
     """
-    Redis Server with integrated monitoring.
+    Redis Server with integrated monitoring using NetdataLogger.
 
     This class provides a centralized Redis instance for the NextGen FinGPT system,
-    with integrated logging and metrics using the consolidated monitoring module.
+    with integrated logging and metrics using NetdataLogger. It implements the
+    singleton pattern to ensure only one Redis server instance is running at a time.
+    
+    Features:
+    - Automatic metrics collection for Redis operations
+    - Performance monitoring with NetdataLogger
+    - Thread-safe operation recording and logging
+    - Configuration via JSON files or environment variables
     """
 
     _instance = None  # Singleton instance
@@ -99,37 +114,38 @@ class RedisServer:
 
         self.logger.info("Redis server initialized with integrated monitoring")
         if self.monitor:
-            self.monitor.log_info("Redis server initialized", component="redis_server", action="initialization")
+            self.monitor.info("Redis server initialized")
 
     def _setup_monitoring(self):
         """
-        Set up monitoring for Redis server.
+        Set up monitoring for Redis server using NetdataLogger.
 
         Returns:
-            Tuple of (MonitoringManager, metrics_dict)
+            Tuple of (NetdataLogger, metrics_dict)
         """
         try:
             # Get monitoring settings from config
             monitoring_config = self.config.get("monitoring", {})
             
             # Extract monitoring parameters
-            enable_prometheus = monitoring_config.get("enable_prometheus", True)
-            enable_loki = monitoring_config.get("enable_loki", True)
             metrics_interval = int(monitoring_config.get("metrics_interval", 15))
             
-            # Set up monitoring
-            monitor, metrics = setup_monitoring(
-                service_name="redis-server",
-                enable_prometheus=enable_prometheus,
-                enable_loki=enable_loki,
-                default_labels={"component": "redis_server"}
-            )
+            # Set up monitoring with NetdataLogger
+            logger = NetdataLogger(component_name="redis-server")
+            
+            # Initialize system metrics collector
+            metrics_collector = SystemMetricsCollector(logger)
+            metrics_collector.start()
             
             # Store metrics interval for use in metrics collection
             self.metrics_interval = metrics_interval
+            self.metrics_collector = metrics_collector
 
-            self.logger.info(f"Monitoring initialized successfully (Prometheus: {enable_prometheus}, Loki: {enable_loki})")
-            return monitor, metrics
+            # Create an empty metrics dictionary for compatibility
+            metrics = {}
+
+            self.logger.info("Monitoring initialized successfully with NetdataLogger")
+            return logger, metrics
         except Exception as e:
             self.logger.error(f"Failed to initialize monitoring: {e}")
             return None, {}
@@ -179,10 +195,8 @@ class RedisServer:
             self.logger.info(f"Connected to Redis at {host}:{port}/{db}")
 
             if self.monitor:
-                self.monitor.log_info(
+                self.monitor.info(
                     f"Connected to Redis at {host}:{port}/{db}",
-                    component="redis_server",
-                    action="connection",
                     host=host,
                     port=port,
                     db=db
@@ -192,10 +206,8 @@ class RedisServer:
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis client: {e}")
             if self.monitor:
-                self.monitor.log_error(
+                self.monitor.error(
                     f"Failed to initialize Redis client: {e}",
-                    component="redis_server",
-                    action="connection_error",
                     error=str(e)
                 )
 
@@ -204,57 +216,16 @@ class RedisServer:
             return None
 
     def _register_metrics(self):
-        """Register metrics for Redis monitoring."""
+        """Register metrics for Redis monitoring using NetdataLogger."""
         if not self.monitor:
             return
-
-        # Create metrics if they don't already exist
-        if 'connected_clients' not in self.metrics:
-            self.metrics['connected_clients'] = self.monitor.create_gauge(
-                "connected_clients",
-                "Number of client connections"
-            )
-
-        if 'used_memory' not in self.metrics:
-            self.metrics['used_memory'] = self.monitor.create_gauge(
-                "used_memory",
-                "Used memory in bytes"
-            )
-
-        if 'total_commands_processed' not in self.metrics:
-            self.metrics['total_commands_processed'] = self.monitor.create_gauge(
-                "total_commands_processed",
-                "Total number of commands processed"
-            )
-
-        if 'keyspace_hits' not in self.metrics:
-            self.metrics['keyspace_hits'] = self.monitor.create_gauge(
-                "keyspace_hits",
-                "Number of successful lookups of keys in the main dictionary"
-            )
-
-        if 'keyspace_misses' not in self.metrics:
-            self.metrics['keyspace_misses'] = self.monitor.create_gauge(
-                "keyspace_misses",
-                "Number of failed lookups of keys in the main dictionary"
-            )
-
-        if 'operations_total' not in self.metrics:
-            self.metrics['operations_total'] = self.monitor.create_counter(
-                "operations_total",
-                "Total number of Redis operations",
-                ["operation", "status"]
-            )
-
-        if 'operation_duration_seconds' not in self.metrics:
-            self.metrics['operation_duration_seconds'] = self.monitor.create_histogram(
-                "operation_duration_seconds",
-                "Duration of Redis operations in seconds",
-                ["operation"]
-            )
+            
+        # With NetdataLogger, we don't need to pre-register metrics
+        # They are created on-the-fly when used
+        self.logger.info("Redis metrics registered with NetdataLogger")
 
     def _start_metrics_collection(self):
-        """Start a background thread to collect Redis metrics."""
+        """Start a background thread to collect Redis metrics using NetdataLogger."""
         if not self.monitor or not self.redis_client:
             return
 
@@ -264,18 +235,16 @@ class RedisServer:
                     # Get Redis info
                     info = self.redis_client.info()
 
-                    # Update metrics
-                    self.monitor.set_gauge("connected_clients", info.get("connected_clients", 0))
-                    self.monitor.set_gauge("used_memory", info.get("used_memory", 0))
-                    self.monitor.set_gauge("total_commands_processed", info.get("total_commands_processed", 0))
-                    self.monitor.set_gauge("keyspace_hits", info.get("keyspace_hits", 0))
-                    self.monitor.set_gauge("keyspace_misses", info.get("keyspace_misses", 0))
+                    # Update metrics using NetdataLogger
+                    self.monitor.gauge("redis_connected_clients", info.get("connected_clients", 0))
+                    self.monitor.gauge("redis_used_memory", info.get("used_memory", 0))
+                    self.monitor.gauge("redis_total_commands_processed", info.get("total_commands_processed", 0))
+                    self.monitor.gauge("redis_keyspace_hits", info.get("keyspace_hits", 0))
+                    self.monitor.gauge("redis_keyspace_misses", info.get("keyspace_misses", 0))
 
                     # Log to monitoring
-                    self.monitor.log_info(
+                    self.monitor.info(
                         "Redis metrics collected",
-                        component="redis_server",
-                        action="metrics_collection",
                         connected_clients=info.get("connected_clients", 0),
                         used_memory_human=info.get("used_memory_human", "N/A"),
                         total_commands_processed=info.get("total_commands_processed", 0)
@@ -283,10 +252,8 @@ class RedisServer:
                 except Exception as e:
                     self.logger.error(f"Error collecting Redis metrics: {e}")
                     if self.monitor:
-                        self.monitor.log_error(
+                        self.monitor.error(
                             f"Error collecting Redis metrics: {e}",
-                            component="redis_server",
-                            action="metrics_collection_error",
                             error=str(e)
                         )
 
@@ -309,7 +276,7 @@ class RedisServer:
 
     def record_operation(self, operation: str, duration: float, status: str = "success"):
         """
-        Record a Redis operation for metrics.
+        Record a Redis operation for metrics using NetdataLogger.
 
         Args:
             operation: Name of the operation (e.g., "get", "set")
@@ -319,15 +286,18 @@ class RedisServer:
         if not self.monitor:
             return
 
-        # Increment operation counter
-        self.monitor.increment_counter("operations_total", 1, operation=operation, status=status)
-
-        # Record operation duration
-        self.monitor.observe_histogram("operation_duration_seconds", duration, operation=operation)
+        # Record operation timing (convert to milliseconds)
+        self.monitor.timing(f"redis_operation_{operation}_ms", duration * 1000)
+        
+        # Record operation status as gauge
+        if status == "success":
+            self.monitor.gauge(f"redis_operation_{operation}_success", 1)
+        else:
+            self.monitor.gauge(f"redis_operation_{operation}_error", 1)
 
     def log_operation(self, operation: str, key: str, status: str, error: Optional[str] = None):
         """
-        Log a Redis operation.
+        Log a Redis operation using NetdataLogger.
 
         Args:
             operation: Name of the operation (e.g., "get", "set")
@@ -338,18 +308,17 @@ class RedisServer:
         if not self.monitor:
             return
 
-        log_data = {
-            "component": "redis_server",
-            "action": operation,
-            "key": key,
-            "status": status
-        }
-
         if error:
-            log_data["error"] = error
-            self.monitor.log_error(f"Redis operation {operation} failed: {error}", **log_data)
+            self.monitor.error(f"Redis operation {operation} failed: {error}", 
+                              operation=operation,
+                              key=key,
+                              status=status,
+                              error=error)
         else:
-            self.monitor.log_info(f"Redis operation {operation} completed", **log_data)
+            self.monitor.info(f"Redis operation {operation} completed", 
+                             operation=operation,
+                             key=key,
+                             status=status)
             
     def _get_config_value(self, value: str) -> str:
         """

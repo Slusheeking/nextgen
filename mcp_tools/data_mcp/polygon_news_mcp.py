@@ -7,17 +7,30 @@ and sentiment analysis.
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import time
-import requests
-from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 
-from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+# Direct imports with graceful error handling using importlib
+import importlib
+
+# Try to import required dependencies
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
+from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
-
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class PolygonNewsMCP(BaseDataMCP):
@@ -751,6 +764,20 @@ class PolygonNewsMCP(BaseDataMCP):
             params["published_utc.gt"] = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         return self.fetch_data("sector_news", params)
+
+    def read_resource(self, uri: str) -> Dict[str, Any]:
+        """
+        Read a resource from the Polygon News MCP server.
+
+        This client does not support reading resources via URI.
+
+        Args:
+            uri: The URI of the resource to read.
+
+        Returns:
+            An error dictionary indicating that this operation is not supported.
+        """
+        return {"error": f"Polygon News MCP does not support reading resources via URI: {uri}"}
 
     def get_news_sentiment(
         self, ticker: str = None, article_id: str = None, text: str = None

@@ -20,7 +20,6 @@ from monitoring.netdata_logger import NetdataLogger
 # Import NextGen components
 from nextgen_models.nextgen_trader.trade_model import TradeModel
 from nextgen_models.nextgen_risk_assessment.risk_assessment_model import RiskAssessmentModel
-from nextgen_models.nextgen_market_analysis.market_analysis_model import MarketAnalysisModel
 
 
 class MonitoredTradeModel:

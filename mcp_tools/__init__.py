@@ -25,4 +25,22 @@ from mcp_tools.base_mcp_server import BaseMCPServer
 # from mcp_tools.db_mcp.get_db_mcp import get_db_mcp
 # from mcp_tools.alpaca_mcp import get_alpaca_mcp
 
-__all__ = ["BaseMCPServer", "__version__"]
+from . import document_analysis_mcp
+from . import financial_data_mcp
+from . import financial_text_mcp
+from . import risk_analysis_mcp
+from . import time_series_mcp
+from . import trading_mcp
+from . import vector_store_mcp
+
+__all__ = [
+    "BaseMCPServer",
+    "__version__",
+    "document_analysis_mcp",
+    "financial_data_mcp",
+    "financial_text_mcp",
+    "risk_analysis_mcp",
+    "time_series_mcp",
+    "trading_mcp",
+    "vector_store_mcp",
+]

@@ -9,13 +9,30 @@ It connects to the official Redis server with integrated monitoring.
 import os
 import time
 import json
-import redis
+import importlib
 from typing import Dict, List, Any, Optional
+
+# Direct imports instead of dynamic loading
+try:
+    import redis
+except ImportError:
+    redis = None
+    print("Warning: Redis package not found or import failed.")
+
 from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
+
+# Import local Redis server
+from local_redis.redis_server import RedisServer
+
+# Import base MCP server
 from mcp_tools.base_mcp_server import BaseMCPServer
-from monitoring import setup_monitoring
-from monitoring.system_monitor import MonitoringManager
 
 
 class RedisMCP(BaseMCPServer):
@@ -38,32 +55,23 @@ class RedisMCP(BaseMCPServer):
                 - password: Redis password (default: None)
                 - decode_responses: Decode responses (default: True)
         """
-        # Load environment variables
-        load_dotenv()
-
+        # Initialize monitoring first so we can use it for logging
+        self.logger = NetdataLogger(component_name="redis_mcp")
+        self.metrics_collector = SystemMetricsCollector(self.logger)
+        self.metrics_collector.start()
+        
         super().__init__(name="redis_mcp", config=config)
-
+        
         # Load configuration if not provided
         if config is None:
-            config_path = os.path.join("config", "db_mcp", "redis_mcp_config.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        self.config = json.load(f)
-                    self.logger.info(f"Configuration loaded from {config_path}")
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Error parsing configuration file {config_path}: {e}")
-                    self.config = {}
-                except Exception as e:
-                    self.logger.error(f"Error loading configuration file {config_path}: {e}")
-                    self.config = {}
-            else:
-                self.logger.warning(f"No configuration provided and standard config file not found at {config_path}")
-                self.config = {}
-
-        # Initialize monitoring
-        self.monitor, self.metrics = self._setup_monitoring()
-
+            self.config_path = os.path.join("config", "redis_mcp", "redis_mcp_config.json")
+            self.config = self._load_config()
+            
+            # Set up config file monitoring
+            self._last_config_check = time.time()
+            self._config_check_interval = 30  # Check for config changes every 30 seconds
+            self._last_config_modified = os.path.getmtime(self.config_path) if os.path.exists(self.config_path) else 0
+        
         # Initialize Redis client
         self.redis_client = self._initialize_client()
 
@@ -73,67 +81,108 @@ class RedisMCP(BaseMCPServer):
         # Register specific tools
         self._register_specific_tools()
 
-        self.logger.info("RedisMCP initialized with integrated Redis server")
-        if self.monitor:
-            self.monitor.log_info(
-                "RedisMCP initialized", component="redis_mcp", action="initialization"
-            )
+        self.logger.info("RedisMCP initialized with integrated Redis server", 
+                        component="redis_mcp", action="initialization")
 
-    def _initialize_client(self) -> redis.Redis:
+    def _load_config(self) -> Dict[str, Any]:
         """
-        Initialize the Redis client to connect to the official Redis server.
+        Load configuration from the config file.
+        
+        Returns:
+            Dictionary containing configuration values
+        """
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r') as f:
+                    config = json.load(f)
+                self.logger.info(f"Configuration loaded from {self.config_path}")
+                return config
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error parsing configuration file {self.config_path}: {e}")
+                return {}
+            except Exception as e:
+                self.logger.error(f"Error loading configuration file {self.config_path}: {e}")
+                return {}
+        else:
+            self.logger.warning(f"Configuration file not found at {self.config_path}")
+            return {}
+            
+    def _check_config_changes(self):
+        """
+        Check if the configuration file has changed and reload it if necessary.
+        """
+        current_time = time.time()
+        if current_time - self._last_config_check > self._config_check_interval:
+            self._last_config_check = current_time
+            if os.path.exists(self.config_path):
+                modified_time = os.path.getmtime(self.config_path)
+                if modified_time > self._last_config_modified:
+                    self._last_config_modified = modified_time
+                    self.logger.info(f"Configuration file changed, reloading from {self.config_path}")
+                    new_config = self._load_config()
+                    if new_config:
+                        self.config = new_config
+                        # Reinitialize client if connection settings changed
+                        self.redis_client = self._initialize_client()
+
+    def _initialize_client(self):
+        """
+        Initialize the Redis client to connect to the local Redis server.
 
         Returns:
             Redis client
         """
         try:
-            # Get Redis configuration from environment variables or config
-            host = self.config.get("host", os.getenv("REDIS_HOST", "localhost"))
-            port = int(self.config.get("port", os.getenv("REDIS_PORT", "6379")))
-            db = int(self.config.get("db", os.getenv("REDIS_DB", "0")))
-            password = self.config.get("password", os.getenv("REDIS_PASSWORD", None))
-            decode_responses = self.config.get("decode_responses", True)
+            # Use the local Redis server instance
+            self.logger.info("Connecting to local Redis server")
+            redis_server = RedisServer.get_instance(self.config)
+            client = redis_server.get_client()
+            
+            if client:
+                # Test connection
+                client.ping()
+                self.logger.info("Connected to local Redis server successfully")
+                return client
+            else:
+                raise Exception("Failed to get Redis client from local Redis server")
 
-            # Create Redis client
-            client = redis.Redis(
-                host=host,
-                port=port,
-                db=db,
-                password=password,
-                decode_responses=decode_responses,
-                socket_timeout=self.config.get("socket_timeout", 5),
-                socket_connect_timeout=self.config.get("socket_connect_timeout", 5),
-                socket_keepalive=self.config.get("socket_keepalive", True),
-                retry_on_timeout=self.config.get("retry_on_timeout", True),
-            )
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Redis client: {e}", 
+                             error=str(e))
+            
+            # Fallback to direct connection if local server fails
+            self.logger.warning("Falling back to direct Redis connection")
+            try:
+                # Get Redis configuration from environment variables or config
+                host = self.config.get("host", os.getenv("REDIS_HOST", "localhost"))
+                port = int(self.config.get("port", os.getenv("REDIS_PORT", "6379")))
+                db = int(self.config.get("db", os.getenv("REDIS_DB", "0")))
+                password = self.config.get("password", os.getenv("REDIS_PASSWORD", None))
+                decode_responses = self.config.get("decode_responses", True)
 
-            # Test connection
-            client.ping()
-            self.logger.info(f"Connected to Redis at {host}:{port}/{db}")
-
-            if self.monitor:
-                self.monitor.log_info(
-                    f"Connected to Redis at {host}:{port}/{db}",
-                    component="redis_mcp",
-                    action="connection",
+                # Create Redis client
+                client = redis.Redis(
                     host=host,
                     port=port,
                     db=db,
+                    password=password,
+                    decode_responses=decode_responses,
+                    socket_timeout=self.config.get("socket_timeout", 5),
+                    socket_connect_timeout=self.config.get("socket_connect_timeout", 5),
+                    socket_keepalive=self.config.get("socket_keepalive", True),
+                    retry_on_timeout=self.config.get("retry_on_timeout", True),
                 )
 
-            return client
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Redis client: {e}")
-            if self.monitor:
-                self.monitor.log_error(
-                    f"Failed to initialize Redis client: {e}",
-                    component="redis_mcp",
-                    action="connection_error",
-                    error=str(e),
-                )
-            self.logger.warning("Using dummy client for testing/development")
-            return None
+                # Test connection
+                client.ping()
+                self.logger.info(f"Connected to Redis at {host}:{port}/{db}", 
+                                host=host, port=port, db=db)
+                return client
+            except Exception as e:
+                self.logger.error(f"Failed to initialize direct Redis client: {e}", 
+                                error=str(e))
+                self.logger.warning("Using dummy client for testing/development")
+                return None
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -294,60 +343,21 @@ class RedisMCP(BaseMCPServer):
         self.register_tool(self.get_json)
         self.register_tool(self.increment_hash_value)
 
-    def _setup_monitoring(self):
-        """
-        Set up monitoring for Redis MCP.
-
-        Returns:
-            Tuple of (MonitoringManager, metrics_dict)
-        """
-        try:
-            # Get configuration from environment variables or config
-            enable_prometheus = self.config.get("enable_prometheus", False)  # Default to False to avoid port conflicts
-            
-            # Set up monitoring using the new monitoring system
-            monitor = MonitoringManager(service_name="redis_mcp")
-            
-            # Create a metrics dictionary for compatibility with existing code
-            metrics = {}
-            
-            # Only try to register custom metrics if Prometheus is enabled
-            if enable_prometheus:
-                try:
-                    # Use valid metric names (no hyphens)
-                    metrics["redis_operations_total"] = "redis_operations_total"
-                    metrics["redis_operation_duration_seconds"] = "redis_operation_duration_seconds"
-                except Exception as e:
-                    self.logger.warning(f"Could not register custom metrics: {e}")
-            
-            self.logger.info("Monitoring initialized successfully")
-            return monitor, metrics
-        except Exception as e:
-            self.logger.error(f"Failed to initialize monitoring: {e}")
-            return None, {}
-
     def _record_metrics(self, operation: str, duration: float, status: str = "success"):
         """Record metrics for Redis operations."""
-        if not self.monitor:
-            return
-
-        # Increment operation counter
-        self.monitor.increment_counter(
-            "redis_operations_total", 1, operation=operation, status=status
-        )
-
-        # Record operation duration
-        self.monitor.observe_histogram(
-            "redis_operation_duration_seconds", duration, operation=operation
-        )
+        # Record operation timing
+        self.logger.timing(f"redis_operation_{operation}", duration * 1000)  # Convert to ms
+        
+        # Record operation status as gauge
+        if status == "success":
+            self.logger.gauge(f"redis_operation_{operation}_success", 1)
+        else:
+            self.logger.gauge(f"redis_operation_{operation}_error", 1)
 
     def _log_operation(
         self, operation: str, key: str, status: str, error: Optional[str] = None
     ):
         """Log Redis operations."""
-        if not self.monitor:
-            return
-
         log_data = {
             "component": "redis_mcp",
             "action": operation,
@@ -357,11 +367,9 @@ class RedisMCP(BaseMCPServer):
 
         if error:
             log_data["error"] = error
-            self.monitor.log_error(
-                f"Redis operation {operation} failed: {error}", **log_data
-            )
+            self.logger.error(f"Redis operation {operation} failed: {error}", **log_data)
         else:
-            self.monitor.log_info(f"Redis operation {operation} completed", **log_data)
+            self.logger.info(f"Redis operation {operation} completed", **log_data)
 
     def _handle_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get endpoint."""
@@ -375,17 +383,12 @@ class RedisMCP(BaseMCPServer):
             duration = time.time() - start_time
 
             # Record metrics and logs
-            self._record_metrics("get", duration)
-            self._log_operation("get", key, "success")
+            self.logger.timing("redis_get_ms", duration * 1000)
+            self.logger.info("Redis GET operation completed", key=key, duration_ms=duration * 1000)
 
             return {"key": key, "value": value}
         except Exception as e:
-            self.logger.error(f"Error getting value for key {key}: {e}")
-
-            # Record error metrics and logs
-            self._record_metrics("get", time.time() - start_time, "error")
-            self._log_operation("get", key, "error", str(e))
-
+            self.logger.error(f"Error getting value for key {key}: {e}", key=key, error=str(e))
             return {"error": f"Failed to get value: {str(e)}"}
 
     def _handle_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -408,17 +411,17 @@ class RedisMCP(BaseMCPServer):
             duration = time.time() - start_time
 
             # Record metrics and logs
-            self._record_metrics("set", duration)
-            self._log_operation("set", key, "success")
+            self.logger.timing("redis_set_ms", duration * 1000)
+            self.logger.info("Redis SET operation completed", 
+                           key=key, 
+                           has_expiry=(expiry is not None),
+                           duration_ms=duration * 1000)
 
             return {"key": key, "value": value, "status": "success"}
         except Exception as e:
-            self.logger.error(f"Error setting value for key {key}: {e}")
-
-            # Record error metrics and logs
-            self._record_metrics("set", time.time() - start_time, "error")
-            self._log_operation("set", key, "error", str(e))
-
+            self.logger.error(f"Error setting value for key {key}: {e}", 
+                             key=key, 
+                             error=str(e))
             return {"error": f"Failed to set value: {str(e)}"}
 
     def _handle_delete(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -777,6 +780,9 @@ class RedisMCP(BaseMCPServer):
         Returns:
             Result of the endpoint handler
         """
+        # Check for configuration changes
+        self._check_config_changes()
+        
         if endpoint not in self.endpoints:
             return {"error": f"Endpoint not found: {endpoint}"}
 
@@ -793,9 +799,16 @@ class RedisMCP(BaseMCPServer):
         Returns:
             Value or None if key doesn't exist
         """
-        return self.fetch_data("get", {"key": key}).get("value")
+        result = self.fetch_data("get", {"key": key})
+        if isinstance(result, dict):
+            return result.get("value")
+        elif result is not None:
+            # Handle case where result might be a string or other non-dict type
+            self.logger.warning(f"Unexpected result type from fetch_data: {type(result)}")
+            return str(result)
+        return None
 
-    def set_value(self, key: str, value: Any, expiry: Optional[int] = None) -> bool:
+    def set_value(self, key: str, value: Any, expiry: Optional[int] = None) -> dict:
         """
         Set a value in Redis.
 
@@ -805,12 +818,15 @@ class RedisMCP(BaseMCPServer):
             expiry: Optional expiry time in seconds
 
         Returns:
-            True if successful, False otherwise
+            Dict with operation status and error (if any)
         """
         params = {"key": key, "value": value}
         if expiry:
             params["expiry"] = expiry
-        return "error" not in self.fetch_data("set", params)
+        result = self.fetch_data("set", params)
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True}
 
     def delete_value(self, key: str) -> bool:
         """
@@ -1015,6 +1031,19 @@ class RedisMCP(BaseMCPServer):
         except Exception as e:
             self.logger.error(f"Error setting expiry for key {key}: {e}")
             return False
+            
+    def delete_key(self, key: str) -> Dict[str, Any]:
+        """
+        Delete a key from Redis (alias for delete_value for backwards compatibility).
+        
+        Args:
+            key: Key to delete
+            
+        Returns:
+            Dictionary with operation status
+        """
+        deleted = self.delete_value(key)
+        return {"success": deleted, "key": key}
 
     def increment_float(self, key: str, amount: float) -> float:
         """
@@ -1053,3 +1082,19 @@ class RedisMCP(BaseMCPServer):
         except Exception as e:
             self.logger.error(f"Error getting value for key {key}: {e}")
             return None
+
+    def get_connection_status(self) -> dict:
+        """
+        Check the connection status to the Redis server.
+
+        Returns:
+            Dictionary with connection status and error (if any).
+        """
+        try:
+            if self.redis_client:
+                self.redis_client.ping()
+                return {"connected": True, "error": None}
+            else:
+                return {"connected": False, "error": "No Redis client available"}
+        except Exception as e:
+            return {"connected": False, "error": str(e)}

@@ -38,21 +38,21 @@ nextgen/
 ├── mcp_tools/                # MCP tool implementations
 │   ├── alpaca_mcp/           # Alpaca trading API tools
 │   │   └── alpaca_mcp.py     # Alpaca MCP implementation
-│   ├── analysis_mcp/         # Analysis tool implementations
-│   │   ├── drift_detection_mcp.py # Drift detection tools
-│   │   ├── peak_detection_mcp.py # Peak detection tools
-│   │   ├── slippage_analysis_mcp.py # Execution analysis tools
-│   │   └── technical_indicators_mcp.py # Technical analysis tools
-│   ├── data_mcp/             # Data source tools
-│   │   ├── base_data_mcp.py  # Base class for data MCPs
-│   │   ├── polygon_rest_mcp.py # Polygon.io REST API tools
-│   │   ├── polygon_ws_mcp.py # Polygon.io WebSocket API tools
-│   │   ├── reddit_mcp.py     # Reddit API tools
-│   │   ├── unusual_whales_mcp.py # Unusual Whales API tools
-│   │   └── yahoo_finance_mcp.py # Yahoo Finance API tools
-│   ├── db_mcp/               # Database tools
-│   │   └── redis_mcp.py      # Redis MCP implementation
-│   └── base_mcp_server.py    # Base MCP server implementation
+│   ├── base_mcp_server.py    # Base MCP server implementation
+│   ├── document_analysis_mcp/ # Consolidated document analysis tools
+│   │   └── document_analysis_mcp.py # Document analysis implementation
+│   ├── financial_data_mcp/   # Consolidated financial data tools
+│   │   └── financial_data_mcp.py # Financial data implementation
+│   ├── financial_text_mcp/   # Consolidated financial text analysis
+│   │   └── financial_text_mcp.py # Financial text analysis implementation
+│   ├── risk_analysis_mcp/    # Consolidated risk analysis tools
+│   │   └── risk_analysis_mcp.py # Risk analysis implementation
+│   ├── time_series_mcp/      # Consolidated time series analysis
+│   │   └── time_series_mcp.py # Time series analysis implementation
+│   ├── trading_mcp/          # Consolidated trading operations
+│   │   └── trading_mcp.py    # Trading operations implementation
+│   └── vector_store_mcp/     # Vector database tools (ChromaDB)
+│       └── vector_store_mcp.py # Vector store implementation
 ├── monitoring/               # System monitoring tools
 │   ├── README.md             # Monitoring setup instructions
 │   ├── system_monitor.py     # System monitoring implementation
@@ -79,8 +79,8 @@ nextgen/
 └── tests/                    # Test suite
     ├── mcp_tools/            # MCP tool tests
     │   ├── alpaca_mcp/       # Alpaca MCP tests
-    │   ├── analysis_mcp/     # Analysis MCP tests
-    │   └── data_mcp/         # Data MCP tests
+    │   ├── vector_store_mcp/ # Vector store tests
+    │   └── financial_data_mcp/ # Financial data tests
     └── nextgen_models/       # Model tests
         └── nextgen_trader/   # Trader model tests
 ```
@@ -104,15 +104,17 @@ nextgen/
 
 ### MCP Tools
 
-- **Market Data**: Real-time and historical price data via MCP tools for Polygon.io and Yahoo Finance
-- **Alternative Data**: Social sentiment from Reddit, options flow from Unusual Whales
-- **Analysis Tools**: Technical indicators, peak detection, drift detection, and slippage analysis
-- **Execution Tools**: Order execution and position management via Alpaca MCP
+- **Financial Data MCP**: Real-time and historical market data consolidated from Polygon.io, Yahoo Finance, and other sources
+- **Document Analysis MCP**: Consolidated document processing, embeddings generation, query reformulation, and relevance feedback
+- **Risk Analysis MCP**: Consolidated risk evaluation, portfolio optimization, and drift detection tools
+- **Time Series MCP**: Consolidated time series analysis, technical indicators, and forecasting
+- **Trading MCP**: Consolidated order execution and position management
+- **Vector Store MCP**: ChromaDB integration for vector storage and similarity search
 
 ### Infrastructure
 
-- **Redis**: Event bus and caching layer, managed through Redis MCP
-- **Vector Database**: Storage for embeddings and efficient similarity search
+- **Redis**: Event bus and caching layer
+- **ChromaDB**: Vector database for embeddings and efficient similarity search
 - **System Monitor**: Performance tracking and centralized logging
 
 ## Setup
@@ -155,10 +157,11 @@ See [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md) for detailed mode
 
 The Model Context Protocol (MCP) provides a standardized interface for models to access external tools and resources:
 
-1. **Data Sources**: MCP tools for market data from multiple providers
-2. **Analysis Tools**: MCP tools for specialized financial analysis
-3. **Execution**: MCP tools for trade execution and order management
-4. **Infrastructure**: MCP tools for database access and coordination
+1. **Consolidated Data Tools**: MCP tools for market data from multiple providers consolidated into logical groups
+2. **Consolidated Analysis Tools**: MCP tools for specialized financial analysis grouped by function
+3. **Vector Store Tools**: ChromaDB integration for efficient semantic search and RAG functionality
+4. **Execution**: MCP tools for trade execution and order management
+5. **Infrastructure**: MCP tools for database access and coordination
 
 This architecture allows for easy extension with new data sources and analysis capabilities without changing core component code.
 
@@ -197,3 +200,4 @@ This project is released under the [MIT License](LICENSE).
 - [Alpaca Trading API](https://alpaca.markets/)
 - [Polygon.io API](https://polygon.io/)
 - [OpenRouter API](https://openrouter.ai/)
+- [ChromaDB](https://www.trychroma.com/)

@@ -4,15 +4,30 @@ Yahoo Finance MCP Server
 This module implements a Model Context Protocol (MCP) server for the Yahoo Finance
 API, providing access to stock data and company information.
 """
-
-from typing import Dict, Any, Optional
+import time
 from datetime import datetime, timedelta
-import yfinance as yf
-from dotenv import load_dotenv
-load_dotenv()
-from monitoring.netdata_logger import NetdataLogger
+from typing import Dict, Any, Optional
 
+# Direct imports with graceful error handling
+import importlib
+
+# Try to import required dependencies
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class YahooFinanceMCP(BaseDataMCP):
@@ -211,6 +226,9 @@ class YahooFinanceMCP(BaseDataMCP):
         end_date = params.get("end")
 
         try:
+            # Start timing the operation
+            start_time = time.time()
+            
             ticker_obj = yf.Ticker(ticker)
 
             # If start/end dates are provided, use them instead of period
@@ -232,6 +250,10 @@ class YahooFinanceMCP(BaseDataMCP):
                 if "Date" in item and hasattr(item["Date"], "isoformat"):
                     item["Date"] = item["Date"].isoformat()
 
+            # Calculate and record operation time
+            operation_time = time.time() - start_time
+            self.logger.timing("stock_data_fetch_time_ms", operation_time * 1000)
+            
             return {
                 "ticker": ticker,
                 "period": period
@@ -240,6 +262,7 @@ class YahooFinanceMCP(BaseDataMCP):
                 "interval": interval,
                 "data_points": len(data_dict),
                 "data": data_dict,
+                "processing_time": operation_time,
             }
 
         except Exception as e:
@@ -254,6 +277,9 @@ class YahooFinanceMCP(BaseDataMCP):
             raise ValueError("Missing required parameter: ticker")
 
         try:
+            # Start timing the operation
+            start_time = time.time()
+            
             ticker_obj = yf.Ticker(ticker)
             info = ticker_obj.info
 
@@ -265,7 +291,11 @@ class YahooFinanceMCP(BaseDataMCP):
                 else:
                     clean_info[k] = str(v)
 
-            return {"ticker": ticker, "company_info": clean_info}
+            # Calculate and record operation time
+            operation_time = time.time() - start_time
+            self.logger.timing("company_info_fetch_time_ms", operation_time * 1000)
+            
+            return {"ticker": ticker, "company_info": clean_info, "processing_time": operation_time}
 
         except Exception as e:
             self.logger.error(f"Error fetching company info for {ticker}: {e}")

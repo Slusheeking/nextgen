@@ -80,3 +80,6 @@ huggingface_cache/
 prometheus/data/
 loki/data/
 grafana/data/
+
+# TA-Lib
+ta-lib/

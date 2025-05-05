@@ -8,30 +8,23 @@ This document visualizes the complete system flow of the NextGen AI Trading Syst
 graph TD
     %% Define external data sources
     DS1[Polygon REST API] -.-> DR1
-    DS2[Polygon WS API] -.-> DR2
-    DS3[Yahoo Finance] -.-> DR3
-    DS4[Reddit API] -.-> DR4
-    DS5[Unusual Whales] -.-> DR5
+    DS2[Polygon WS API] -.-> DR1
+    DS3[Yahoo Finance] -.-> DR1
+    DS4[Reddit API] -.-> DR1
+    DS5[Unusual Whales] -.-> DR1
     DS6[Alpaca API] -.-> TR1
     DS7[OpenRouter] -.-> OR1
+    DS8[ChromaDB] -.-> VS1
     
-    %% MCP Data Connectors
-    subgraph "MCP Data Tools"
-        DR1[polygon_rest_mcp.py]
-        DR2[polygon_ws_mcp.py]
-        DR3[yahoo_finance_mcp.py]
-        DR4[reddit_mcp.py]
-        DR5[unusual_whales_mcp.py]
-        TR1[alpaca_mcp.py]
-    end
-    
-    %% MCP Analysis Tools
-    subgraph "MCP Analysis Tools"
-        AT1[peak_detection_mcp.py]
-        AT2[drift_detection_mcp.py]
-        AT3[slippage_analysis_mcp.py]
-        AT4[technical_indicators_mcp.py]
-        AT5[vector_db_mcp.py]
+    %% Consolidated MCP Tools
+    subgraph "Consolidated MCP Tools"
+        DR1[financial_data_mcp.py]
+        DA1[document_analysis_mcp.py]
+        RA1[risk_analysis_mcp.py]
+        TS1[time_series_mcp.py]
+        TR1[trading_mcp.py]
+        VS1[vector_store_mcp.py]
+        FT1[financial_text_mcp.py]
     end
     
     %% Core Models
@@ -54,7 +47,7 @@ graph TD
     %% Infrastructure
     subgraph "Infrastructure"
         IN1[(Redis)]
-        IN2[(Vector DB)]
+        IN2[(ChromaDB)]
         IN3[System Monitor]
     end
     
@@ -67,40 +60,37 @@ graph TD
     
     %% Flow connections for data sources to MCP tools
     DR1 <--> DS1
-    DR2 <--> DS2
-    DR3 <--> DS3
-    DR4 <--> DS4
-    DR5 <--> DS5
+    DR1 <--> DS2
+    DR1 <--> DS3
+    DR1 <--> DS4
+    DR1 <--> DS5
     TR1 <--> DS6
+    VS1 <--> DS8
     
     %% Core model connections to MCP tools
     SS1 --> DR1
-    SS1 --> DR3
-    SS1 --> DR5
-    SS1 --> AT4
+    SS1 --> TS1
     
-    AC1 --> DR4
-    AC1 --> DR3
+    AC1 --> DR1
+    AC1 --> FT1
     
     AC2 --> DR1
-    AC2 --> DR2
-    AC2 --> AT1
-    AC2 --> AT2
-    AC2 --> AT4
+    AC2 --> TS1
+    AC2 --> RA1
     
-    AC3 --> AT5
+    AC3 --> VS1
+    AC3 --> DA1
     AC3 --> IN2
     
-    AC4 --> DR3
     AC4 --> DR1
+    AC4 --> FT1
     
-    AC5 --> AT2
-    AC5 --> AT4
+    AC5 --> RA1
+    AC5 --> TS1
     
     TR2 --> TR1
-    TR2 --> AT3
-    TR2 --> AT1
-    TR2 --> AT2
+    TR2 --> RA1
+    TR2 --> TS1
     
     %% Orchestration connections
     OR1 --> SS1
@@ -120,13 +110,10 @@ graph TD
     DM1 --> AC4
     DM1 --> AC5
     DM1 --> TR2
+    DM1 --> RA1
     
     %% Infrastructure connections
     IN1 <--> DR1
-    IN1 <--> DR2
-    IN1 <--> DR3
-    IN1 <--> DR4
-    IN1 <--> DR5
     IN1 <--> TR1
     IN1 <--> SS1
     IN1 <--> AC1
@@ -139,7 +126,7 @@ graph TD
     IN1 <--> OR1
     
     IN2 <--> AC3
-    IN2 <--> AT5
+    IN2 <--> VS1
     
     IN3 --> SS1
     IN3 --> AC1
@@ -166,9 +153,8 @@ graph TD
     classDef llm fill:#F48FB1,stroke:#880E4F,stroke-width:1px;
     
     %% Apply styles
-    class DS1,DS2,DS3,DS4,DS5,DS6,DS7 dataSource;
-    class DR1,DR2,DR3,DR4,DR5,TR1 dataConnector;
-    class AT1,AT2,AT3,AT4,AT5 analysisTools;
+    class DS1,DS2,DS3,DS4,DS5,DS6,DS7,DS8 dataSource;
+    class DR1,DA1,RA1,TS1,TR1,VS1,FT1 dataConnector;
     class SS1,AC1,AC2,AC3,AC4,AC5,DM1,TR2 model;
     class OR1 orchestration;
     class IN1,IN2,IN3 infrastructure;
@@ -180,21 +166,21 @@ graph TD
 The system operates through the following event flow sequence:
 
 1. **Market Data Collection**
-   - MCP data tools retrieve data from external sources
+   - Financial Data MCP retrieves data from external sources
    - Data is normalized and cached in Redis
    - Real-time streams are processed via WebSocket connections
 
 2. **Stock Universe Generation and Filtering**
    - `nextgen_select` creates the initial trading universe
-   - Multi-tier filtering applied using MCP technical indicators
+   - Multi-tier filtering applied using Time Series MCP
    - Selected candidates are stored in Redis for other components
 
 3. **Multi-faceted Analysis**
-   - `nextgen_sentiment_analysis` processes news and social media
-   - `nextgen_market_analysis` generates price predictions
-   - `nextgen_context_model` retrieves relevant historical context
+   - `nextgen_sentiment_analysis` processes news and social media using Financial Text MCP
+   - `nextgen_market_analysis` generates price predictions using Time Series MCP
+   - `nextgen_context_model` retrieves relevant historical context using Vector Store MCP (ChromaDB)
    - `nextgen_fundamental_analysis` evaluates company financials
-   - `nextgen_risk_assessment` calculates risk metrics
+   - `nextgen_risk_assessment` calculates risk metrics using Risk Analysis MCP
 
 4. **Decision Orchestration**
    - `nextgen_decision` integrates all analysis results
@@ -204,9 +190,9 @@ The system operates through the following event flow sequence:
 
 5. **Trade Execution and Management**
    - `nextgen_trader` determines execution strategy
-   - Connects to Alpaca via MCP tools for order execution
+   - Connects to Alpaca via Trading MCP for order execution
    - Monitors positions and manages risk
-   - Uses analysis MCP tools to evaluate execution quality
+   - Uses Risk Analysis MCP to evaluate execution quality
 
 6. **Agent Coordination**
    - `autogen_orchestrator` coordinates specialized agents
@@ -231,17 +217,19 @@ The Redis message bus enables event-driven communication between components:
 
 Redis streams are used for persistent event publishing and subscription, allowing components to process events asynchronously.
 
-## MCP Tool Integration
+## Consolidated MCP Tool Integration
 
-Model Context Protocol (MCP) provides a standardized way for models to access tools:
+Model Context Protocol (MCP) consolidates tools into logical groups for improved organization:
 
-- **Tool Registration**: Each MCP server registers available tools
-- **Tool Discovery**: Components can discover tools at runtime
-- **Tool Invocation**: Tools are called through a consistent interface
-- **Resource Access**: External resources are accessed through URI patterns
-- **Error Handling**: Standardized error responses and retry logic
+- **Financial Data MCP**: Consolidates all market data access (Polygon, Yahoo Finance, Reddit, Unusual Whales)
+- **Document Analysis MCP**: Consolidates document processing, embeddings, query reformulation, and relevance feedback
+- **Risk Analysis MCP**: Consolidates portfolio optimization, risk attribution, and confidence scoring
+- **Time Series MCP**: Consolidates technical indicators, peak detection, and pattern analysis
+- **Trading MCP**: Consolidates order execution and position management
+- **Vector Store MCP**: Provides ChromaDB integration for vector storage and similarity search
+- **Financial Text MCP**: Consolidates financial text analysis capabilities
 
-The MCP architecture allows for easy extension with new data sources and analysis capabilities without changing core component code.
+This consolidated architecture improves maintainability and reduces code duplication while maintaining a consistent interface for models to access external capabilities.
 
 ## AutoGen Agent Architecture
 
@@ -249,11 +237,36 @@ Microsoft's AutoGen framework enables multi-agent collaboration:
 
 - **Specialized Agents**: Each agent has expertise in a specific domain
 - **Group Chat**: Agents collaborate in group chats to solve problems
-- **Tool Access**: Agents access MCP tools through registered functions
+- **Tool Access**: Agents access consolidated MCP tools through registered functions
 - **Function Registration**: System functions are registered with appropriate agents
 - **Orchestration**: Manager agents direct conversation flow
 
 This architecture allows for complex reasoning across multiple domains, with each agent bringing specialized capabilities to the system.
+
+## RAG Implementation with ChromaDB
+
+The Context Model's Retrieval-Augmented Generation (RAG) workflow:
+
+1. **Document Processing**: Documents are processed by Document Analysis MCP
+   - Cleaning text, extracting metadata
+   - Chunking documents into semantic units
+   - Removing duplicates
+
+2. **Embedding Generation**: Document Analysis MCP generates embeddings for chunks
+
+3. **Vector Storage**: Vector Store MCP stores chunks, embeddings, and metadata in ChromaDB
+   - Organizes vectors into collections
+   - Handles persistence
+   - Provides filtering capabilities based on metadata
+
+4. **Retrieval**: When context is needed:
+   - Query text is embedded by Document Analysis MCP
+   - Vector Store MCP performs similarity search in ChromaDB
+   - Most relevant chunks are retrieved with metadata
+
+5. **Context Integration**: Retrieved context is integrated into the trading decision process
+   - Decision Model uses context for better-informed decisions
+   - Historical patterns are considered in current analysis
 
 ## Data Flow Rates
 
@@ -264,4 +277,5 @@ This architecture allows for complex reasoning across multiple domains, with eac
 | Analysis → Decision | 10-50 KB/event | 1-15 min |
 | Decision → Trader | 1-5 KB/event | 1-15 min |
 | System → Monitoring | 100-500 KB/min | Continuous |
+| Vector Store Calls | 1-10 MB/query | As needed |
 | LLM Requests | Variable (tokens) | As needed |

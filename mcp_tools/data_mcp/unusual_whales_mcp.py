@@ -6,14 +6,29 @@ API, providing access to options flow and unusual activity data.
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import time
-import requests
 from typing import Dict, Any, Optional
-from monitoring.netdata_logger import NetdataLogger
 
+# Direct imports with graceful error handling
+import importlib
+
+# Try to import required dependencies
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class UnusualWhalesMCP(BaseDataMCP):

@@ -34,7 +34,6 @@ import os
 import time
 import threading
 import traceback
-import json
 import psutil
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -160,9 +159,9 @@ class NetdataLogger:
             metric_type: Type of the metric (g=gauge, c=counter, ms=timing, h=histogram)
         """
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             message = f"{self.metrics_prefix}.{metric_name}:{value}|{metric_type}"
-            sock.sendto(message.encode(), (self.statsd_host, self.statsd_port))
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.sendto(message.encode(), (self.statsd_host, self.statsd_port))
             return True
         except Exception as e:
             self.error(f"Failed to send metric to Netdata: {metric_name}", 

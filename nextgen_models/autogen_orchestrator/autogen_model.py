@@ -7,10 +7,9 @@ The orchestrator coordinates various specialized agents to perform financial ana
 
 import os
 import json
-import logging
 import datetime
 import time
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -19,11 +18,11 @@ load_dotenv()
 def get_api_key(key_name: str, default: str = "") -> str:
     """
     Get API key from environment variables.
-    
+
     Args:
         key_name: Name of the API key
         default: Default value if not found
-        
+
     Returns:
         API key value
     """
@@ -35,19 +34,23 @@ def get_api_key(key_name: str, default: str = "") -> str:
         "unusual_whales": "UNUSUAL_WHALES_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "openai": "OPENAI_API_KEY",
+        "reddit_client_id": "REDDIT_CLIENT_ID",
+        "reddit_client_secret": "REDDIT_CLIENT_SECRET",
+        "reddit_user_agent": "REDDIT_USER_AGENT",
+        "fred": "FRED_API_KEY"
     }
-    
+
     env_var = key_map.get(key_name, key_name.upper())
     return os.environ.get(env_var, default)
 
 def get_env(key: str, default: Optional[str] = None) -> str:
     """
     Get environment variable.
-    
+
     Args:
         key: Environment variable name
         default: Default value if not found
-        
+
     Returns:
         Environment variable value
     """
@@ -111,7 +114,7 @@ class AutoGenOrchestrator:
         # Configuration for selection model integration
         self.max_candidates = self.config.get("selection", {}).get("max_candidates", 20)
         self.models = {}  # Will store model instances
-        
+
         init_duration = (time.time() - init_start_time) * 1000
         self.logger.timing("orchestrator.initialization_time_ms", init_duration)
 
@@ -193,13 +196,13 @@ class AutoGenOrchestrator:
                 "max_spread_pct": 0.5,
             },
         }
-        
+
         # First try to load from the specified config_path if provided
         if config_path and os.path.exists(config_path):
             try:
                 with open(config_path, "r") as f:
                     user_config = json.load(f)
-                    
+
                 # Deep merge of default and user configs
                 merged_config = default_config.copy()
                 for key, value in user_config.items():
@@ -211,20 +214,20 @@ class AutoGenOrchestrator:
                         merged_config[key] = {**default_config[key], **value}
                     else:
                         merged_config[key] = value
-                        
+
                 self.logger.info(f"Loaded configuration from {config_path}")
                 return merged_config
             except Exception as e:
                 self.logger.error(f"Error loading config from {config_path}: {e}")
                 # Fall through to standard config path
-        
+
         # If no config_path provided or it failed, try the standard location
         standard_config_path = os.path.join("config", "autogen_orchestrator", "autogen_model_config.json")
         if os.path.exists(standard_config_path):
             try:
                 with open(standard_config_path, "r") as f:
                     standard_config = json.load(f)
-                
+
                 # Deep merge of default and standard configs
                 merged_config = default_config.copy()
                 for key, value in standard_config.items():
@@ -236,12 +239,12 @@ class AutoGenOrchestrator:
                         merged_config[key] = {**default_config[key], **value}
                     else:
                         merged_config[key] = value
-                        
+
                 self.logger.info(f"Loaded configuration from {standard_config_path}")
                 return merged_config
             except Exception as e:
                 self.logger.error(f"Error loading standard config: {e}")
-        
+
         # If we get here, use default configuration
         self.logger.warning("Using default configuration")
         return default_config
@@ -460,37 +463,25 @@ class AutoGenOrchestrator:
                 )
 
         initial_prompt = f"""
+        # Trading Cycle Workflow
+
         {market_context_str}
 
         {selection_context}
 
-        We are starting a new trading cycle. Please follow this structured workflow:
+        We are starting a new trading cycle. Please follow this structured workflow by calling the appropriate functions:
 
-        1. First, the Selection Agent should review the candidates already identified by the SelectionModel and select 3-5 of the most promising stocks for further analysis.
-           - Consider technical indicators (RSI, moving averages, volatility)
-           - Consider unusual activity signals
-           - Consider relative volume and liquidity
-           - Provide detailed reasoning for each selection
+        1. **Selection:** The Selection Agent should review the candidates already identified by the SelectionModel (if any) or run a new selection cycle using `run_selection_cycle()` to identify 3-5 of the most promising stocks for further analysis. Provide detailed reasoning for each selection.
 
-        2. For each selected stock, the Data Agent should gather relevant financial data, including:
-           - Recent price movements
-           - Trading volumes
-           - Key financial metrics
-           - Support and resistance levels
+        2. **Data Gathering & Analysis:** For each selected stock, the Data Agent, NLP Agent, Forecaster Agent, and RAG Agent should gather and analyze relevant data by calling the appropriate functions registered for their respective models (e.g., `analyze_news_sentiment()`, `predict_price_movement()`, `analyze_company()`, `get_rag_context()`).
 
-        3. The NLP Agent should analyze news sentiment for each selected stock.
+        3. **Decision Making:** Based on all gathered and analyzed data, the agents should collectively decide on trading actions (buy, sell, hold) with specific quantities and reasoning. The Decision Model's `process_analysis_results()` function can be used to integrate analysis results and make decisions.
 
-        4. The Forecaster Agent should provide price predictions for each stock.
+        4. **Execution:** The Execution Agent should outline how these trades would be executed using the Trade Model's functions (e.g., `execute_trade()`).
 
-        5. The RAG Agent should provide relevant historical context about similar market conditions or company events.
+        5. **Monitoring:** The Monitoring Agent should suggest metrics to track for these positions.
 
-        6. Based on all inputs, collectively decide on trading actions (buy, sell, hold) with specific quantities and reasoning.
-
-        7. The Execution Agent should outline how these trades would be executed.
-
-        8. The Monitoring Agent should suggest metrics to track for these positions.
-
-        Selection Agent, please start by reviewing the candidates and selecting the most promising stocks for analysis.
+        Selection Agent, please start by reviewing the candidates and selecting the most promising stocks for analysis, or initiate a new selection cycle if needed.
         """
 
         # Run the group chat with the initial prompt
@@ -523,7 +514,7 @@ class AutoGenOrchestrator:
             else:
                 # Fallback to standard group chat if agents not found
                 self.logger.info("Falling back to standard group chat...")
-                
+
                 # Measure LLM call time
                 llm_call_start_time = time.time()
                 response = self.chat_manager.run(initial_prompt)
@@ -531,7 +522,7 @@ class AutoGenOrchestrator:
                 self.logger.timing("orchestrator.llm_call_duration_ms", llm_call_duration)
                 self.llm_api_call_count += 1
                 self.logger.counter("orchestrator.llm_api_call_count")
-                
+
                 self.logger.info(f"Response type: {type(response)}")
 
         except Exception as e:
@@ -787,22 +778,22 @@ class AutoGenOrchestrator:
         model_config_key = f"{model_name}_config"
         model_config = base_config.get(model_config_key, {})
 
-        # Ensure model config has necessary MCP configurations
-        mcp_configs = [
-            "alpaca_config",
-            "redis_config",
-            "polygon_rest_config",
-            "polygon_ws_config",
-            "unusual_whales_config",
-            "yahoo_finance_config",
-            "embeddings_config",
-            "vector_db_config",
-            "document_retrieval_config",
-        ]
+        # Ensure model config has necessary *consolidated* MCP configurations
+        consolidated_mcp_config_paths = {
+            "trading_config_path": "config/mcp_tools/trading_mcp_config.json",
+            "financial_data_config_path": "config/mcp_tools/financial_data_mcp_config.json",
+            "time_series_config_path": "config/mcp_tools/time_series_mcp_config.json",
+            "risk_analysis_config_path": "config/mcp_tools/risk_analysis_mcp_config.json",
+            "document_analysis_config_path": "config/mcp_tools/document_analysis_mcp_config.json",
+            "vector_store_config_path": "config/mcp_tools/vector_store_mcp_config.json",
+            "financial_text_config_path": "config/mcp_tools/financial_text_mcp_config.json",
+            "redis_config": base_config.get("redis_config") # Redis config is passed directly
+        }
 
-        for config_name in mcp_configs:
-            if config_name not in model_config and config_name in base_config:
-                model_config[config_name] = base_config.get(config_name)
+        for config_key, config_value in consolidated_mcp_config_paths.items():
+             if config_key not in model_config:
+                 model_config[config_key] = config_value
+
 
         # Pass the LLM config if not already set
         if "llm_config" not in model_config:
@@ -894,8 +885,8 @@ class AutoGenOrchestrator:
         if "decision" in self.models:
             self._register_decision_model_methods(user_proxy)
 
-        # Register MCP tool access functions
-        self._register_mcp_tool_access(user_proxy)
+        # Removed generic MCP tool access registration from orchestrator
+
 
     def _register_selection_model_methods(self, user_proxy: UserProxyAgent):
         """
@@ -941,7 +932,7 @@ class AutoGenOrchestrator:
             self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_selection_data"})
             return result
 
-        # Data gathering methods
+        # Data gathering methods (These methods internally use FinancialDataMCP)
         @register_function(
             name="get_market_data",
             description="Get initial universe of stocks",
@@ -955,6 +946,24 @@ class AutoGenOrchestrator:
             result = selection_model.get_market_data()
             duration = (time.time() - start_time) * 1000
             self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "get_market_data"})
+            return result
+
+        @register_function(
+            name="filter_by_liquidity",
+            description="Apply liquidity filters to the universe of stocks",
+            caller=selection_agent,
+            executor=user_proxy,
+            parameters={
+                "stocks": {"type": "array", "description": "List of stock dictionaries"}
+            },
+            return_type=List[Dict[str, Any]],
+        )
+        def filter_by_liquidity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            self.logger.counter("orchestrator.registered_functions", tags={"function": "filter_by_liquidity"})
+            start_time = time.time()
+            result = selection_model.filter_by_liquidity(stocks)
+            duration = (time.time() - start_time) * 1000
+            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "filter_by_liquidity"})
             return result
 
         @register_function(
@@ -997,24 +1006,6 @@ class AutoGenOrchestrator:
 
         # Filtering and scoring methods
         @register_function(
-            name="filter_by_liquidity",
-            description="Apply liquidity filters to the universe of stocks",
-            caller=selection_agent,
-            executor=user_proxy,
-            parameters={
-                "stocks": {"type": "array", "description": "List of stock dictionaries"}
-            },
-            return_type=List[Dict[str, Any]],
-        )
-        def filter_by_liquidity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            self.logger.counter("orchestrator.registered_functions", tags={"function": "filter_by_liquidity"})
-            start_time = time.time()
-            result = selection_model.filter_by_liquidity(stocks)
-            duration = (time.time() - start_time) * 1000
-            self.logger.timing("orchestrator.function_call_duration_ms", duration, tags={"function": "filter_by_liquidity"})
-            return result
-
-        @register_function(
             name="score_candidates",
             description="Score and rank the candidate stocks",
             caller=selection_agent,
@@ -1022,9 +1013,9 @@ class AutoGenOrchestrator:
             parameters={
                 "stocks": {"type": "array", "description": "List of stock dictionaries"}
             },
-            return_type=Dict[str, Any],
+            return_type=List[Dict[str, Any]], # Changed return type to List[Dict[str, Any]] as per SelectModel method
         )
-        def score_candidates(stocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        def score_candidates(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             self.logger.counter("orchestrator.registered_functions", tags={"function": "score_candidates"})
             start_time = time.time()
             result = selection_model.score_candidates(stocks)
@@ -1633,7 +1624,6 @@ class AutoGenOrchestrator:
     def _register_trade_model_methods(self, user_proxy: UserProxyAgent):
         """
         Register TradeModel methods with the user proxy agent.
-
         Args:
             user_proxy: The user proxy agent to register methods with
         """
@@ -1954,7 +1944,7 @@ class AutoGenOrchestrator:
             """
             self.logger.counter("orchestrator.registered_functions", tags={"function": "use_mcp_tool"})
             start_time = time.time()
-            
+
             # Get the MCP server instance
             if "selection" in self.models:
                 selection_model = self.models["selection"]
@@ -2022,7 +2012,7 @@ class AutoGenOrchestrator:
             """
             self.logger.counter("orchestrator.registered_functions", tags={"function": "list_mcp_tools"})
             start_time = time.time()
-            
+
             # Get the MCP server instance
             if "selection" in self.models:
                 selection_model = self.models["selection"]
@@ -2081,28 +2071,92 @@ class AutoGenOrchestrator:
         Returns:
             Execution results
         """
-        # This would connect to the execution model and broker API
-        # For now, it's just a placeholder
-        self.logger.info(f"Would execute {len(decisions)} trades")
-
+        self.logger.info(f"Executing {len(decisions)} trades")
+        
         execution_results = {
             "total": len(decisions),
             "success": 0,
             "failed": 0,
             "details": [],
         }
-
-        # In a real implementation, this would call the trade model
-        # from nextgen_models.nextgen_trader.trade_model import TradeModel
-        # trade_model = TradeModel()
-        # for decision in decisions:
-        #     result = trade_model.execute_trade(decision)
-        #     execution_results["details"].append(result)
-        #     if result.get("success"):
-        #         execution_results["success"] += 1
-        #     else:
-        #         execution_results["failed"] += 1
-
+        
+        # Check if we have a trade model available
+        if hasattr(self, "models") and "trade" in self.models:
+            trade_model = self.models["trade"]
+            
+            for decision in decisions:
+                try:
+                    # Extract decision details
+                    symbol = decision.get("ticker")
+                    action = decision.get("action", "").lower()
+                    quantity = decision.get("quantity", 0)
+                    
+                    if not symbol or not action or quantity <= 0:
+                        self.logger.warning(f"Invalid trade decision: {decision}")
+                        execution_results["details"].append({
+                            "decision": decision,
+                            "success": False,
+                            "error": "Invalid decision parameters"
+                        })
+                        execution_results["failed"] += 1
+                        continue
+                    
+                    # Execute the trade
+                    self.logger.info(f"Executing trade: {action} {quantity} shares of {symbol}")
+                    start_time = time.time()
+                    
+                    # Default to market order
+                    result = trade_model.execute_trade(
+                        symbol=symbol,
+                        action=action,
+                        quantity=quantity,
+                        order_type="market"
+                    )
+                    
+                    duration = (time.time() - start_time) * 1000
+                    self.logger.timing("orchestrator.trade_execution_time_ms", duration, 
+                                      tags={"symbol": symbol, "action": action})
+                    
+                    execution_results["details"].append({
+                        "decision": decision,
+                        "result": result,
+                        "success": result.get("success", False)
+                    })
+                    
+                    if result.get("success", False):
+                        execution_results["success"] += 1
+                        self.logger.info(f"Successfully executed trade for {symbol}")
+                        self.logger.counter("orchestrator.successful_trades", 
+                                           tags={"symbol": symbol, "action": action})
+                    else:
+                        execution_results["failed"] += 1
+                        self.logger.warning(f"Failed to execute trade for {symbol}: {result.get('error', 'Unknown error')}")
+                        self.logger.counter("orchestrator.failed_trades", 
+                                           tags={"symbol": symbol, "action": action, "reason": result.get('error', 'unknown')})
+                
+                except Exception as e:
+                    self.logger.error(f"Error executing trade for decision {decision}: {e}")
+                    self.logger.exception("Exception details:")
+                    execution_results["details"].append({
+                        "decision": decision,
+                        "success": False,
+                        "error": str(e)
+                    })
+                    execution_results["failed"] += 1
+                    self.logger.counter("orchestrator.trade_execution_errors")
+        else:
+            self.logger.warning("No trade model available. Trades will not be executed.")
+            for decision in decisions:
+                execution_results["details"].append({
+                    "decision": decision,
+                    "success": False,
+                    "error": "No trade model available"
+                })
+                execution_results["failed"] += 1
+        
+        # Log execution summary
+        self.logger.info(f"Trade execution summary: {execution_results['success']} successful, {execution_results['failed']} failed")
+        
         return execution_results
 
 

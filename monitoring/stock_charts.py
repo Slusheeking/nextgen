@@ -17,13 +17,11 @@ Dependencies:
 """
 
 import os
-import json
 import time
 import datetime
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import requests
 from monitoring.netdata_logger import NetdataLogger
 
 class StockChartGenerator:

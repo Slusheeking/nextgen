@@ -14,7 +14,6 @@ import time
 import logging
 from logging.handlers import RotatingFileHandler
 import uvicorn
-import subprocess
 
 # Add the parent directory to the path so we can import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

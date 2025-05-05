@@ -5,20 +5,27 @@ This module provides the base class for all data-focused MCP (Model Context Prot
 servers. It establishes common functionality for data fetching, caching, error handling,
 and endpoint selection.
 """
-
 import time
 import json
+import importlib
 from typing import Dict, List, Any, Optional, Union
 from abc import abstractmethod
-import pandas as pd
+
+# Direct imports instead of dynamic loading
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+    print("Warning: Pandas not found or import failed.")
+
 from dotenv import load_dotenv
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
+from mcp_tools.base_mcp_server import BaseMCPServer
 
 # Load environment variables
 load_dotenv()
-
-from mcp_tools.base_mcp_server import BaseMCPServer
-from monitoring.netdata_logger import NetdataLogger
-
 
 
 class BaseDataMCP(BaseMCPServer):
@@ -154,7 +161,10 @@ class BaseDataMCP(BaseMCPServer):
 
                 # Calculate fetch time
                 elapsed = time.time() - start_time
-
+                
+                # Add timing metrics to monitor latency
+                self.logger.timing(f"data_fetch_time_ms.{endpoint}", elapsed * 1000)
+                
                 # Track successful request in stats
                 self._update_endpoint_stats(endpoint, "success", elapsed)
 
@@ -408,7 +418,7 @@ class BaseDataMCP(BaseMCPServer):
 
     def convert_to_dataframe(
         self, data: Union[Dict[str, Any], List[Dict[str, Any]]]
-    ) -> pd.DataFrame:
+    ) -> 'pd.DataFrame':
         """
         Convert API response data to pandas DataFrame for easier analysis.
 

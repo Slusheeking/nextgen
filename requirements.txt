@@ -40,6 +40,7 @@ anthropic>=0.5.0                   # Anthropic Claude API client
 redis>=4.5.0                       # Redis client for caching and pub/sub
 influxdb>=5.3.1                    # InfluxDB client
 influxdb-client>=1.36.0            # Modern InfluxDB client
+chromadb-client>=0.4.24             # ChromaDB vector store client
 # Removed prometheus-client in favor of Netdata
 psutil>=5.9.0                      # System metrics collection
 gputil>=1.4.0                      # GPU metrics (optional)

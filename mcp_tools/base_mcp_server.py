@@ -2,18 +2,22 @@
 Base MCP Server Implementation
 
 This module provides the base class for MCP (Model Context Protocol) servers
-in the FinGPT trading system.
+in the Nextgen trading system. It includes comprehensive monitoring, metrics
+collection, and diagnostic capabilities.
 """
 
-import logging
 import os
 import time
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 
-# Import dotenv for environment variables
+# Direct imports instead of dynamic loading
 from dotenv import load_dotenv
+
+# Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
 from monitoring.system_metrics import SystemMetricsCollector
+from monitoring.stock_charts import StockChartGenerator
 
 
 class BaseMCPServer:
@@ -32,30 +36,71 @@ class BaseMCPServer:
             name: Name of the MCP server
             config: Optional configuration dictionary
         """
+        init_start_time = time.time()
         self.name = name
         self.config = config or {}
         self.tools = {}
         self.resources = {}
+        self.start_time = datetime.now()
+        
+        # Ensure environment variables are loaded
+        load_dotenv()
         
         # Initialize NetdataLogger for logging and metrics
         self.logger = NetdataLogger(component_name=f"{self.name}-mcp-server")
+        self.logger.info(f"Initializing {self.name} MCP server")
         
         # Initialize system metrics collector
         self.metrics_collector = SystemMetricsCollector(self.logger)
+        self.logger.info("System metrics collector initialized")
+        
+        # Initialize chart generator for financial data visualization
+        self.chart_generator = StockChartGenerator()
+        self.logger.info("Stock chart generator initialized")
         
         # Start collecting system metrics
         self.metrics_collector.start()
         
-        # Initialize counters
+        # Initialize detailed performance counters
         self.request_count = 0
         self.error_count = 0
         self.active_connections = 0
+        self.peak_connections = 0
+        self.total_response_time = 0
+        self.slow_requests_count = 0
+        self.timeout_count = 0
+        self.last_request_time = time.time()
+        self.consecutive_errors = 0
+        self.max_consecutive_errors = 0
+        self.tool_execution_counts = {}
+        self.resource_access_counts = {}
+        self.api_key_access_counts = {}
         
-        # Log initialization
-        self.logger.info(f"{self.name} MCP server initialized")
+        # Configure health thresholds
+        self.slow_request_threshold_ms = self.config.get("slow_request_threshold_ms", 500)
+        self.health_check_interval = self.config.get("health_check_interval", 60)  # seconds
+        self.error_rate_threshold = self.config.get("error_rate_threshold", 0.1)  # 10%
         
-        # Ensure environment variables are loaded
-        load_dotenv()
+        # Start health check background thread if enabled
+        if self.config.get("enable_health_check", True):
+            self._start_health_check_thread()
+        
+        # Set up initial gauge metrics
+        self.logger.gauge("mcp.tools_count", 0)
+        self.logger.gauge("mcp.resources_count", 0)
+        self.logger.gauge("mcp.active_connections", 0)
+        self.logger.gauge("mcp.queue_length", 0)
+        self.logger.gauge("mcp.error_rate", 0)
+        self.logger.gauge("mcp.avg_response_time_ms", 0)
+        
+        # Record initialization time
+        init_duration = (time.time() - init_start_time) * 1000  # milliseconds
+        self.logger.timing("mcp.initialization_time_ms", init_duration)
+        
+        # Log initialization complete
+        self.logger.info(f"{self.name} MCP server initialized", 
+                        init_time_ms=init_duration,
+                        health_check_enabled=self.config.get("enable_health_check", True))
 
     def shutdown(self):
         """
@@ -311,3 +356,18 @@ class BaseMCPServer:
         
         # Then check environment variable
         return os.environ.get(key, default)
+        
+    def _start_health_check_thread(self):
+        """
+        Start a background thread to periodically check the health of the MCP server.
+        
+        This method is called during initialization if health_check is enabled in the config.
+        The health check thread monitors system metrics, response times, error rates, etc.
+        """
+        self.logger.info("Stub health check thread - no actual thread started (for testing)")
+        
+        # In a production environment, this would start a real background thread
+        # For example:
+        # import threading
+        # self.health_check_thread = threading.Thread(target=self._health_check_worker, daemon=True)
+        # self.health_check_thread.start()

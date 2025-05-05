@@ -19,29 +19,22 @@ from typing import Dict, List, Any, Optional
 from monitoring.netdata_logger import NetdataLogger
 from monitoring.stock_charts import StockChartGenerator
 
-# For Redis integration
+# MCP tools (Consolidated)
+from mcp_tools.financial_data_mcp.financial_data_mcp import FinancialDataMCP
+from mcp_tools.risk_analysis_mcp.risk_analysis_mcp import RiskAnalysisMCP
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
-
-# MCP tools for fundamental analysis
-from mcp_tools.analysis_mcp.fundamental_scoring_mcp import FundamentalScoringMCP
-from mcp_tools.analysis_mcp.growth_analysis_mcp import GrowthAnalysisMCP
-from mcp_tools.analysis_mcp.risk_metrics_mcp import RiskMetricsMCP
-from mcp_tools.data_mcp.polygon_rest_mcp import PolygonRestMCP
-from mcp_tools.data_mcp.yahoo_finance_mcp import YahooFinanceMCP
 
 # AutoGen imports
 from autogen import Agent, AssistantAgent, UserProxyAgent, register_function
-
-
 
 
 class FundamentalAnalysisModel:
     """
     Analyzes company fundamentals using financial statements and key metrics.
 
-    This model integrates FundamentalScoringMCP and GrowthAnalysisMCP to provide
-    comprehensive fundamental analysis, including ratio calculation, financial
-    health scoring, growth analysis, and earnings report processing.
+    This model integrates FinancialDataMCP and RiskAnalysisMCP to provide
+    comprehensive fundamental analysis, including data retrieval, ratio calculation,
+    financial health scoring, growth analysis, and earnings report processing.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -50,15 +43,16 @@ class FundamentalAnalysisModel:
 
         Args:
             config: Configuration dictionary, expected to contain:
-                - fundamental_scoring_config: Config for FundamentalScoringMCP
-                - growth_analysis_config: Config for GrowthAnalysisMCP
-                - risk_metrics_config: Config for RiskMetricsMCP
-                - redis_config: Config for RedisMCP
-                - polygon_rest_config: Config for PolygonRestMCP
-                - yahoo_finance_config: Config for YahooFinanceMCP
+                - financial_data_config: Config for FinancialDataMCP
+                - risk_analysis_config: Config for RiskAnalysisMCP
                 - llm_config: Configuration for AutoGen LLM
                 - analysis_interval: Interval for periodic analysis in seconds (default: 86400)
                 - max_companies: Maximum number of companies to analyze (default: 50)
+                - risk_config: Configuration for risk assessment, including:
+                    - risk_per_trade: Maximum risk percentage per trade (default: 0.005 or 0.5%)
+                    - var_confidence_level: VaR confidence level (default: 0.95 or 95%)
+                    - historical_window: Number of days for historical VaR (default: 252)
+                    - risk_free_rate: Annual risk-free rate (default: 0.02 or 2%)
         """
         init_start_time = time.time()
         # Initialize NetdataLogger for monitoring and logging
@@ -75,6 +69,7 @@ class FundamentalAnalysisModel:
         self.mcp_tool_call_count = 0
         self.mcp_tool_error_count = 0
         self.total_analysis_cycles = 0 # Total times run_periodic_analysis completes a cycle
+
 
 
         # Load configuration - if no config provided, try to load from standard location
@@ -97,19 +92,20 @@ class FundamentalAnalysisModel:
         else:
             self.config = config
 
-        # Initialize MCP clients
-        self.fundamental_scoring_mcp = FundamentalScoringMCP(
-            self.config.get("fundamental_scoring_config")
+        # Initialize Consolidated MCP clients
+        # FinancialDataMCP handles data retrieval (Polygon, Yahoo)
+        self.financial_data_mcp = FinancialDataMCP(
+            self.config.get("financial_data_config")
         )
-        self.growth_analysis_mcp = GrowthAnalysisMCP(
-            self.config.get("growth_analysis_config")
+        # RiskAnalysisMCP handles risk metrics and potentially other analysis
+        self.risk_analysis_mcp = RiskAnalysisMCP(
+             self.config.get("risk_analysis_config")
         )
-        self.risk_metrics_mcp = RiskMetricsMCP(self.config.get("risk_metrics_config"))
+
+        # Initialize Redis MCP client
         self.redis_mcp = RedisMCP(self.config.get("redis_config"))
-        self.polygon_rest_mcp = PolygonRestMCP(self.config.get("polygon_rest_config"))
-        self.yahoo_finance_mcp = YahooFinanceMCP(
-            self.config.get("yahoo_finance_config")
-        )
+        self.redis_client = self.redis_mcp # Alias for backward compatibility if needed
+
 
         # Configuration parameters
         self.analysis_interval = self.config.get(
@@ -117,7 +113,7 @@ class FundamentalAnalysisModel:
         )  # Default: 1 day
         self.max_companies = self.config.get("max_companies", 50)
 
-        # Redis keys for data storage
+        # Redis keys for data storage and inter-model communication
         self.redis_keys = {
             "fundamental_data": "fundamental:data:",  # Prefix for overall fundamental data per symbol
             "financial_statements": "fundamental:statements:",  # Prefix for financial statements
@@ -125,11 +121,21 @@ class FundamentalAnalysisModel:
             "financial_health": "fundamental:health:",  # Prefix for financial health scores
             "growth_analysis": "fundamental:growth:",  # Prefix for growth analysis
             "earnings_reports": "fundamental:earnings:",  # Prefix for earnings reports
-            "latest_analysis": "fundamental:latest_analysis",  # Latest analysis timestamp
-            "selection_data": "selection:data",  # Selection model data
-            "selection_feedback": "fundamental:selection_feedback",  # Feedback to selection model
-            "decision_data": "decision:data",  # Decision model data
+            "latest_analysis_timestamp": "fundamental:latest_analysis_timestamp",  # Latest analysis timestamp (single key)
+            "selection_candidates": "selection:candidates",  # Selection model candidates (list or set)
+            "selection_feedback_stream": "fundamental:selection_feedback",  # Feedback to selection model (stream)
+            "fundamental_analysis_reports_stream": "model:fundamental:insights",  # Stream for publishing fundamental analysis reports
         }
+
+        # Ensure Redis streams exist (optional, but good practice)
+        try:
+            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_feedback_stream"]})
+            self.logger.info(f"Ensured Redis stream '{self.redis_keys['selection_feedback_stream']}' exists.")
+            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["fundamental_analysis_reports_stream"]})
+            self.logger.info(f"Ensured Redis stream '{self.redis_keys['fundamental_analysis_reports_stream']}' exists.")
+        except Exception as e:
+            self.logger.warning(f"Could not ensure Redis streams exist: {e}")
+
 
         # Initialize AutoGen integration
         self.llm_config = self._get_llm_config()
@@ -139,13 +145,13 @@ class FundamentalAnalysisModel:
         self._register_functions()
 
         self.logger.info("FundamentalAnalysisModel initialized.")
+        init_duration = (time.time() - init_start_time) * 1000
+        self.logger.timing("fundamental_analysis_model.initialization_time_ms", init_duration)
+
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
         Get LLM configuration for AutoGen.
-
-        Returns:
-            LLM configuration dictionary
         """
         llm_config = self.config.get("llm_config", {})
 
@@ -174,9 +180,6 @@ class FundamentalAnalysisModel:
     def _setup_agents(self) -> Dict[str, Agent]:
         """
         Initialize AutoGen agents for fundamental analysis.
-
-        Returns:
-            Dictionary of AutoGen agents
         """
         agents = {}
 
@@ -239,7 +242,7 @@ class FundamentalAnalysisModel:
         def get_market_data(symbol: str) -> Dict[str, Any]:
             return self.get_market_data(symbol)
 
-        # Register fundamental scoring functions
+        # Register fundamental scoring functions (now part of RiskAnalysisMCP)
         @register_function(
             name="calculate_financial_ratios",
             description="Calculate financial ratios from financial statements",
@@ -249,7 +252,12 @@ class FundamentalAnalysisModel:
         def calculate_financial_ratios(
             financial_data: Dict[str, Any], ratios: Optional[List[str]] = None
         ) -> Dict[str, Any]:
-            return self.fundamental_scoring_mcp.calculate_ratios(financial_data, ratios)
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("calculate_financial_ratios", {"financial_data": financial_data, "ratios": ratios})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="score_financial_health",
@@ -260,7 +268,12 @@ class FundamentalAnalysisModel:
         def score_financial_health(
             ratios: Dict[str, float], sector: Optional[str] = None
         ) -> Dict[str, Any]:
-            return self.fundamental_scoring_mcp.score_financial_health(ratios, sector)
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("score_financial_health", {"ratios": ratios, "sector": sector})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="calculate_value_metrics",
@@ -271,9 +284,12 @@ class FundamentalAnalysisModel:
         def calculate_value_metrics(
             market_data: Dict[str, Any], financial_data: Dict[str, Any]
         ) -> Dict[str, Any]:
-            return self.fundamental_scoring_mcp.calculate_value_metrics(
-                market_data, financial_data
-            )
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("calculate_value_metrics", {"market_data": market_data, "financial_data": financial_data})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="compare_to_sector",
@@ -282,9 +298,14 @@ class FundamentalAnalysisModel:
             executor=user_proxy,
         )
         def compare_to_sector(ratios: Dict[str, float], sector: str) -> Dict[str, Any]:
-            return self.fundamental_scoring_mcp.compare_to_sector(ratios, sector)
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("compare_to_sector", {"ratios": ratios, "sector": sector})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
-        # Register growth analysis functions
+        # Register growth analysis functions (now part of RiskAnalysisMCP)
         @register_function(
             name="calculate_growth_rates",
             description="Calculate growth rates from historical financial data",
@@ -294,9 +315,12 @@ class FundamentalAnalysisModel:
         def calculate_growth_rates(
             financial_data: Dict[str, Any], metrics: Optional[List[str]] = None
         ) -> Dict[str, Any]:
-            return self.growth_analysis_mcp.calculate_growth_rates(
-                financial_data, metrics
-            )
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("calculate_growth_rates", {"financial_data": financial_data, "metrics": metrics})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="analyze_growth_trends",
@@ -305,7 +329,12 @@ class FundamentalAnalysisModel:
             executor=user_proxy,
         )
         def analyze_growth_trends(growth_rates: Dict[str, Any]) -> Dict[str, Any]:
-            return self.growth_analysis_mcp.analyze_growth_trends(growth_rates)
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("analyze_growth_trends", {"growth_rates": growth_rates})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="score_growth_quality",
@@ -318,9 +347,12 @@ class FundamentalAnalysisModel:
             trends: Optional[Dict[str, Any]] = None,
             sector: Optional[str] = None,
         ) -> Dict[str, Any]:
-            return self.growth_analysis_mcp.score_growth_quality(
-                growth_rates, trends, sector
-            )
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("score_growth_quality", {"growth_rates": growth_rates, "trends": trends, "sector": sector})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
             name="compare_to_sector_growth",
@@ -331,9 +363,12 @@ class FundamentalAnalysisModel:
         def compare_to_sector_growth(
             growth_rates: Dict[str, Any], sector: str
         ) -> Dict[str, Any]:
-            return self.growth_analysis_mcp.compare_to_sector_growth(
-                growth_rates, sector
-            )
+            # Call the tool on RiskAnalysisMCP
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool("compare_to_sector_growth", {"growth_rates": growth_rates, "sector": sector})
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         # Register earnings report functions
         @register_function(
@@ -408,68 +443,42 @@ class FundamentalAnalysisModel:
         user_proxy = self.agents["user_proxy"]
         fundamental_assistant = self.agents["fundamental_assistant"]
 
-        # Define MCP tool access functions
+        # Define MCP tool access functions for consolidated MCPs
         @register_function(
-            name="use_fundamental_scoring_tool",
-            description="Use a tool provided by the Fundamental Scoring MCP server",
+            name="use_financial_data_tool",
+            description="Use a tool provided by the Financial Data MCP server (for financial statements, market data, earnings)",
             caller=fundamental_assistant,
             executor=user_proxy,
         )
-        def use_fundamental_scoring_tool(
+        def use_financial_data_tool(
             tool_name: str, arguments: Dict[str, Any]
         ) -> Any:
-            return self.fundamental_scoring_mcp.call_tool(tool_name, arguments)
+            self.mcp_tool_call_count += 1
+            result = self.financial_data_mcp.call_tool(tool_name, arguments)
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
         @register_function(
-            name="use_growth_analysis_tool",
-            description="Use a tool provided by the Growth Analysis MCP server",
+            name="use_risk_analysis_tool",
+            description="Use a tool provided by the Risk Analysis MCP server (for ratios, health, growth, value metrics)",
             caller=fundamental_assistant,
             executor=user_proxy,
         )
-        def use_growth_analysis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.growth_analysis_mcp.call_tool(tool_name, arguments)
+        def use_risk_analysis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+            self.mcp_tool_call_count += 1
+            result = self.risk_analysis_mcp.call_tool(tool_name, arguments)
+            if result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+            return result
 
-        @register_function(
-            name="use_risk_metrics_tool",
-            description="Use a tool provided by the Risk Metrics MCP server",
-            caller=fundamental_assistant,
-            executor=user_proxy,
-        )
-        def use_risk_metrics_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.risk_metrics_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_redis_tool",
-            description="Use a tool provided by the Redis MCP server",
-            caller=fundamental_assistant,
-            executor=user_proxy,
-        )
-        def use_redis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.redis_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_polygon_rest_tool",
-            description="Use a tool provided by the Polygon REST MCP server",
-            caller=fundamental_assistant,
-            executor=user_proxy,
-        )
-        def use_polygon_rest_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.polygon_rest_mcp.call_tool(tool_name, arguments)
-
-        @register_function(
-            name="use_yahoo_finance_tool",
-            description="Use a tool provided by the Yahoo Finance MCP server",
-            caller=fundamental_assistant,
-            executor=user_proxy,
-        )
-        def use_yahoo_finance_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
-            return self.yahoo_finance_mcp.call_tool(tool_name, arguments)
+        # Old MCP tool access functions removed
 
     def get_financial_statements(
         self, symbol: str, statement_type: str = "all", period: str = "annual"
     ) -> Dict[str, Any]:
         """
-        Get financial statements for a company.
+        Get financial statements for a company using FinancialDataMCP and cache in Redis.
 
         Args:
             symbol: Stock symbol
@@ -482,66 +491,64 @@ class FundamentalAnalysisModel:
         try:
             # Check if we have cached data in Redis
             cache_key = f"{self.redis_keys['financial_statements']}{symbol}:{period}"
-            cached_data = self.redis_mcp.get_json(cache_key)
+            self.mcp_tool_call_count += 1
+            cached_data_result = self.redis_mcp.call_tool("get_json", {"key": cache_key})
+            cached_data = cached_data_result.get("value") if cached_data_result and not cached_data_result.get("error") else None
 
             if cached_data:
-                #
-                # Check if data is fresh (less than 1 day old for annual, 6
-                # hours for quarterly)
                 last_updated = cached_data.get("timestamp")
                 if last_updated:
-                    last_updated_dt = datetime.fromisoformat(last_updated)
-                    max_age = (
-                        timedelta(days=1) if period == "annual" else timedelta(hours=6)
-                    )
-                    if datetime.now() - last_updated_dt < max_age:
-                        # Filter by statement type if needed
-                        if statement_type != "all":
-                            return {statement_type: cached_data.get(statement_type, {})}
-                        return cached_data
+                    try:
+                        last_updated_dt = datetime.fromisoformat(last_updated)
+                        # Cache expiration logic (1 day for annual, 6 hours for quarterly)
+                        max_age = (
+                            timedelta(days=1) if period == "annual" else timedelta(hours=6)
+                        )
+                        if datetime.now() - last_updated_dt < max_age:
+                            self.logger.info(f"Returning cached financial statements for {symbol}:{period}")
+                            if statement_type != "all":
+                                return {statement_type: cached_data.get(statement_type, {})}
+                            return cached_data
+                    except ValueError:
+                        self.logger.warning(f"Invalid timestamp format in cached data for {symbol}:{period}")
 
-            # Fetch data from Yahoo Finance
-            statements = {}
 
-            if statement_type in ["income", "all"]:
-                income_statement = self.yahoo_finance_mcp.get_income_statement(
-                    symbol, period
-                )
-                if income_statement and not income_statement.get("error"):
-                    statements["income_statement"] = income_statement
+            # Fetch data using FinancialDataMCP
+            # Assuming FinancialDataMCP has a tool like 'get_financial_statements'
+            self.mcp_tool_call_count += 1
+            statements_result = self.financial_data_mcp.call_tool(
+                "get_financial_statements",
+                {"symbol": symbol, "statement_type": statement_type, "period": period}
+            )
 
-            if statement_type in ["balance", "all"]:
-                balance_sheet = self.yahoo_finance_mcp.get_balance_sheet(symbol, period)
-                if balance_sheet and not balance_sheet.get("error"):
-                    statements["balance_sheet"] = balance_sheet
+            if statements_result and not statements_result.get("error"):
+                statements = statements_result.get("statements", {}) # Assuming 'statements' key in result
 
-            if statement_type in ["cash_flow", "all"]:
-                cash_flow = self.yahoo_finance_mcp.get_cash_flow(symbol, period)
-                if cash_flow and not cash_flow.get("error"):
-                    statements["cash_flow"] = cash_flow
-
-            if statements:
                 # Cache in Redis
-                statements["timestamp"] = datetime.now().isoformat()
-                statements["symbol"] = symbol
-                statements["period"] = period
+                if statements:
+                    statements["timestamp"] = datetime.now().isoformat()
+                    statements["symbol"] = symbol
+                    statements["period"] = period
+                    self.mcp_tool_call_count += 1
+                    self.redis_mcp.call_tool(
+                        "set_json",
+                        {"key": cache_key, "value": statements, "expiry": 86400} # 1 day expiration for simplicity, could be dynamic
+                    )
 
-                self.redis_mcp.set_json(
-                    cache_key, statements, ex=86400
-                )  # 1 day expiration
-
-                # Filter by statement type if needed
-                if statement_type != "all":
-                    return {statement_type: statements.get(statement_type, {})}
+                # Filter by statement type if needed (already handled by tool?)
+                # if statement_type != "all":
+                #     return {statement_type: statements.get(statement_type, {})}
                 return statements
             else:
-                self.logger.error(f"Error fetching financial statements for {symbol}")
+                self.mcp_tool_error_count += 1
+                self.logger.error(f"Error fetching financial statements for {symbol}: {statements_result.get('error') if statements_result else 'Unknown error'}")
                 return {
-                    "error": "Failed to fetch financial statements",
+                    "error": statements_result.get('error', 'Failed to fetch financial statements') if statements_result else 'Failed to fetch financial statements',
                     "symbol": symbol,
                 }
 
         except Exception as e:
+            self.mcp_tool_error_count += 1
             self.logger.error(
                 f"Error in get_financial_statements for {symbol}: {e}", exc_info=True
             )
@@ -549,35 +556,32 @@ class FundamentalAnalysisModel:
 
     def get_market_data(self, symbol: str) -> Dict[str, Any]:
         """
-        Get market data for a company.
-
-        Args:
-            symbol: Stock symbol
-
-        Returns:
-            Dictionary with market data
+        Get market data for a company using FinancialDataMCP.
         """
         try:
-            # Fetch data from Yahoo Finance
-            quote = self.yahoo_finance_mcp.get_quote(symbol)
+            # Fetch data using FinancialDataMCP
+            # Assuming FinancialDataMCP has a tool like 'get_market_data' or 'get_quote'
+            self.mcp_tool_call_count += 1
+            market_data_result = self.financial_data_mcp.call_tool("get_market_data", {"symbol": symbol}) # Or "get_quote"
 
-            if quote and not quote.get("error"):
-                market_data = {
-                    "symbol": symbol,
-                    "price": quote.get("regularMarketPrice"),
-                    "market_cap": quote.get("marketCap"),
-                    "shares_outstanding": quote.get("sharesOutstanding"),
-                    "pe_ratio": quote.get("trailingPE"),
-                    "forward_pe": quote.get("forwardPE"),
-                    "dividend_yield": quote.get("dividendYield"),
-                    "timestamp": datetime.now().isoformat(),
-                }
-                return market_data
+            if market_data_result and not market_data_result.get("error"):
+                 # Assuming the result structure is compatible or can be mapped
+                 # Example mapping if needed:
+                 # market_data = {
+                 #     "symbol": symbol,
+                 #     "price": market_data_result.get("price"),
+                 #     "market_cap": market_data_result.get("market_cap"),
+                 #     # ... other fields
+                 #     "timestamp": datetime.now().isoformat(),
+                 # }
+                 return market_data_result # Return directly if structure is fine
             else:
-                self.logger.error(f"Error fetching market data for {symbol}")
-                return {"error": "Failed to fetch market data", "symbol": symbol}
+                self.mcp_tool_error_count += 1
+                self.logger.error(f"Error fetching market data for {symbol}: {market_data_result.get('error') if market_data_result else 'Unknown error'}")
+                return {"error": market_data_result.get('error', 'Failed to fetch market data') if market_data_result else 'Failed to fetch market data', "symbol": symbol}
 
         except Exception as e:
+            self.mcp_tool_error_count += 1
             self.logger.error(
                 f"Error in get_market_data for {symbol}: {e}", exc_info=True
             )
@@ -589,7 +593,7 @@ class FundamentalAnalysisModel:
         historical_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Analyze an earnings report.
+        Analyze an earnings report using RiskAnalysisMCP and store in Redis.
 
         Args:
             report_data: Dictionary containing earnings report data
@@ -599,57 +603,58 @@ class FundamentalAnalysisModel:
             Dictionary with earnings report analysis
         """
         try:
-            # Use GrowthAnalysisMCP to analyze the earnings report
-            analysis = self.growth_analysis_mcp.analyze_earnings_report(
-                report_data, historical_data
+            # Use RiskAnalysisMCP to analyze the earnings report
+            # Assuming RiskAnalysisMCP has a tool like 'analyze_earnings_report'
+            self.mcp_tool_call_count += 1
+            analysis_result = self.risk_analysis_mcp.call_tool(
+                "analyze_earnings_report",
+                {"report_data": report_data, "historical_data": historical_data}
             )
 
-            # Enhance with additional fundamental analysis
-            if historical_data:
-                # Calculate financial ratios for the current report
-                current_ratios = self.fundamental_scoring_mcp.calculate_ratios(
-                    report_data
-                )
+            # Enhance with additional fundamental analysis (now handled by RiskAnalysisMCP tool)
+            # if historical_data:
+            #     current_ratios = self.fundamental_scoring_mcp.calculate_ratios(report_data)
+            #     historical_ratios = self.fundamental_scoring_mcp.calculate_ratios(historical_data)
+            #     ratio_changes = {}
+            #     for ratio, value in current_ratios.get("ratios", {}).items():
+            #         historical_value = historical_ratios.get("ratios", {}).get(ratio)
+            #         if value is not None and historical_value is not None:
+            #             ratio_changes[ratio] = {
+            #                 "current": value, "previous": historical_value, "change": value - historical_value,
+            #                 "change_pct": ((value / historical_value) - 1) * 100 if historical_value != 0 else None,
+            #             }
+            #     analysis_result["ratio_changes"] = ratio_changes
 
-                # Calculate financial ratios for historical data
-                historical_ratios = self.fundamental_scoring_mcp.calculate_ratios(
-                    historical_data
-                )
-
-                # Compare ratios
-                ratio_changes = {}
-                for ratio, value in current_ratios.get("ratios", {}).items():
-                    historical_value = historical_ratios.get("ratios", {}).get(ratio)
-                    if value is not None and historical_value is not None:
-                        ratio_changes[ratio] = {
-                            "current": value,
-                            "previous": historical_value,
-                            "change": value - historical_value,
-                            "change_pct": ((value / historical_value) - 1) * 100
-                            if historical_value != 0
-                            else None,
-                        }
-
-                # Add ratio changes to analysis
-                analysis["ratio_changes"] = ratio_changes
 
             # Store in Redis
-            if "symbol" in report_data:
-                symbol = report_data["symbol"]
+            if analysis_result and "symbol" in analysis_result: # Use analysis_result as it should contain symbol
+                symbol = analysis_result["symbol"]
                 cache_key = f"{self.redis_keys['earnings_reports']}{symbol}"
-                self.redis_mcp.set_json(
-                    cache_key, analysis, ex=86400
-                )  # 1 day expiration
+                self.mcp_tool_call_count += 1
+                self.redis_mcp.call_tool(
+                    "set_json",
+                    {"key": cache_key, "value": analysis_result, "expiry": 86400} # 1 day expiration
+                )
+                self.logger.info(f"Stored earnings report analysis for {symbol} in Redis.")
 
-            return analysis
+
+            if analysis_result and not analysis_result.get("error"):
+                 return analysis_result
+            else:
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Error analyzing earnings report: {analysis_result.get('error') if analysis_result else 'Unknown error'}")
+                 return {"error": analysis_result.get('error', 'Failed to analyze earnings report') if analysis_result else 'Failed to analyze earnings report'}
+
 
         except Exception as e:
+            self.mcp_tool_error_count += 1
             self.logger.error(f"Error analyzing earnings report: {e}", exc_info=True)
             return {"error": str(e)}
 
+
     def get_latest_earnings(self, symbol: str) -> Dict[str, Any]:
         """
-        Get the latest earnings report for a company.
+        Get the latest earnings report for a company using FinancialDataMCP and cache in Redis.
 
         Args:
             symbol: Stock symbol
@@ -660,44 +665,55 @@ class FundamentalAnalysisModel:
         try:
             # Check if we have cached data in Redis
             cache_key = f"{self.redis_keys['earnings_reports']}{symbol}"
-            cached_data = self.redis_mcp.get_json(cache_key)
+            self.mcp_tool_call_count += 1
+            cached_data_result = self.redis_mcp.call_tool("get_json", {"key": cache_key})
+            cached_data = cached_data_result.get("value") if cached_data_result and not cached_data_result.get("error") else None
 
             if cached_data:
-                # Check if data is fresh (less than 1 day old)
                 last_updated = cached_data.get("timestamp")
                 if last_updated:
-                    last_updated_dt = datetime.fromisoformat(last_updated)
-                    if datetime.now() - last_updated_dt < timedelta(days=1):
-                        return cached_data
+                    try:
+                        last_updated_dt = datetime.fromisoformat(last_updated)
+                        if datetime.now() - last_updated_dt < timedelta(days=1): # Cache for 1 day
+                            self.logger.info(f"Returning cached earnings report for {symbol}")
+                            return cached_data
+                    except ValueError:
+                        self.logger.warning(f"Invalid timestamp format in cached earnings data for {symbol}")
 
-            # Fetch data from Yahoo Finance
-            earnings = self.yahoo_finance_mcp.get_earnings(symbol)
 
-            if earnings and not earnings.get("error"):
-                # Format the earnings data
-                latest_earnings = {
-                    "symbol": symbol,
-                    "date": earnings.get("earningsDate", [None])[0],
-                    "eps": earnings.get("eps", None),
-                    "eps_estimate": earnings.get("epsEstimate", None),
-                    "eps_surprise": earnings.get("epsSurprise", None),
-                    "revenue": earnings.get("revenue", None),
-                    "revenue_estimate": earnings.get("revenueEstimate", None),
-                    "revenue_surprise": earnings.get("revenueSurprise", None),
-                    "timestamp": datetime.now().isoformat(),
-                }
+            # Fetch data using FinancialDataMCP
+            # Assuming FinancialDataMCP has a tool like 'get_earnings'
+            self.mcp_tool_call_count += 1
+            earnings_result = self.financial_data_mcp.call_tool("get_earnings", {"symbol": symbol})
 
-                # Cache in Redis
-                self.redis_mcp.set_json(
-                    cache_key, latest_earnings, ex=86400
-                )  # 1 day expiration
+            if earnings_result and not earnings_result.get("error"):
+                 # Assuming the result structure is compatible or can be mapped
+                 # Example mapping if needed:
+                 # latest_earnings = {
+                 #     "symbol": symbol,
+                 #     "date": earnings_result.get("earningsDate", [None])[0],
+                 #     # ... other fields
+                 #     "timestamp": datetime.now().isoformat(),
+                 # }
 
-                return latest_earnings
+                 # Cache in Redis
+                 if earnings_result:
+                     self.mcp_tool_call_count += 1
+                     self.redis_mcp.call_tool(
+                         "set_json",
+                         {"key": cache_key, "value": earnings_result, "expiry": 86400} # 1 day expiration
+                     )
+                     self.logger.info(f"Cached latest earnings report for {symbol}.")
+
+
+                 return earnings_result # Return directly if structure is fine
             else:
-                self.logger.error(f"Error fetching earnings for {symbol}")
-                return {"error": "Failed to fetch earnings", "symbol": symbol}
+                self.mcp_tool_error_count += 1
+                self.logger.error(f"Error fetching earnings for {symbol}: {earnings_result.get('error') if earnings_result else 'Unknown error'}")
+                return {"error": earnings_result.get('error', 'Failed to fetch earnings') if earnings_result else 'Failed to fetch earnings', "symbol": symbol}
 
         except Exception as e:
+            self.mcp_tool_error_count += 1
             self.logger.error(
                 f"Error in get_latest_earnings for {symbol}: {e}", exc_info=True
             )
@@ -707,7 +723,7 @@ class FundamentalAnalysisModel:
         self, symbol: str, sector: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Perform comprehensive fundamental analysis of a company.
+        Perform comprehensive fundamental analysis of a company and store in Redis.
 
         Args:
             symbol: Stock symbol
@@ -722,122 +738,231 @@ class FundamentalAnalysisModel:
                 symbol, "all", "annual"
             )
             if financial_statements.get("error"):
+                self.analysis_errors_count += 1
                 return {"error": financial_statements.get("error"), "symbol": symbol}
 
             # Get market data
             market_data = self.get_market_data(symbol)
             if market_data.get("error"):
+                self.analysis_errors_count += 1
                 return {"error": market_data.get("error"), "symbol": symbol}
 
-            # Calculate financial ratios
-            ratios_result = self.fundamental_scoring_mcp.calculate_ratios(
-                financial_statements
+            # Calculate financial ratios (using RiskAnalysisMCP tool)
+            ratios_result = self.risk_analysis_mcp.call_tool(
+                "calculate_financial_ratios", {"financial_data": financial_statements}
             )
+            if ratios_result.get("error"):
+                 self.analysis_errors_count += 1
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Error calculating ratios for {symbol}: {ratios_result['error']}")
+                 # Continue analysis if possible, but log error
+                 ratios_data = {}
+            else:
+                 ratios_data = ratios_result.get("ratios", {})
 
-            # Score financial health
-            health_score = self.fundamental_scoring_mcp.score_financial_health(
-                ratios_result.get("ratios", {}), sector
+
+            # Score financial health (using RiskAnalysisMCP tool)
+            health_score_result = self.risk_analysis_mcp.call_tool(
+                "score_financial_health", {"ratios": ratios_data, "sector": sector}
             )
+            if health_score_result.get("error"):
+                 self.analysis_errors_count += 1
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Error scoring financial health for {symbol}: {health_score_result['error']}")
+                 health_score_data = {}
+            else:
+                 health_score_data = health_score_result
+            
 
-            # Calculate value metrics
-            value_metrics = self.fundamental_scoring_mcp.calculate_value_metrics(
-                market_data, financial_statements
+
+            # Calculate value metrics (using RiskAnalysisMCP tool)
+            value_metrics_result = self.risk_analysis_mcp.call_tool(
+                "calculate_value_metrics", {"market_data": market_data, "financial_data": financial_statements}
             )
+            if value_metrics_result.get("error"):
+                 self.analysis_errors_count += 1
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Error calculating value metrics for {symbol}: {value_metrics_result['error']}")
+                 value_metrics_data = {}
+            else:
+                 value_metrics_data = value_metrics_result.get("metrics", {})
 
-            # Compare to sector
-            sector_comparison = None
+
+            # Compare to sector (using RiskAnalysisMCP tool)
+            sector_comparison_data = None
             if sector:
-                sector_comparison = self.fundamental_scoring_mcp.compare_to_sector(
-                    ratios_result.get("ratios", {}), sector
+                sector_comparison_result = self.risk_analysis_mcp.call_tool(
+                    "compare_to_sector", {"ratios": ratios_data, "sector": sector}
                 )
+                if sector_comparison_result.get("error"):
+                     self.analysis_errors_count += 1
+                     self.mcp_tool_error_count += 1
+                     self.logger.error(f"Error comparing to sector for {symbol}: {sector_comparison_result['error']}")
+                else:
+                     sector_comparison_data = sector_comparison_result.get("comparison")
 
-            # Calculate growth rates
-            growth_rates = self.growth_analysis_mcp.calculate_growth_rates(
-                financial_statements
+
+            # Calculate growth rates (using RiskAnalysisMCP tool)
+            growth_rates_result = self.risk_analysis_mcp.call_tool(
+                "calculate_growth_rates", {"financial_data": financial_statements}
             )
+            if growth_rates_result.get("error"):
+                 self.analysis_errors_count += 1
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Error calculating growth rates for {symbol}: {growth_rates_result['error']}")
+                 growth_rates_data = {}
+            else:
+                 growth_rates_data = growth_rates_result.get("growth_rates", {})
 
-            # Analyze growth trends
-            growth_trends = self.growth_analysis_mcp.analyze_growth_trends(
-                growth_rates.get("growth_rates", {})
-            )
 
-            # Score growth quality
-            growth_score = self.growth_analysis_mcp.score_growth_quality(
-                growth_rates.get("growth_rates", {}),
-                growth_trends.get("trends", {}),
-                sector,
-            )
+            # Analyze growth trends (using RiskAnalysisMCP tool)
+            growth_trends_data = {}
+            if growth_rates_data: # Only analyze trends if rates were calculated
+                growth_trends_result = self.risk_analysis_mcp.call_tool(
+                    "analyze_growth_trends", {"growth_rates": growth_rates_data}
+                )
+                if growth_trends_result.get("error"):
+                     self.analysis_errors_count += 1
+                     self.mcp_tool_error_count += 1
+                     self.logger.error(f"Error analyzing growth trends for {symbol}: {growth_trends_result['error']}")
+                else:
+                     growth_trends_data = growth_trends_result.get("trends", {})
 
-            # Get latest earnings
+
+            # Score growth quality (using RiskAnalysisMCP tool)
+            growth_score_data = {}
+            if growth_rates_data: # Only score growth if rates were calculated
+                growth_score_result = self.risk_analysis_mcp.call_tool(
+                    "score_growth_quality",
+                    {"growth_rates": growth_rates_data, "trends": growth_trends_data, "sector": sector}
+                )
+                if growth_score_result.get("error"):
+                     self.analysis_errors_count += 1
+                     self.mcp_tool_error_count += 1
+                     self.logger.error(f"Error scoring growth quality for {symbol}: {growth_score_result['error']}")
+                else:
+                     growth_score_data = growth_score_result
+
+
+            # Get latest earnings (using FinancialDataMCP tool)
             latest_earnings = self.get_latest_earnings(symbol)
+            if latest_earnings.get("error"):
+                 self.analysis_errors_count += 1
+                 self.logger.error(f"Error getting latest earnings for {symbol}: {latest_earnings['error']}")
+                 latest_earnings_data = {}
+            else:
+                 latest_earnings_data = latest_earnings
+
 
             # Combine all analysis
             comprehensive_analysis = {
                 "symbol": symbol,
                 "sector": sector,
                 "market_data": market_data,
-                "financial_ratios": ratios_result.get("ratios", {}),
+                "financial_ratios": ratios_data,
                 "financial_health": {
-                    "overall_score": health_score.get("overall_score"),
-                    "category_scores": health_score.get("category_scores", {}),
+                    "overall_score": health_score_data.get("overall_score"),
+                    "category_scores": health_score_data.get("category_scores", {}),
                 },
-                "value_metrics": value_metrics.get("metrics", {}),
+                "value_metrics": value_metrics_data,
                 "growth_analysis": {
-                    "growth_rates": growth_rates.get("growth_rates", {}),
-                    "growth_trends": growth_trends.get("trends", {}),
-                    "growth_score": growth_score.get("overall_score"),
-                    "metric_scores": growth_score.get("metric_scores", {}),
+                    "growth_rates": growth_rates_data,
+                    "growth_trends": growth_trends_data,
+                    "growth_score": growth_score_data.get("overall_score"),
+                    "metric_scores": growth_score_data.get("metric_scores", {}),
                 },
-                "latest_earnings": latest_earnings,
-                "sector_comparison": sector_comparison.get("comparison")
-                if sector_comparison
-                else None,
+                "latest_earnings": latest_earnings_data,
+                "sector_comparison": sector_comparison_data,
                 "timestamp": datetime.now().isoformat(),
             }
 
             # Store in Redis
             cache_key = f"{self.redis_keys['fundamental_data']}{symbol}"
-            self.redis_mcp.set_json(
-                cache_key, comprehensive_analysis, ex=86400
-            )  # 1 day expiration
-
-            # Send feedback to selection model
-            self.send_feedback_to_selection(
-                {
-                    "symbol": symbol,
-                    "fundamental_score": health_score.get("overall_score"),
-                    "growth_score": growth_score.get("overall_score"),
-                    "value_metrics": value_metrics.get("metrics", {}),
-                }
+            self.mcp_tool_call_count += 1
+            self.redis_mcp.call_tool(
+                "set_json",
+                {"key": cache_key, "value": comprehensive_analysis, "expiry": 86400} # 1 day expiration
             )
+            self.logger.info(f"Stored comprehensive fundamental analysis for {symbol} in Redis.")
+
+            # Track accuracy metrics
+            if health_score_data.get("overall_score") is not None:
+                self.logger.gauge("fundamental_analysis_health_score", health_score_data.get("overall_score"), symbol=symbol)
+            
+            if growth_score_data.get("overall_score") is not None:
+                self.logger.gauge("fundamental_analysis_growth_score", growth_score_data.get("overall_score"), symbol=symbol)
+            
+            # Track overall prediction confidence/accuracy
+            if health_score_data.get("overall_score") is not None and growth_score_data.get("overall_score") is not None:
+                overall_score = (health_score_data.get("overall_score", 0) + growth_score_data.get("overall_score", 0)) / 2
+                self.logger.gauge("fundamental_analysis_overall_score", overall_score, symbol=symbol)
+                self.logger.gauge("fundamental_analysis_confidence", overall_score / 100.0 if overall_score else 0.0, symbol=symbol)
+            
+
+            # Send feedback to selection model (e.g., key scores and metrics)
+            feedback_data = {
+                "symbol": symbol,
+                "fundamental_score": health_score_data.get("overall_score"),
+                "growth_score": growth_score_data.get("overall_score"),
+                "value_metrics": value_metrics_data,
+                "timestamp": datetime.now().isoformat(),
+            }
+            self.send_feedback_to_selection(feedback_data)
+            self.logger.info(f"Sent feedback to selection model for {symbol}.")
+
 
             # Send analysis to decision model
             self.send_analysis_to_decision(comprehensive_analysis)
+            self.logger.info(f"Sent analysis to decision model for {symbol}.")
 
+
+            self.companies_analyzed_count += 1
             return comprehensive_analysis
 
         except Exception as e:
+            self.analysis_errors_count += 1
             self.logger.error(
                 f"Error in analyze_company for {symbol}: {e}", exc_info=True
             )
             return {"error": str(e), "symbol": symbol}
 
+
     def get_selection_data(self) -> Dict[str, Any]:
         """
-        Get data from the Selection Model.
+        Get data from the Selection Model using Redis.
 
         Returns:
-            Selection Model data
+            Selection Model data (or empty dict/error if not available)
         """
+        self.logger.info("Getting selection data from Redis...")
         try:
-            return self.redis_mcp.get_json(self.redis_keys["selection_data"]) or {}
+            # Assuming Selection Model stores candidates in a list or set at a known key
+            self.mcp_tool_call_count += 1
+            # Example: Get members of a set
+            result = self.redis_mcp.call_tool("smembers", {"key": self.redis_keys["selection_candidates"]})
+
+            if result and not result.get("error"):
+                candidates = result.get("members", [])
+                self.logger.info(f"Retrieved {len(candidates)} selection candidates.")
+                # Assuming candidates are just symbols, format as expected by analyze_company caller
+                return {"selected_companies": [{"symbol": c} for c in candidates]}
+            elif result and result.get("error"):
+                 self.mcp_tool_error_count += 1
+                 self.logger.error(f"Failed to get selection data from Redis: {result.get('error')}")
+                 return {"error": result.get('error', 'Failed to get selection data from Redis')}
+            else:
+                 self.logger.warning("No selection data found in Redis.")
+                 return {"selected_companies": []} # Return empty list if no data
+
         except Exception as e:
-            self.logger.error(f"Error getting selection data: {e}")
-            return {}
+            self.logger.error(f"Error getting selection data from Redis: {e}", exc_info=True)
+            self.execution_errors += 1
+            self.logger.counter("fundamental_analysis_model.execution_errors")
+            return {"error": str(e)}
 
     def send_feedback_to_selection(self, analysis_data: Dict[str, Any]) -> bool:
         """
-        Send fundamental analysis feedback to the Selection Model.
+        Send fundamental analysis feedback to the Selection Model using Redis Stream.
 
         Args:
             analysis_data: Fundamental analysis data to send
@@ -845,22 +970,39 @@ class FundamentalAnalysisModel:
         Returns:
             True if successful, False otherwise
         """
+        self.logger.info(f"Sending feedback to selection model for symbol: {analysis_data.get('symbol', 'unknown')}")
         try:
-            # Publish feedback to a Redis channel or add to a list
-            self.redis_mcp.publish(
-                self.redis_keys["selection_feedback"], json.dumps(analysis_data)
+            # Add timestamp to the data if not already present
+            if "timestamp" not in analysis_data:
+                analysis_data["timestamp"] = datetime.now().isoformat()
+
+            # Publish feedback to the selection feedback stream
+            self.mcp_tool_call_count += 1
+            result = self.redis_mcp.call_tool(
+                 "xadd", # Using stream for feedback
+                 {
+                      "stream": self.redis_keys["selection_feedback_stream"],
+                      "data": analysis_data
+                 }
             )
-            self.logger.info(
-                f"Sent feedback for {analysis_data.get('symbol')} to Selection Model"
-            )
-            return True
+
+            if result and not result.get("error"):
+                self.logger.info("Sent feedback to selection model via stream.")
+                return True
+            else:
+                self.mcp_tool_error_count += 1
+                self.logger.error(f"Failed to send feedback to selection model: {result.get('error') if result else 'Unknown error'}")
+                return False
+
         except Exception as e:
-            self.logger.error(f"Error sending feedback to Selection Model: {e}")
+            self.logger.error(f"Error sending feedback to selection model: {e}", exc_info=True)
+            self.execution_errors += 1
+            self.logger.counter("fundamental_analysis_model.execution_errors")
             return False
 
     def send_analysis_to_decision(self, analysis_data: Dict[str, Any]) -> bool:
         """
-        Send fundamental analysis to the Decision Model.
+        Send fundamental analysis to the Decision Model using Redis Stream.
 
         Args:
             analysis_data: Fundamental analysis data to send
@@ -868,17 +1010,34 @@ class FundamentalAnalysisModel:
         Returns:
             True if successful, False otherwise
         """
+        self.logger.info(f"Sending analysis to decision model for symbol: {analysis_data.get('symbol', 'unknown')}")
         try:
-            # Publish analysis to a Redis channel or add to a list
-            self.redis_mcp.publish(
-                self.redis_keys["decision_data"], json.dumps(analysis_data)
+            # Add timestamp to the data if not already present
+            if "timestamp" not in analysis_data:
+                analysis_data["timestamp"] = datetime.now().isoformat()
+
+            # Publish analysis report to the fundamental analysis reports stream
+            self.mcp_tool_call_count += 1
+            result = self.redis_mcp.call_tool(
+                 "xadd", # Using stream for reports
+                 {
+                      "stream": self.redis_keys["fundamental_analysis_reports_stream"],
+                      "data": analysis_data
+                 }
             )
-            self.logger.info(
-                f"Sent analysis for {analysis_data.get('symbol')} to Decision Model"
-            )
-            return True
+
+            if result and not result.get("error"):
+                self.logger.info("Sent analysis to decision model via stream.")
+                return True
+            else:
+                self.mcp_tool_error_count += 1
+                self.logger.error(f"Failed to send analysis to decision model: {result.get('error') if result else 'Unknown error'}")
+                return False
+
         except Exception as e:
-            self.logger.error(f"Error sending analysis to Decision Model: {e}")
+            self.logger.error(f"Error sending analysis to decision model: {e}", exc_info=True)
+            self.execution_errors += 1
+            self.logger.counter("fundamental_analysis_model.execution_errors")
             return False
 
     async def run_periodic_analysis(self):
@@ -889,17 +1048,17 @@ class FundamentalAnalysisModel:
             try:
                 self.logger.info("Starting periodic fundamental analysis...")
 
-                # Get list of companies from Selection Model
+                # Get list of companies from Selection Model using Redis
                 selection_data = self.get_selection_data()
                 companies_to_analyze = selection_data.get("selected_companies", [])[
                     : self.max_companies
                 ]
 
                 if not companies_to_analyze:
-                    self.logger.info("No companies selected for analysis.")
+                    self.logger.info("No companies selected for analysis. Skipping analysis cycle.")
                 else:
                     self.logger.info(
-                        f"Analyzing {len(companies_to_analyze)} companies: {companies_to_analyze}"
+                        f"Analyzing {len(companies_to_analyze)} companies: {[c.get('symbol') for c in companies_to_analyze]}"
                     )
 
                     for company in companies_to_analyze:
@@ -915,16 +1074,25 @@ class FundamentalAnalysisModel:
                             else:
                                 self.logger.info(f"Successfully analyzed {symbol}")
 
-                # Update latest analysis timestamp
-                self.redis_mcp.set(
-                    self.redis_keys["latest_analysis"], datetime.now().isoformat()
+                # Update latest analysis timestamp in Redis
+                self.mcp_tool_call_count += 1
+                self.redis_mcp.call_tool(
+                    "set",
+                    {"key": self.redis_keys["latest_analysis_timestamp"], "value": datetime.now().isoformat()}
                 )
-                self.logger.info("Periodic fundamental analysis complete.")
+                self.logger.info("Updated latest fundamental analysis timestamp in Redis.")
+
+                self.total_analysis_cycles += 1
+                self.logger.info(f"Periodic fundamental analysis cycle {self.total_analysis_cycles} complete.")
 
             except Exception as e:
                 self.logger.error(f"Error during periodic analysis: {e}", exc_info=True)
+                self.analysis_errors_count += 1
+                self.logger.counter("fundamental_analysis_model.analysis_errors_count")
+
 
             # Wait for the next interval
+            self.logger.info(f"Waiting for {self.analysis_interval} seconds until next analysis cycle.")
             await asyncio.sleep(self.analysis_interval)
 
     def start(self):
@@ -932,31 +1100,7 @@ class FundamentalAnalysisModel:
         Start the periodic analysis loop.
         """
         self.logger.info("Starting FundamentalAnalysisModel...")
-        asyncio.run(self.run_periodic_analysis())
-
-
-# For running as a standalone model
-if __name__ == "__main__":
-    # Set up configuration (replace with actual config loading)
-    config = {
-        "fundamental_scoring_config": {},
-        "growth_analysis_config": {},
-        "risk_metrics_config": {},
-        "redis_config": {"host": "localhost", "port": 6379, "db": 0},
-        "polygon_rest_config": {},
-        "yahoo_finance_config": {},
-        "llm_config": {},  # Use default LLM config
-        "analysis_interval": 3600,  # Analyze every hour for testing
-        "max_companies": 10,
-    }
-
-    # Initialize the model
-    model = FundamentalAnalysisModel(config)
-
-    # Example: Analyze a single company
-    print("Analyzing AAPL...")
-    aapl_analysis = model.analyze_company("AAPL", "Technology")
-    print(json.dumps(aapl_analysis, indent=2))
-
-    # Start the periodic analysis (this will run indefinitely)
-    # model.start()
+        # Running the periodic analysis requires an event loop, typically managed externally.
+        # For standalone testing, you might uncomment the asyncio.run line.
+        # asyncio.run(self.run_periodic_analysis())
+        self.logger.warning("Periodic analysis loop is not started automatically. Call run_periodic_analysis() manually if needed.")

@@ -12,15 +12,11 @@ This module provides enhanced system metrics collection, including:
 The metrics are collected and sent to Netdata for visualization.
 """
 
-import os
 import time
 import threading
 import psutil
 import platform
 import socket
-import json
-import subprocess
-from datetime import datetime
 
 # Try to import GPU-specific libraries
 try:

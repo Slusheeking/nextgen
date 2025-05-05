@@ -6,15 +6,30 @@ REST API data source, providing access to various market data endpoints.
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import time
-import requests
-from typing import Dict, Any, Optional, Union
 from datetime import datetime, timedelta
-from monitoring.netdata_logger import NetdataLogger
+from typing import Dict, Any, Optional, Union
 
+# Direct imports with graceful error handling
+import importlib
+
+# Try to import required dependencies
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
+from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class PolygonRestMCP(BaseDataMCP):
@@ -531,6 +546,10 @@ class PolygonRestMCP(BaseDataMCP):
                 else:
                     self.logger.error(f"Request failed after {max_retries} retries: {e}")
                     raise Exception(f"Request failed after {max_retries} retries: {e}")
+            except TypeError as e:
+                # Handle unexpected keyword arguments in logger.timing
+                self.logger.error(f"TypeError in logger.timing: {e}")
+                raise Exception(f"TypeError in logger.timing: {e}")
 
     # Handler methods for specific endpoints
 
@@ -720,6 +739,9 @@ class PolygonRestMCP(BaseDataMCP):
         self, path: str, params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Execute a request to Polygon.io API."""
+        # Get endpoint name from path for logging
+        endpoint_name = path.split("/")[-1].replace("{", "").replace("}", "")
+        
         # Format path with parameters
         try:
             formatted_path = path.format(**params)
@@ -748,9 +770,14 @@ class PolygonRestMCP(BaseDataMCP):
 
         while retry_count <= max_retries:
             try:
+                start_time = time.time()
                 response = requests.get(
                     url, params=query_params, headers=headers, timeout=15
                 )
+                
+                # Record timing
+                elapsed = (time.time() - start_time) * 1000
+                self.logger.timing("polygon_request_time_ms", elapsed)
 
                 if response.status_code == 200:
                     return response.json()
@@ -1015,6 +1042,32 @@ class PolygonRestMCP(BaseDataMCP):
             self.logger.error(f"Error getting market movers: {e}")
             # Removed self.monitor.log_error for market movers
             return {}
+
+    def read_resource(self, uri: str) -> Dict[str, Any]:
+        """
+        Read a resource from the Polygon REST MCP server.
+
+        This client does not support reading resources via URI.
+
+        Args:
+            uri: The URI of the resource to read.
+
+        Returns:
+            An error dictionary indicating that this operation is not supported.
+        """
+        return {"error": f"Polygon REST MCP does not support reading resources via URI: {uri}"}
+
+    def get_ticker_details(self, ticker: str) -> Dict[str, Any]:
+        """
+        Get ticker details including company information.
+
+        Args:
+            ticker: Stock ticker symbol
+
+        Returns:
+            Dictionary with ticker details
+        """
+        return self.fetch_data("ticker_details", {"ticker": ticker})
 
     @property
     def api_key(self) -> str:

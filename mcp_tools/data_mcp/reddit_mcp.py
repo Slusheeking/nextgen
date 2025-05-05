@@ -6,15 +6,29 @@ providing access to posts, comments, and sentiment analysis for financial subred
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import time
 from typing import Dict, List, Any, Optional
-import praw
 
-from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
+# Direct imports with graceful error handling
+import importlib
+
+# Try to import required dependencies
+try:
+    import praw
+except ImportError:
+    praw = None
+
+try:
+    import dotenv
+except ImportError:
+    dotenv = None
+
+# Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
+from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
+# Load environment variables
+dotenv.load_dotenv()
 
 
 class RedditMCP(BaseDataMCP):
