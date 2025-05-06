@@ -1,4 +1,3 @@
-
 """
 Vector Store MCP using ChromaDB
 
@@ -16,12 +15,14 @@ from __future__ import annotations # Defer evaluation of type hints
 
 import os
 import time
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 import hashlib
 import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
-load_dotenv()
 
 # Import base MCP server
 from mcp_tools.base_mcp_server import BaseMCPServer
@@ -118,7 +119,7 @@ class VectorStoreMCP(BaseMCPServer):
             try:
                 client_init_start = time.time()
                 
-                # Initialize ChromaDB client
+                # Initialize ChromaDB client with persistent storage
                 self.client = chromadb.PersistentClient(
                     path=self.db_path,
                     settings=Settings(anonymized_telemetry=False) # Disable telemetry
@@ -245,4 +246,3 @@ class VectorStoreMCP(BaseMCPServer):
                     self.logger.counter("vector_store_mcp.health_check_errors")
                     # Sleep even on error to prevent tight loop
                     time.sleep(self.health_check_interval)
-

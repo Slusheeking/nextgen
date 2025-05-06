@@ -184,13 +184,19 @@ class NetdataLogger:
         """
         return self._send_statsd(name, value, "c")
     
-    def timing(self, name, value):
+    def timing(self, name, value, source=None):
         """
         Send a timing metric to Netdata
         
         Timing metrics represent durations in milliseconds
+        
+        Args:
+            name: Name of the metric
+            value: Value of the metric in milliseconds
+            source: Optional source of the metric
         """
-        return self._send_statsd(name, value, "ms")
+        metric_name = f"{name}.{source}" if source else name
+        return self._send_statsd(metric_name, value, "ms")
     
     def histogram(self, name, value):
         """

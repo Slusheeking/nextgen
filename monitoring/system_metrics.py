@@ -50,6 +50,10 @@ class SystemMetricsCollector:
         self.running = False
         self.thread = None
         
+        # Store last collected metrics
+        self._last_cpu_usage = 0.0
+        self._last_memory_usage = 0.0
+        
         # Initialize GPU monitoring if available
         self.has_gpu = False
         if HAS_NVML:
@@ -212,11 +216,16 @@ class SystemMetricsCollector:
                 self.logger.error(f"Error collecting system metrics: {e}")
                 time.sleep(self.interval)  # Sleep even on error
     
+    # The duplicate _collect_cpu_metrics method has been removed
+    
+    # Methods moved or removed to fix duplicates
+
     def _collect_cpu_metrics(self):
         """Collect and send CPU metrics"""
         # Overall CPU usage
         cpu_percent = psutil.cpu_percent()
         self.logger.gauge("cpu.total_percent", cpu_percent)
+        self._last_cpu_usage = cpu_percent # Store the latest value
         
         # Per-core CPU usage
         per_cpu = psutil.cpu_percent(percpu=True)
@@ -259,6 +268,7 @@ class SystemMetricsCollector:
         self.logger.gauge("memory.available_bytes", mem.available)
         self.logger.gauge("memory.used_bytes", mem.used)
         self.logger.gauge("memory.percent", mem.percent)
+        self._last_memory_usage = mem.percent # Store the latest value
         
         # Swap usage
         swap = psutil.swap_memory()
@@ -350,7 +360,25 @@ class SystemMetricsCollector:
                     self.logger.gauge(f"gpu.{i}.load_percent", gpu.load * 100)
                     self.logger.gauge(f"gpu.{i}.temperature_celsius", gpu.temperature)
             except Exception as e:
-                self.logger.warning(f"Error collecting GPU metrics via GPUtil: {e}")
+                self.logger.warning(f"Error collecting GPU info via GPUtil: {e}")
+
+
+    def get_cpu_usage(self) -> float:
+        """Get the current/last collected CPU usage percentage."""
+        return self._last_cpu_usage
+
+    def get_memory_usage(self) -> float:
+        """Get the current/last collected memory usage percentage."""
+        return self._last_memory_usage
+        
+    def get_disk_usage(self) -> float:
+        """Get the current disk usage percentage."""
+        # Return the average disk usage across all disks
+        if not self.system_info['disks']:
+            return 0.0
+        
+        total_percent = sum(disk['percent'] for disk in self.system_info['disks'])
+        return total_percent / len(self.system_info['disks'])
 
 
 # Example usage

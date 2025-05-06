@@ -40,7 +40,7 @@ class MarketAnalysisModel:
     pattern detection, and market scanning capabilities.
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Initialize the MarketAnalysisModel.
 
@@ -54,85 +54,172 @@ class MarketAnalysisModel:
                 - max_scan_symbols: Maximum number of symbols to scan (default: 100)
                 - default_indicators: List of default indicators to calculate
                 - default_patterns: List of default patterns to detect
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
         """
-        self.config = config or {}
-        
-        # Initialize enhanced monitoring with NetdataLogger
-        self.logger = NetdataLogger(component_name="market-analysis-model")
-        self.logger.info("Initializing MarketAnalysisModel")
-        
-        # Start system metrics collection
-        self.metrics_collector = SystemMetricsCollector(self.logger)
-        self.metrics_collector.start()
-        
-        # Initialize chart generator for visualization
-        self.chart_generator = StockChartGenerator()
-        
-        # Initialize thread-safe metrics tracking with locks
-        self._metrics_lock = threading.RLock()
-        
-        # Initialize performance metrics
-        self.start_time = datetime.now()
-        
-        # Initialize counters for market analysis metrics
-        self.mcp_tool_call_count = 0
-        self.mcp_tool_error_count = 0
-        self.analysis_count = 0
-        self.scan_count = 0
-        self.execution_errors = 0
-        
-        # Performance tracking metrics
-        self.operation_timing = {
-            "get_market_data": [],
-            "analyze_symbol": [],
-            "scan_market": [],
-            "assess_risk": [],
-            "tool_calls": {}
-        }
-        
-        # Initialize health metrics
-        self.health_check_thread = None
-        self.health_check_running = False
-        self.last_health_check = None
-        self.health_status = {
-            "overall_health": 100.0,
-            "last_check": None,
-            "components": {
-                "financial_data_mcp": {"status": "unknown", "score": 0},
-                "time_series_mcp": {"status": "unknown", "score": 0},
-                "redis_mcp": {"status": "unknown", "score": 0},
-                "autogen": {"status": "unknown", "score": 0}
+        try:
+            self.config = config or {}
+            
+            # Initialize enhanced monitoring with NetdataLogger
+            self.logger = NetdataLogger(component_name="market-analysis-model")
+            self.logger.info("Initializing MarketAnalysisModel")
+            
+            # Start system metrics collection
+            self.metrics_collector = SystemMetricsCollector(self.logger)
+            self.metrics_collector.start()
+            
+            # Initialize chart generator for visualization
+            self.chart_generator = StockChartGenerator()
+            
+            # Initialize thread-safe metrics tracking with locks
+            self._metrics_lock = threading.RLock()
+            
+            # Initialize performance metrics
+            self.start_time = datetime.now()
+            
+            # Initialize counters for market analysis metrics
+            self.mcp_tool_call_count = 0
+            self.mcp_tool_error_count = 0
+            self.analysis_count = 0
+            self.scan_count = 0
+            self.execution_errors = 0
+            
+            # Performance tracking metrics
+            self.operation_timing = {
+                "get_market_data": [],
+                "analyze_symbol": [],
+                "scan_market": [],
+                "assess_risk": [],
+                "tool_calls": {}
             }
-        }
+            
+            # Initialize health metrics
+            self.health_check_thread = None
+            self.health_check_running = False
+            self.last_health_check = None
+            self.health_status = {
+                "overall_health": 100.0,
+                "last_check": None,
+                "components": {
+                    "financial_data_mcp": {"status": "unknown", "score": 0},
+                    "time_series_mcp": {"status": "unknown", "score": 0},
+                    "redis_mcp": {"status": "unknown", "score": 0},
+                    "autogen": {"status": "unknown", "score": 0}
+                }
+            }
 
-        # Initialize Consolidated MCP clients with timing metrics
-        start_time = time.time()
-        self.logger.info("Initializing FinancialDataMCP")
-        
-        # FinancialDataMCP handles data retrieval (Polygon REST/WS)
-        self.financial_data_mcp = FinancialDataMCP(
-            self.config.get("financial_data_config")
-        )
-        financial_data_init_time = (time.time() - start_time) * 1000
-        self.logger.timing("financial_data_mcp_init_time_ms", financial_data_init_time)
-        
-        # TimeSeriesMCP handles technical indicators and pattern recognition
-        start_time = time.time()
-        self.logger.info("Initializing TimeSeriesMCP")
-        self.time_series_mcp = TimeSeriesMCP(
-             self.config.get("time_series_config")
-        )
-        time_series_init_time = (time.time() - start_time) * 1000
-        self.logger.timing("time_series_mcp_init_time_ms", time_series_init_time)
-        
-        # Initialize Redis MCP client
-        start_time = time.time()
-        self.logger.info("Initializing RedisMCP")
-        self.redis_mcp = RedisMCP(self.config.get("redis_config"))
-        redis_init_time = (time.time() - start_time) * 1000
-        self.logger.timing("redis_mcp_init_time_ms", redis_init_time)
+            # Initialize Consolidated MCP clients with timing metrics
+            self._initialize_mcp_clients()
 
-        # Configuration parameters
+            # Configuration parameters
+            self._set_configuration_parameters()
+            
+            # Start periodic health check thread
+            self._start_health_check_thread()
+
+            # Redis keys for data storage and inter-model communication
+            self._setup_redis_keys()
+
+            # Initialize AutoGen integration
+            self._initialize_autogen()
+
+            # Record total initialization time
+            total_init_time = (datetime.now() - self.start_time).total_seconds() * 1000
+            self.logger.timing("total_init_time_ms", total_init_time)
+            
+            # Log initialization metrics
+            self.logger.info("MarketAnalysisModel initialized",
+                           config=str(self.config.keys()),
+                           init_time_ms=total_init_time)
+            
+            # Send startup metrics to Netdata
+            self.logger.gauge("model_startup_time_ms", total_init_time)
+            self.logger.gauge("model_version", 1.0)  # Increment on major updates
+            
+            # Initialize model status in Redis
+            self._update_model_status("initialized")
+
+        except Exception as e:
+            self.logger.error(f"Error during MarketAnalysisModel initialization: {str(e)}", exc_info=True)
+            raise
+
+    def _initialize_mcp_clients(self):
+        """Initialize MCP clients."""
+        try:
+            # FinancialDataMCP
+            start_time = time.time()
+            self.logger.info("Initializing FinancialDataMCP")
+            financial_data_config = self.config.get("financial_data_config")
+            if not financial_data_config:
+                self.logger.warning("Missing financial_data_config in configuration, using default configuration")
+                # Provide a default configuration
+                financial_data_config = {
+                    "api_keys": {},
+                    "data_sources": ["polygon", "yahoo_finance"],
+                    "cache_ttl": 3600,
+                    "max_retries": 3,
+                    "timeout": 30
+                }
+            self.financial_data_mcp = FinancialDataMCP(financial_data_config)
+            financial_data_init_time = (time.time() - start_time) * 1000
+            self.logger.timing("financial_data_mcp_init_time_ms", financial_data_init_time)
+            self.logger.info("FinancialDataMCP initialized successfully")
+            
+            # TimeSeriesMCP
+            start_time = time.time()
+            self.logger.info("Initializing TimeSeriesMCP")
+            time_series_config = self.config.get("time_series_config")
+            if not time_series_config:
+                raise ValueError("Missing time_series_config in configuration")
+            self.time_series_mcp = TimeSeriesMCP(time_series_config)
+            time_series_init_time = (time.time() - start_time) * 1000
+            self.logger.timing("time_series_mcp_init_time_ms", time_series_init_time)
+            self.logger.info("TimeSeriesMCP initialized successfully")
+            
+            # RedisMCP
+            start_time = time.time()
+            self.logger.info("Initializing RedisMCP")
+            redis_config = self.config.get("redis_config")
+            if not redis_config:
+                raise ValueError("Missing redis_config in configuration")
+            self.redis_mcp = RedisMCP(redis_config)
+            redis_init_time = (time.time() - start_time) * 1000
+            self.logger.timing("redis_mcp_init_time_ms", redis_init_time)
+            self.logger.info("RedisMCP initialized successfully")
+
+            # Verify MCP clients are properly initialized
+            self._verify_mcp_clients()
+
+        except Exception as e:
+            self.logger.error(f"Error initializing MCP clients: {str(e)}", exc_info=True)
+            raise
+
+    def _verify_mcp_clients(self):
+        """Verify that MCP clients are properly initialized and functional."""
+        try:
+            # Check FinancialDataMCP
+            if not hasattr(self.financial_data_mcp, 'call_tool'):
+                raise AttributeError("FinancialDataMCP missing 'call_tool' method")
+            
+            # Check TimeSeriesMCP
+            if not hasattr(self.time_series_mcp, 'call_tool'):
+                raise AttributeError("TimeSeriesMCP missing 'call_tool' method")
+            
+            # Check RedisMCP
+            if not hasattr(self.redis_mcp, 'call_tool'):
+                raise AttributeError("RedisMCP missing 'call_tool' method")
+            
+            # Perform a simple operation with each MCP to ensure they're functional
+            self.financial_data_mcp.call_tool("get_health", {})
+            self.time_series_mcp.call_tool("get_health", {})
+            self.redis_mcp.call_tool("ping", {})
+            
+            self.logger.info("All MCP clients verified and functional")
+        except Exception as e:
+            self.logger.error(f"Error verifying MCP clients: {str(e)}", exc_info=True)
+            raise
+
+    def _set_configuration_parameters(self):
+        """Set configuration parameters."""
         self.scan_interval = self.config.get("scan_interval", 3600)  # Default: 1 hour
         self.max_scan_symbols = self.config.get("max_scan_symbols", 100)
         self.default_indicators = self.config.get(
@@ -149,57 +236,35 @@ class MarketAnalysisModel:
                 "symmetrical_triangle",
             ],
         )
-        
-        # Start periodic health check thread
-        self._start_health_check_thread()
 
-        # Redis keys for data storage and inter-model communication
+    def _setup_redis_keys(self):
+        """Setup Redis keys and ensure streams exist."""
         self.redis_keys = {
-            "market_analysis_data": "market_analysis:data",  # Overall market analysis data
-            "technical_indicators": "market_analysis:indicators:",  # Prefix for indicator data per symbol
-            "pattern_recognition": "market_analysis:patterns:",  # Prefix for pattern data per symbol
-            "market_scan_results": "market_analysis:scan_results",  # Market scan results (latest)
-            "latest_analysis": "market_analysis:latest_analysis:",  # Latest analysis timestamp per symbol
-            "selection_data": "selection:data",  # Selection model data (for feedback)
-            "selection_feedback": "market_analysis:selection_feedback",  # Feedback to selection model (stream or key)
-            "market_analysis_reports_stream": "model:market:trends", # Stream for publishing market analysis reports
+            "market_analysis_data": "market_analysis:data",
+            "technical_indicators": "market_analysis:indicators:",
+            "pattern_recognition": "market_analysis:patterns:",
+            "market_scan_results": "market_analysis:scan_results",
+            "latest_analysis": "market_analysis:latest_analysis:",
+            "selection_data": "selection:data",
+            "selection_feedback": "market_analysis:selection_feedback",
+            "market_analysis_reports_stream": "model:market:trends",
         }
 
-        # Ensure Redis streams exist (optional, but good practice)
         try:
             self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["market_analysis_reports_stream"]})
             self.logger.info(f"Ensured Redis stream '{self.redis_keys['market_analysis_reports_stream']}' exists.")
         except Exception as e:
             self.logger.warning(f"Could not ensure Redis stream exists: {e}")
 
-
-        # Initialize AutoGen integration
+    def _initialize_autogen(self):
+        """Initialize AutoGen integration."""
         start_time = time.time()
         self.logger.info("Initializing AutoGen integration")
         self.llm_config = self._get_llm_config()
         self.agents = self._setup_agents()
-
-        # Register functions with the agents
         self._register_functions()
-        
         autogen_init_time = (time.time() - start_time) * 1000
         self.logger.timing("autogen_init_time_ms", autogen_init_time)
-
-        # Record total initialization time
-        total_init_time = (datetime.now() - self.start_time).total_seconds() * 1000
-        self.logger.timing("total_init_time_ms", total_init_time)
-        
-        # Log initialization metrics
-        self.logger.info("MarketAnalysisModel initialized", 
-                       config=str(self.config.keys()),
-                       init_time_ms=total_init_time)
-        
-        # Send startup metrics to Netdata
-        self.logger.gauge("model_startup_time_ms", total_init_time)
-        self.logger.gauge("model_version", 1.0)  # Increment on major updates
-        
-        # Initialize model status in Redis
-        self._update_model_status("initialized")
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
@@ -268,167 +333,247 @@ class MarketAnalysisModel:
 
         return agents
 
-    def _register_functions(self):
+    # --- Tool Methods (to be registered) ---
+
+    def _tool_calculate_indicators(
+        self, price_data: List[Dict[str, Any]], indicators: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Internal method for calculating technical indicators."""
+        indicators = indicators or self.default_indicators
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("calculate_indicators", {"data": price_data, "indicators": indicators})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_calculate_moving_averages(
+        self, price_data: List[Dict[str, Any]], ma_types: List[str], periods: List[int]
+    ) -> Dict[str, Any]:
+        """Internal method for calculating moving averages."""
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("calculate_moving_averages", {"data": price_data, "ma_types": ma_types, "periods": periods})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_calculate_momentum_oscillators(
+        self, price_data: List[Dict[str, Any]], oscillators: List[str]
+    ) -> Dict[str, Any]:
+        """Internal method for calculating momentum oscillators."""
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("calculate_momentum_oscillators", {"data": price_data, "oscillators": oscillators})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_detect_patterns(
+        self, price_data: List[Dict[str, Any]], patterns: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Internal method for detecting chart patterns."""
+        patterns = patterns or self.default_patterns
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("detect_patterns", {"data": price_data, "patterns": patterns})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_detect_candlestick_patterns(
+        self, price_data: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Internal method for detecting candlestick patterns."""
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("detect_candlestick_patterns", {"data": price_data})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_detect_support_resistance(
+        self, price_data: List[Dict[str, Any]], method: str = "peaks"
+    ) -> Dict[str, Any]:
+        """Internal method for detecting support and resistance."""
+        self.mcp_tool_call_count += 1
+        result = self.time_series_mcp.call_tool("detect_support_resistance", {"data": price_data, "method": method})
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_get_market_data(
+        self, symbol: str, timeframe: str = "1d", limit: int = 100
+    ) -> Dict[str, Any]:
+        """Internal method for getting market data."""
+        return self.get_market_data(symbol, timeframe, limit)
+
+    def _tool_scan_market(
+        self, symbols: List[str], scan_type: str = "technical"
+    ) -> Dict[str, Any]:
+        """Internal method for scanning the market."""
+        return self.scan_market(symbols, scan_type)
+
+    def _tool_get_scan_results(self) -> Dict[str, Any]:
+        """Internal method for getting scan results."""
+        return self.get_scan_results()
+
+    def _tool_get_selection_data(self) -> Dict[str, Any]:
+        """Internal method for getting selection data."""
+        return self.get_selection_data()
+
+    def _tool_send_feedback_to_selection(self, analysis_data: Dict[str, Any]) -> bool:
+        """Internal method for sending feedback to selection model."""
+        return self.send_feedback_to_selection(analysis_data)
+
+    def _tool_use_financial_data_tool(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> Any:
+        """Internal method for using FinancialDataMCP tools."""
+        operation_id = f"financial_data.{tool_name}.{int(time.time() * 1000)}"
+        start_time = time.time()
+        self.logger.info(f"Calling FinancialDataMCP.{tool_name}", operation_id=operation_id, arguments=str(arguments.keys())[:100])
+        try:
+            result = self.financial_data_mcp.call_tool(tool_name, arguments)
+            duration_ms = (time.time() - start_time) * 1000
+            success = not (result and result.get("error"))
+            if not success:
+                self.logger.error(f"Error calling FinancialDataMCP.{tool_name}", operation_id=operation_id, error=result.get("error", "Unknown error"))
+            self._track_tool_call("financial_data", tool_name, duration_ms, success)
+            if isinstance(result, dict):
+                result["_metadata"] = {"operation_id": operation_id, "duration_ms": duration_ms, "timestamp": datetime.now().isoformat()}
+            return result
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            self.logger.error(f"Exception calling FinancialDataMCP.{tool_name}", operation_id=operation_id, error=str(e))
+            self._track_tool_call("financial_data", tool_name, duration_ms, False)
+            raise
+
+    def _tool_use_time_series_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Internal method for using TimeSeriesMCP tools."""
+        operation_id = f"time_series.{tool_name}.{int(time.time() * 1000)}"
+        start_time = time.time()
+        self.logger.info(f"Calling TimeSeriesMCP.{tool_name}", operation_id=operation_id, arguments=str(arguments.keys())[:100])
+        try:
+            result = self.time_series_mcp.call_tool(tool_name, arguments)
+            duration_ms = (time.time() - start_time) * 1000
+            success = not (result and result.get("error"))
+            if not success:
+                self.logger.error(f"Error calling TimeSeriesMCP.{tool_name}", operation_id=operation_id, error=result.get("error", "Unknown error"))
+            self._track_tool_call("time_series", tool_name, duration_ms, success)
+            if isinstance(result, dict):
+                result["_metadata"] = {"operation_id": operation_id, "duration_ms": duration_ms, "timestamp": datetime.now().isoformat()}
+            return result
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            self.logger.error(f"Exception calling TimeSeriesMCP.{tool_name}", operation_id=operation_id, error=str(e))
+            self._track_tool_call("time_series", tool_name, duration_ms, False)
+            raise
+
+    # --- Registration Methods ---
+
+    def _register_functions(self, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Register functions with the user proxy agent.
+
+        Args:
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
+                              If None, uses the default user_proxy agent created internally.
         """
-        user_proxy = self.agents["user_proxy"]
+        # Use the provided user_proxy_agent if available, otherwise use the internal one
+        user_proxy = user_proxy_agent if user_proxy_agent is not None else self.agents["user_proxy"]
         market_analysis_assistant = self.agents["market_analysis_assistant"]
 
-        # Register technical indicator functions (now part of TimeSeriesMCP)
-        @register_function(
+        # Register technical indicator functions
+        register_function(
+            lambda price_data: self._tool_calculate_indicators(price_data),
             name="calculate_indicators",
             description="Calculate technical indicators for price data",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def calculate_indicators(
-            price_data: List[Dict[str, Any]], indicators: Optional[List[str]] = None
-        ) -> Dict[str, Any]:
-            indicators = indicators or self.default_indicators
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("calculate_indicators", {"data": price_data, "indicators": indicators})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        @register_function(
+        register_function(
+            lambda price_data, ma_types, periods: self._tool_calculate_moving_averages(price_data, ma_types, periods),
             name="calculate_moving_averages",
             description="Calculate various types of moving averages",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def calculate_moving_averages(
-            price_data: List[Dict[str, Any]], ma_types: List[str], periods: List[int]
-        ) -> Dict[str, Any]:
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("calculate_moving_averages", {"data": price_data, "ma_types": ma_types, "periods": periods})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        @register_function(
+        register_function(
+            lambda price_data, oscillators: self._tool_calculate_momentum_oscillators(price_data, oscillators),
             name="calculate_momentum_oscillators",
             description="Calculate momentum oscillators like RSI, Stochastic, MACD",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def calculate_momentum_oscillators(
-            price_data: List[Dict[str, Any]], oscillators: List[str]
-        ) -> Dict[str, Any]:
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("calculate_momentum_oscillators", {"data": price_data, "oscillators": oscillators})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        # Register pattern recognition functions (now part of TimeSeriesMCP)
-        @register_function(
+        # Register pattern recognition functions
+        register_function(
+            lambda price_data: self._tool_detect_patterns(price_data),
             name="detect_patterns",
             description="Detect technical chart patterns in price data",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def detect_patterns(
-            price_data: List[Dict[str, Any]], patterns: Optional[List[str]] = None
-        ) -> Dict[str, Any]:
-            patterns = patterns or self.default_patterns
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("detect_patterns", {"data": price_data, "patterns": patterns})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        @register_function(
+        register_function(
+            lambda price_data: self._tool_detect_candlestick_patterns(price_data),
             name="detect_candlestick_patterns",
             description="Detect candlestick patterns in price data",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def detect_candlestick_patterns(
-            price_data: List[Dict[str, Any]],
-        ) -> Dict[str, Any]:
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("detect_candlestick_patterns", {"data": price_data})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        @register_function(
+        register_function(
+            lambda price_data, method="peaks": self._tool_detect_support_resistance(price_data, method),
             name="detect_support_resistance",
             description="Detect support and resistance levels in price data",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def detect_support_resistance(
-            price_data: List[Dict[str, Any]], method: str = "peaks"
-        ) -> Dict[str, Any]:
-            # Call the tool on TimeSeriesMCP
-            self.mcp_tool_call_count += 1
-            result = self.time_series_mcp.call_tool("detect_support_resistance", {"data": price_data, "method": method})
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1 # Corrected typo here
-            return result
 
-        # Register market data functions (now part of FinancialDataMCP)
-        @register_function(
+        # Register market data functions
+        register_function(
+            lambda symbol, timeframe="1d", limit=100: self._tool_get_market_data(symbol, timeframe, limit),
             name="get_market_data",
             description="Get market data for a symbol",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def get_market_data(
-            symbol: str, timeframe: str = "1d", limit: int = 100
-        ) -> Dict[str, Any]:
-            return self.get_market_data(symbol, timeframe, limit)
 
         # Register market scanning functions
-        @register_function(
+        register_function(
+            lambda symbols, scan_type="technical": self._tool_scan_market(symbols, scan_type),
             name="scan_market",
             description="Scan the market for trading opportunities",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def scan_market(
-            symbols: List[str], scan_type: str = "technical"
-        ) -> Dict[str, Any]:
-            return self.scan_market(symbols, scan_type)
 
-        @register_function(
+        register_function(
+            lambda: self._tool_get_scan_results(),
             name="get_scan_results",
             description="Get the latest market scan results",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def get_scan_results() -> Dict[str, Any]:
-            return self.get_scan_results()
 
         # Register selection model integration functions
-        @register_function(
+        register_function(
+            lambda: self._tool_get_selection_data(),
             name="get_selection_data",
             description="Get data from the Selection Model",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def get_selection_data() -> Dict[str, Any]:
-            return self.get_selection_data()
 
-        @register_function(
+        register_function(
+            lambda analysis_data: self._tool_send_feedback_to_selection(analysis_data),
             name="send_feedback_to_selection",
             description="Send technical analysis feedback to the Selection Model",
             caller=market_analysis_assistant,
             executor=user_proxy,
         )
-        def send_feedback_to_selection(analysis_data: Dict[str, Any]) -> bool:
-            return self.send_feedback_to_selection(analysis_data)
 
         # Register MCP tool access functions
-        self._register_mcp_tool_access()
+        self._register_mcp_tool_access(user_proxy_agent)
 
     def _start_health_check_thread(self, interval=60):
         """Start a background thread for periodic health checks."""
@@ -562,11 +707,15 @@ class MarketAnalysisModel:
             if not success:
                 self.logger.counter(f"tool_call_error.{tool_key}", 1)
     
-    def _register_mcp_tool_access(self):
+    def _register_mcp_tool_access(self, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Register MCP tool access functions with the user proxy agent.
+        
+        Args:
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
+                              If None, uses the default user_proxy agent created internally.
         """
-        user_proxy = self.agents["user_proxy"]
+        user_proxy = user_proxy_agent if user_proxy_agent is not None else self.agents["user_proxy"]
         market_analysis_assistant = self.agents["market_analysis_assistant"]
 
         # Define MCP tool access functions for consolidated MCPs
@@ -1004,17 +1153,17 @@ class MarketAnalysisModel:
                  try:
                      redis_result = self.redis_mcp.call_tool(
                          "set_json",
-                         {"key": cache_key, "value": data_to_cache, "expiry": 3600}  # 1 hour expiration
+                         {"key": cache_key, "data": data_to_cache, "expiry": 3600}  # 1 hour expiration
                      )
                      redis_set_duration = (time.time() - redis_set_start) * 1000
-                     self._track_tool_call("redis", "set_json", redis_set_duration, 
-                                          not redis_result.get("error", False))
+                     self._track_tool_call("redis", "set_json", redis_set_duration,
+                                           not redis_result.get("error", False))
                  except Exception as e:
                      redis_set_duration = (time.time() - redis_set_start) * 1000
                      self._track_tool_call("redis", "set_json", redis_set_duration, False)
-                     self.logger.error("Failed to cache market data", 
-                                     operation_id=operation_id,
-                                     error=str(e))
+                     self.logger.error("Failed to cache market data",
+                                       operation_id=operation_id,
+                                       error=str(e))
                  
                  # Calculate total duration and record metrics
                  total_duration_ms = (time.time() - start_time) * 1000
@@ -2132,11 +2281,11 @@ class MarketAnalysisModel:
         # Track timing
         start_time = time.time()
         
-        self.logger.info("Generating chart", 
-                       operation_id=operation_id,
-                       symbol=symbol,
-                       timeframe=timeframe,
-                       include_indicators=include_indicators)
+        self.logger.info("Generating chart",
+                        operation_id=operation_id,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        include_indicators=include_indicators)
         
         try:
             # Get market data first

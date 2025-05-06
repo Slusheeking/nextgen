@@ -16,6 +16,9 @@ This production-ready implementation includes:
 
 import os
 import json
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 import time
 import logging
 import threading
@@ -30,7 +33,6 @@ import pandas as pd
 import dotenv
 
 # Load environment variables
-dotenv.load_dotenv()
 
 # Import base MCP server
 from mcp_tools.base_mcp_server import BaseMCPServer
@@ -47,6 +49,16 @@ try:
 except ImportError:
     HAVE_PYPFOPT = False
     print("Warning: PyPortfolioOpt not found or import failed.")
+
+# Using Prophet + XGBoost for scenario generation instead of GluonTS
+HAVE_SCENARIO_GEN = False
+try:
+    from prophet import Prophet
+    import xgboost as xgb
+    HAVE_SCENARIO_GEN = True
+    print("Prophet and XGBoost successfully integrated for advanced scenario generation.")
+except ImportError:
+    print("Warning: Prophet or XGBoost not found or import failed. Scenario generation will use Monte Carlo.")
 
 # For advanced risk metrics (e.g., VaR, CVaR, Expected Shortfall)
 try:
@@ -71,7 +83,11 @@ try:
     except ImportError:
         HAVE_SHRINKAGE = False
         print("Warning: Advanced covariance shrinkage methods not available.")
-    
+except ImportError:
+    print("Warning: One or more advanced risk libraries (scipy, statsmodels, arch, pypfopt.risk_models) not found.")
+    # Set flags accordingly if needed, though HAVE_ARCH etc. handle specifics
+    pass # Allow execution to continue without these optional libraries
+
     # Create a risk library module with custom implementations
     class RiskLib:
         """Custom risk metrics implementation"""
@@ -241,200 +257,100 @@ try:
     HAVE_RISK_LIB = True
     print("Comprehensive risk metrics library successfully integrated.")
     
-except ImportError as e:
-    HAVE_RISK_LIB = False
-    print(f"Warning: Advanced risk library not integrated: {e}")
-
-# For scenario generation and stress testing with GluonTS and DeepAR
-try:
-    import gluonts
-    from gluonts.dataset.common import ListDataset
-    from gluonts.torch import DeepAREstimator  # Updated import path for DeepAREstimator
-    
-    # Try to import from torch trainer to avoid MxNet compatibility issues
-    try:
-        from gluonts.torch.model.estimator import Trainer as TorchTrainer
-        use_torch_trainer = True
-        trainer_module = TorchTrainer
-    except ImportError:
-        # Fall back to MxNet trainer if the torch one isn't available
-        try:
-            from gluonts.mx.trainer import Trainer
-            use_torch_trainer = False
-            trainer_module = Trainer
-        except Exception as mx_e:
-            # Handle the np.bool deprecation error specifically
-            if "module 'numpy' has no attribute 'bool'" in str(mx_e):
-                use_torch_trainer = True
-                trainer_module = None
-                print("Warning: MxNet trainer unavailable due to NumPy compatibility issues. Using torch backend only.")
-            else:
-                raise  # Re-raise if it's a different error
-    
-    HAVE_SCENARIO_GEN = True
-    print(f"GluonTS and DeepAR successfully integrated for scenario generation using {'torch' if use_torch_trainer else 'mx'} backend.")
-except ImportError as e:
-    HAVE_SCENARIO_GEN = False
-    use_torch_trainer = False
-    trainer_module = None
-    print(f"Warning: GluonTS or DeepAR not found or import failed: {e}")
-
-
 class RiskAnalysisMCP(BaseMCPServer):
     """
-    Consolidated MCP server for risk analysis and portfolio management.
-    Handles risk metrics, attribution, optimization, slippage, and scenarios.
+    MCP Server implementation for comprehensive risk analysis.
+    Inherits from BaseMCPServer and integrates various risk tools.
     """
-
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initialize the Risk Analysis MCP server.
 
         Args:
-            config: Optional configuration dictionary. If None, loads from
-                  config/risk_analysis_mcp/risk_analysis_mcp_config.json
+            config: Optional configuration dictionary.
         """
-        # Record initialization start time
-        init_start_time = time.time()
-        
-        # Load configuration
+        # Set default config if none provided
         if config is None:
-            config_path = os.path.join("config", "risk_analysis_mcp", "risk_analysis_mcp_config.json")
+            # Define a default config path or load defaults
+            config_path = os.path.join("config", "mcp_tools", "risk_analysis_mcp_config.json")
             if os.path.exists(config_path):
                 try:
                     with open(config_path, 'r') as f:
                         config = json.load(f)
                 except Exception as e:
-                    logging.error(f"Error loading config from {config_path}: {e}")
+                    print(f"Error loading config from {config_path}: {e}")
                     config = {}
             else:
-                logging.warning(f"Config file not found at {config_path}. Using default settings.")
+                print(f"Warning: Config file not found at {config_path}. Using default settings.")
                 config = {}
 
-        # Initialize the base MCP server
+        # Call the parent class constructor with the required name
         super().__init__(name="risk_analysis_mcp", config=config)
-        
-        # Initialize detailed performance counters
+
+        # Initialize attributes specific to RiskAnalysisMCP
+        self._cache_lock = threading.RLock()
+        self._model_lock = threading.RLock()
+        self._cache = {}
+        self._last_health_check = 0
+        self._health_status = {"status": "initializing"}
+        self._last_activity = time.time() # Initialize last activity time
+
+        # Initialize performance counters
         self.risk_metrics_count = 0
         self.risk_attribution_count = 0
         self.portfolio_optimization_count = 0
         self.slippage_analysis_count = 0
         self.scenario_generation_count = 0
+        self.total_processing_time_ms = 0
+        self.execution_errors = 0
         self.cache_hit_count = 0
         self.cache_miss_count = 0
-        self.execution_errors = 0
-        self.total_processing_time_ms = 0
-        
-        # Initialize cache and locks
-        self._cache = {}
-        self._cache_lock = threading.RLock()
-        self._model_lock = threading.RLock()
-        self._last_activity = time.time()
-        
-        # Set up health monitoring with more detailed metrics
-        self._health_status = {
-            "status": "healthy", 
-            "last_updated": datetime.now().isoformat(),
-            "metrics": {
-                "risk_metrics_count": 0,
-                "portfolio_optimization_count": 0,
-                "cache_hit_rate": 0.0,
-                "avg_response_time_ms": 0.0
-            }
-        }
-        self._last_health_check = time.time()
-        
-        # Initialize chart generator for visualizations
-        self.chart_generator = StockChartGenerator()
-        self.logger.info("Stock chart generator initialized for risk analysis visualizations")
 
-        # Configure from config file
+        # Configure from config
         self._configure_from_config()
-        
-        # Initialize models and register tools
-        self._initialize_models()  # Placeholder for risk/optimization models
-        self._register_tools()
-        self._register_management_tools()
-        self._register_monitoring_tools()
 
-        # Record initialization time
-        init_duration = (time.time() - init_start_time) * 1000  # milliseconds
-        self.logger.timing("risk_analysis_mcp.initialization_time_ms", init_duration)
-        
-        # Set up initial gauge metrics
-        self.logger.gauge("risk_analysis_mcp.cache_size", 0)
-        self.logger.gauge("risk_analysis_mcp.cache_hit_rate", 0)
-        self.logger.gauge("risk_analysis_mcp.error_rate", 0)
-        self.logger.gauge("risk_analysis_mcp.avg_response_time_ms", 0)
-        
-        # Log initialization complete with metrics
-        self.logger.info("Risk Analysis MCP initialized successfully", 
-                       init_time_ms=init_duration,
-                       cache_enabled=self.enable_cache,
-                       health_check_enabled=self.config.get("enable_health_check", True),
-                       optimization_objective=self.optimization_objective)
+        # Initialize chart generator if monitoring is enabled
+        if self.config.get("enable_monitoring", True):
+             # Ensure logger is initialized before passing to chart generator
+            if not hasattr(self, 'logger'):
+                 # Initialize logger if not already done by superclass (should be)
+                 self.logger = logging.getLogger(self.name) # Basic logger as fallback
+                 self.logger.warning("Logger not initialized by superclass, using basic logger.")
+            # Pass a specific output directory for risk analysis charts
+            chart_output_dir = os.path.join("monitoring", "dashboard", "charts", "risk_analysis")
+            self.chart_generator = StockChartGenerator(chart_output_dir)
+        else:
+            self.chart_generator = None # Explicitly set to None if disabled
+
+        # Initialize models
+        self._initialize_models()
+
+        # Register tools
+        self._register_tools()
+
+        # Log initialization completion
+        self.logger.info("RiskAnalysisMCP initialized successfully")
 
     def _configure_from_config(self):
         """Extract configuration values."""
-        # Risk Metrics settings
-        metrics_config = self.config.get("risk_metrics", {})
-        self.default_metrics = metrics_config.get("defaults", ["volatility", "sharpe", "beta"])
-        self.risk_free_rate = metrics_config.get("risk_free_rate", 0.02) # Example annual rate
-        self.beta_benchmark = metrics_config.get("beta_benchmark", "SPY") # Example benchmark
+        self.default_metrics = self.config.get("default_metrics", ["volatility", "sharpe"])
+        self.risk_free_rate = self.config.get("risk_free_rate", 0.02)
+        self.optimization_objective = self.config.get("optimization_objective", "max_sharpe")
+        self.optimization_bounds = tuple(self.config.get("optimization_bounds", (0, 1)))
+        self.scenario_count = self.config.get("scenario_count", 100)
+        self.scenario_horizon = self.config.get("scenario_horizon", 30) # e.g., 30 days
+        self.enable_cache = self.config.get("enable_cache", True)
+        self.cache_ttl = self.config.get("cache_ttl", 600) # Default 10 minutes
+        self.max_cache_size = self.config.get("max_cache_size", 1000) # Max cache items
 
-        # Portfolio Optimization settings
-        opt_config = self.config.get("portfolio_optimization", {})
-        self.optimization_objective = opt_config.get("objective", "max_sharpe") # e.g., max_sharpe, min_volatility
-        self.optimization_bounds = tuple(opt_config.get("weight_bounds", (0, 1))) # Default: long only
-
-        # Scenario Generation settings
-        scenario_config = self.config.get("scenario_generation", {})
-        self.scenario_count = scenario_config.get("count", 100)
-        self.scenario_horizon = scenario_config.get("horizon", 30) # e.g., 30 days
-        
-        # Cache settings
-        cache_config = self.config.get("cache", {})
-        self.enable_cache = cache_config.get("enable", True)
-        self.cache_ttl = cache_config.get("ttl_seconds", 3600)  # Default 1 hour cache TTL
-        self.max_cache_size = cache_config.get("max_size", 1000)  # Maximum number of items in cache
-
-        self.logger.info("Risk Analysis MCP configuration loaded",
+        self.logger.info("RiskAnalysisMCP configuration loaded",
                        default_metrics=self.default_metrics,
+                       risk_free_rate=self.risk_free_rate,
                        optimization_objective=self.optimization_objective,
-                       enable_cache=self.enable_cache,
+                       scenario_count=self.scenario_count,
+                       cache_enabled=self.enable_cache,
                        cache_ttl=self.cache_ttl)
-                       
-    def _register_management_tools(self):
-        """Register tools for monitoring and management of the MCP server."""
-        self.register_tool(
-            self.get_health_status,
-            "get_health_status",
-            "Get the current health status of the MCP server"
-        )
-        self.register_tool(
-            self.get_cache_stats,
-            "get_cache_stats",
-            "Get statistics about the cache usage"
-        )
-        self.register_tool(
-            self.clear_cache,
-            "clear_cache",
-            "Clear the cache to free up memory"
-        )
-        
-    def _register_monitoring_tools(self):
-        """Register enhanced monitoring tools."""
-        self.register_tool(
-            self.generate_performance_report,
-            "generate_performance_report",
-            "Generate a comprehensive performance report for the Risk Analysis MCP"
-        )
-        self.register_tool(
-            self.generate_risk_dashboard,
-            "generate_risk_dashboard",
-            "Generate a visual dashboard of risk metrics and analysis results"
-        )
-        
+
     def generate_performance_report(self) -> Dict[str, Any]:
         """
         Generate a comprehensive performance report with detailed metrics.
@@ -1027,72 +943,68 @@ class RiskAnalysisMCP(BaseMCPServer):
 
     def _initialize_models(self):
         """Initialize advanced risk or optimization models if configured."""
-        # Initialize scenario generator with DeepAR model if available
+        # Initialize scenario generator with Prophet and XGBoost models if available
         self.scenario_model = None
+        self.xgb_model = None
         
         if HAVE_SCENARIO_GEN:
             try:
                 model_config = self.config.get("scenario_model", {})
                 model_path = model_config.get("model_path")
                 
-                # Check for pre-trained model path
-                if model_path and os.path.exists(model_path):
-                    self.logger.info(f"Loading pre-trained DeepAR model from {model_path}")
+                # Check for pre-trained model path for XGBoost
+                if model_path and os.path.exists(model_path) and model_path.endswith(('.json', '.model')):
+                    self.logger.info(f"Loading pre-trained XGBoost model from {model_path}")
                     try:
-                        # Load pre-trained model
-                        self.scenario_model = DeepAREstimator.deserialize(model_path)
-                        self.logger.info("DeepAR model loaded successfully")
+                        # Load pre-trained XGBoost model
+                        self.xgb_model = xgb.Booster()
+                        self.xgb_model.load_model(model_path)
+                        self.logger.info("XGBoost model loaded successfully")
                     except Exception as e:
-                        self.logger.error(f"Failed to load pre-trained model: {e}", exc_info=True)
+                        self.logger.error(f"Failed to load pre-trained XGBoost model: {e}", exc_info=True)
                 else:
-                    # Initialize a new model with default parameters
-                    self.logger.info("Initializing new DeepAR model for scenario generation")
+                    # Initialize a new Prophet model
+                    self.logger.info("Initializing new Prophet model for scenario generation")
                     try:
-                        # Configure the model parameters
-                        prediction_length = self.scenario_horizon
-                        freq = model_config.get("freq", "D")  # Default to daily frequency
-                        context_length = model_config.get("context_length", 2 * prediction_length) 
+                        # Configure Prophet parameters
+                        prophet_params = model_config.get("prophet", {})
                         
-                        # Create trainer with specified or default parameters
-                        trainer_params = model_config.get("trainer", {})
-                        
-                        if trainer_module is not None:
-                            trainer = trainer_module(
-                                epochs=trainer_params.get("epochs", 10),
-                                learning_rate=trainer_params.get("learning_rate", 1e-3),
-                                batch_size=trainer_params.get("batch_size", 32)
-                            )
-                        else:
-                            # Use default values if trainer_module is None
-                            trainer = None  # DeepAREstimator can use default trainer
-                        
-                        # Initialize the DeepAR estimator
-                        self.scenario_model = DeepAREstimator(
-                            prediction_length=prediction_length,
-                            context_length=context_length,
-                            freq=freq,
-                            trainer=trainer,
-                            num_layers=model_config.get("num_layers", 2),
-                            num_cells=model_config.get("num_cells", 40),
-                            dropout_rate=model_config.get("dropout_rate", 0.1)
+                        # Initialize Prophet with configurable parameters
+                        self.scenario_model = Prophet(
+                            seasonality_mode=prophet_params.get("seasonality_mode", "multiplicative"),
+                            yearly_seasonality=prophet_params.get("yearly_seasonality", "auto"),
+                            weekly_seasonality=prophet_params.get("weekly_seasonality", "auto"),
+                            daily_seasonality=prophet_params.get("daily_seasonality", False)
                         )
-                        self.logger.info("DeepAR model initialized with configuration", 
-                                       prediction_length=prediction_length,
-                                       context_length=context_length,
-                                       freq=freq)
+                        
+                        # Initialize XGBoost model for residuals/features
+                        xgb_params = model_config.get("xgboost", {})
+                        self.xgb_model = xgb.XGBRegressor(
+                            n_estimators=xgb_params.get("n_estimators", 100),
+                            learning_rate=xgb_params.get("learning_rate", 0.1),
+                            max_depth=xgb_params.get("max_depth", 3),
+                            objective="reg:squarederror",
+                            random_state=42
+                        )
+                        
+                        self.logger.info("Prophet and XGBoost models initialized with configuration",
+                                       seasonality_mode=prophet_params.get("seasonality_mode", "multiplicative"),
+                                       xgb_estimators=xgb_params.get("n_estimators", 100))
                     except Exception as e:
-                        self.logger.error(f"Failed to initialize DeepAR model: {e}", exc_info=True)
+                        self.logger.error(f"Failed to initialize Prophet+XGBoost models: {e}", exc_info=True)
                         self.scenario_model = None
+                        self.xgb_model = None
             except Exception as e:
                 self.logger.error(f"Error in scenario model initialization: {e}", exc_info=True)
                 self.scenario_model = None
+                self.xgb_model = None
         else:
-            self.logger.info("GluonTS or DeepAR not available. Using basic Monte Carlo simulation for scenarios.")
+            self.logger.info("Prophet or XGBoost not available. Using basic Monte Carlo simulation for scenarios.")
         
         # Log the status of model initialization
-        self.logger.info("Risk models initialization complete", 
+        self.logger.info("Risk models initialization complete",
                        scenario_model=self.scenario_model is not None,
-                       scenario_model_type="DeepAR" if self.scenario_model is not None else "None",
+                       scenario_model_type="Prophet+XGBoost" if self.scenario_model is not None else "None",
                        optimization_available=HAVE_PYPFOPT)
 
     def _register_tools(self):
@@ -1121,6 +1033,11 @@ class RiskAnalysisMCP(BaseMCPServer):
             self.generate_scenarios,
             "generate_scenarios",
             "Generate market scenarios for stress testing or simulation."
+        )
+        self.register_tool(
+            self.generate_risk_dashboard,
+            "generate_risk_dashboard",
+            "Generate a visual dashboard of risk metrics and analysis results"
         )
 
     def _validate_returns_data(self, data: Any, required_cols: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
@@ -1186,6 +1103,13 @@ class RiskAnalysisMCP(BaseMCPServer):
         
         # Log the start of calculation with detailed context
         try:
+            # Explicitly check input type before validation
+            if not isinstance(returns_data, (dict, pd.DataFrame)):
+                 self.logger.error(f"Invalid input type for returns_data: {type(returns_data)}. Expected dict or DataFrame.")
+                 self.execution_errors += 1
+                 self.logger.counter("risk_analysis_mcp.execution_errors")
+                 return {"error": f"Invalid input type for returns_data: {type(returns_data)}. Expected dict or DataFrame."}
+
             # Parse and validate input data
             validation_start = time.time()
             df_returns = self._validate_returns_data(returns_data)
@@ -1193,13 +1117,20 @@ class RiskAnalysisMCP(BaseMCPServer):
             self.logger.timing("risk_analysis_mcp.data_validation_time_ms", validation_time)
             
             if df_returns is None:
-                self.logger.error("Invalid returns data format for risk metrics calculation")
+                self.logger.error("Invalid returns data format for risk metrics calculation after validation")
                 self.execution_errors += 1
                 self.logger.counter("risk_analysis_mcp.execution_errors")
-                return {"error": "Invalid returns data format."}
+                return {"error": "Invalid returns data format after validation."}
             
             # Determine which metrics to calculate
             metrics_to_calc = metrics or self.default_metrics
+            # Ensure metrics_to_calc is a list if it's not None
+            if metrics_to_calc is not None and not isinstance(metrics_to_calc, list):
+                 self.logger.error("Invalid type for metrics parameter. Expected list or None.")
+                 self.execution_errors += 1
+                 self.logger.counter("risk_analysis_mcp.execution_errors")
+                 return {"error": "Invalid type for metrics parameter. Expected list or None."}
+            
             asset_count = len(df_returns.columns)
             data_points = len(df_returns)
             
@@ -1697,92 +1628,133 @@ class RiskAnalysisMCP(BaseMCPServer):
                        use_deepar=HAVE_SCENARIO_GEN and self.scenario_model is not None)
         
         try:
-            # Check if we can use GluonTS DeepAR model
+            # Check if we can use Prophet + XGBoost model
             if HAVE_SCENARIO_GEN and self.scenario_model is not None:
-                self.logger.info("Using DeepAR model for advanced scenario generation")
+                self.logger.info("Using Prophet + XGBoost models for advanced scenario generation")
                 
                 try:
-                    # Prepare data in GluonTS format
+                    # Prepare for time-based modeling
                     model_start_time = time.time()
                     
-                    # Convert the DataFrame to the format expected by GluonTS
-                    training_data = []
-                    freq = self.config.get("scenario_model", {}).get("freq", "D")  # Default to daily frequency
-                    
-                    # This converts data to the format expected by the model (GluonTS ListDataset)
-                    for col in df_hist.columns:
-                        # Create a training instance for each asset
-                        training_data.append({
-                            "target": df_hist[col].values,
-                            "start": df_hist.index[0] if isinstance(df_hist.index, pd.DatetimeIndex) else pd.Timestamp("2000-01-01"),
-                            "item_id": col
-                        })
-                    
-                    # Create GluonTS ListDataset
-                    gluonts_dataset = ListDataset(training_data, freq=freq)
-                    
-                    # Check if model needs training
-                    predictor = None
-                    if hasattr(self.scenario_model, 'predict'):
-                        # Model is already a predictor
-                        predictor = self.scenario_model
-                    else:
-                        # Model is an estimator that needs training
-                        self.logger.info("Training DeepAR model with historical data")
-                        predictor = self.scenario_model.train(gluonts_dataset)
-                    
-                    # Generate forecasts
-                    self.logger.info(f"Generating {scenario_count} scenarios with DeepAR model")
-                    forecasts = list(predictor.predict(gluonts_dataset, num_samples=scenario_count))
-                    
-                    # Convert forecasts to a more usable format
-                    scenarios = []
+                    # Container for scenarios
+                    all_scenarios = []
                     asset_names = list(df_hist.columns)
                     
-                    # Process each asset's forecasts
-                    for asset_idx, forecast in enumerate(forecasts):
-                        asset_name = asset_names[asset_idx] if asset_idx < len(asset_names) else f"asset_{asset_idx}"
+                    # For each asset, generate scenarios using Prophet + XGBoost
+                    for asset_idx, asset_name in enumerate(asset_names):
+                        asset_series = df_hist[asset_name]
                         
-                        # Extract samples from the forecast
-                        samples = forecast.samples  # Shape: (num_samples, prediction_length)
+                        # Create Prophet dataset with proper formatting
+                        prophet_df = pd.DataFrame({
+                            'ds': df_hist.index if isinstance(df_hist.index, pd.DatetimeIndex)
+                                  else pd.date_range(start='2000-01-01', periods=len(asset_series), freq='D'),
+                            'y': asset_series.values
+                        })
                         
-                        # For each scenario sample
-                        for sample_idx in range(min(scenario_count, samples.shape[0])):
-                            # Create or extend the scenario
-                            if sample_idx >= len(scenarios):
-                                scenarios.append({})
+                        # Fit Prophet model for this asset
+                        self.scenario_model.fit(prophet_df)
+                        
+                        # Create future dataframe for prediction
+                        future_df = self.scenario_model.make_future_dataframe(periods=scenario_horizon)
+                        
+                        # Get Prophet prediction
+                        forecast = self.scenario_model.predict(future_df)
+                        
+                        # Extract components for XGBoost feature engineering
+                        components = forecast[['ds', 'trend', 'yhat']]
+                        
+                        # Prepare training data for XGBoost (use historical data + Prophet components)
+                        train_df = components[:-scenario_horizon].copy()
+                        
+                        # Add time features for XGBoost
+                        for df in [train_df, components]:
+                            df['day_of_week'] = df['ds'].dt.dayofweek
+                            df['month'] = df['ds'].dt.month
+                            df['day'] = df['ds'].dt.day
                             
-                            # Add this asset's forecast to the scenario
-                            scenarios[sample_idx][asset_name] = samples[sample_idx].tolist()
+                        # Get actual values for training
+                        train_df['y'] = prophet_df['y']
+                        
+                        # Select features for XGBoost
+                        feature_cols = ['trend', 'day_of_week', 'month', 'day']
+                        
+                        # Train XGBoost on historical data + Prophet components
+                        if self.xgb_model is not None:
+                            # Train XGBoost model
+                            self.xgb_model.fit(
+                                train_df[feature_cols],
+                                train_df['y']
+                            )
+                            
+                            # Future component data for scenarios
+                            future_components = components[-scenario_horizon:].copy()
+                            
+                            # Generate multiple scenarios using XGBoost with randomness
+                            asset_scenarios = []
+                            for i in range(scenario_count):
+                                scenario_pred = self.xgb_model.predict(future_components[feature_cols])
+                                
+                                # Add randomness based on historical residuals
+                                if len(train_df) > 1:
+                                    # Calculate historical prediction and residuals
+                                    hist_pred = self.xgb_model.predict(train_df[feature_cols])
+                                    residuals = train_df['y'] - hist_pred
+                                    
+                                    # Sample from residuals distribution
+                                    noise = np.random.choice(residuals, size=len(scenario_pred))
+                                    scenario_pred += noise
+                                
+                                asset_scenarios.append(scenario_pred)
+                        else:
+                            # Fallback to Prophet-only scenarios with sampling
+                            future_yhat = forecast['yhat'].values[-scenario_horizon:]
+                            future_yhat_lower = forecast['yhat_lower'].values[-scenario_horizon:]
+                            future_yhat_upper = forecast['yhat_upper'].values[-scenario_horizon:]
+                            
+                            asset_scenarios = []
+                            for i in range(scenario_count):
+                                # Sample between lower and upper bounds
+                                scenario_pred = np.random.uniform(
+                                    future_yhat_lower,
+                                    future_yhat_upper,
+                                    size=scenario_horizon
+                                )
+                                asset_scenarios.append(scenario_pred)
+                        
+                        # Store scenarios for this asset
+                        for i in range(scenario_count):
+                            if i >= len(all_scenarios):
+                                all_scenarios.append({})
+                            all_scenarios[i][asset_name] = asset_scenarios[i].tolist()
                     
                     # Convert to the expected format
                     formatted_scenarios = []
-                    for scenario in scenarios:
+                    for scenario in all_scenarios:
                         # Convert to dataframe for consistent structure
                         scenario_df = pd.DataFrame(scenario)
                         formatted_scenarios.append(scenario_df.to_dict('records'))
                     
                     model_time = (time.time() - model_start_time) * 1000  # ms
-                    self.logger.timing("risk_analysis_mcp.deepar_prediction_time_ms", model_time)
+                    self.logger.timing("risk_analysis_mcp.prophet_xgboost_prediction_time_ms", model_time)
                     
                     results = {
                         "scenarios": formatted_scenarios,
-                        "method": "deepar",
+                        "method": "prophet_xgboost",
                         "asset_count": len(df_hist.columns),
                         "scenario_count": len(formatted_scenarios),
                         "horizon": scenario_horizon,
                         "model_time_ms": round(model_time, 2)
                     }
                     
-                    self.logger.info(f"DeepAR scenario generation completed successfully in {model_time:.2f}ms")
+                    self.logger.info(f"Prophet+XGBoost scenario generation completed successfully in {model_time:.2f}ms")
                     
                 except Exception as model_error:
                     # Log error and fall back to Monte Carlo
-                    self.logger.error(f"Error using DeepAR model for scenario generation: {model_error}", exc_info=True)
+                    self.logger.error(f"Error using Prophet+XGBoost models for scenario generation: {model_error}", exc_info=True)
                     self.execution_errors += 1
                     
                     # Fall back to Monte Carlo simulation
-                    self.logger.info("Falling back to Monte Carlo simulation due to DeepAR error")
+                    self.logger.info("Falling back to Monte Carlo simulation due to Prophet+XGBoost error")
                     
                     # Generate Monte Carlo scenarios using historical statistics
                     scenarios = self._generate_monte_carlo_scenarios(df_hist, scenario_count, scenario_horizon)
@@ -1797,7 +1769,7 @@ class RiskAnalysisMCP(BaseMCPServer):
                     }
             else:
                 # Use Monte Carlo simulation
-                self.logger.info("Using Monte Carlo simulation for scenario generation (DeepAR not available)")
+                self.logger.info("Using Monte Carlo simulation for scenario generation (Prophet+XGBoost not available)")
                 
                 # Generate Monte Carlo scenarios
                 scenarios = self._generate_monte_carlo_scenarios(df_hist, scenario_count, scenario_horizon)

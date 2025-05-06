@@ -204,6 +204,31 @@ class TradingMCP(BaseMCPServer):
             # Assign the method to the instance
             self._str_to_timeframe = _str_to_timeframe.__get__(self, self.__class__)
 
+    def _check_trading_client(self) -> bool:
+        """
+        Check if trading client is initialized.
+        
+        Returns:
+            bool: True if client is available, False otherwise
+        """
+        if self.trading_client is None:
+            self.logger.error("Trading client is not initialized. API calls will fail.")
+            self.logger.counter("trading_mcp.missing_client_errors")
+            return False
+        return True
+        
+    def _check_data_client(self) -> bool:
+        """
+        Check if data client is initialized.
+        
+        Returns:
+            bool: True if client is available, False otherwise
+        """
+        if self.data_client is None:
+            self.logger.error("Data client is not initialized. API calls will fail.")
+            self.logger.counter("trading_mcp.missing_client_errors")
+            return False
+        return True
         
     def get_trading_client_health(self) -> Dict[str, Any]:
         """

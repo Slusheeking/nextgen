@@ -80,9 +80,7 @@ class PolygonNewsMCP(BaseDataMCP):
         # Initialize news sentiment analyzer
         self._initialize_sentiment_analyzer()
 
-        self.logger.info(
-            "PolygonNewsMCP initialized with %d endpoints", len(self.endpoints)
-        )
+        self.logger.info(f"PolygonNewsMCP initialized with {len(self.endpoints)} endpoints")
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -92,13 +90,16 @@ class PolygonNewsMCP(BaseDataMCP):
             Client configuration or None if initialization fails
         """
         try:
-            api_key = self.config.get("api_key") or os.environ.get("POLYGON_API_KEY")
+            # Prioritize environment variable for API key
+            api_key = os.environ.get("POLYGON_API_KEY") or self.config.get("api_key")
             base_url = self.config.get("base_url", "https://api.polygon.io")
 
             if not api_key:
-                self.logger.warning("No Polygon API key provided - API calls will fail")
+                self.logger.error("No Polygon API key provided - API calls will fail")
+                return None
 
-            # Return the configuration directly
+            self.logger.info(f"Loaded Polygon API key: {api_key[:4]}...{api_key[-4:]}")
+
             return {"api_key": api_key, "base_url": base_url}
 
         except Exception as e:

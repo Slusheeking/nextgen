@@ -8,7 +8,7 @@ and endpoint selection.
 import time
 import json
 import importlib
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 from abc import abstractmethod
 
 # Direct imports instead of dynamic loading
@@ -17,6 +17,9 @@ try:
 except ImportError:
     pd = None
     print("Warning: Pandas not found or import failed.")
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from dotenv import load_dotenv
 
@@ -53,18 +56,18 @@ class BaseDataMCP(BaseMCPServer):
         # Set up data cache with configurable TTL
         self.cache_enabled = self.config.get("cache_enabled", True)
         self.cache_ttl = self.config.get("cache_ttl", 300)  # 5 minutes default
-        self.cache = {}
-        self.cache_timestamps = {}
+        self.cache: Dict[str, Any] = {}
+        self.cache_timestamps: Dict[str, float] = {}
 
         # Set up endpoint definitions - to be populated by child classes
-        self.endpoints = {}
+        self.endpoints: Dict[str, Dict[str, Any]] = {}
 
         # Set up default error handling behavior
         self.error_retry_limit = self.config.get("error_retry_limit", 3)
         self.error_retry_delay = self.config.get("error_retry_delay", 1.0)
 
         # Initialize endpoint stats
-        self.endpoint_stats = {}
+        self.endpoint_stats: Dict[str, Dict[str, Any]] = {}
 
         # Register common tools
         self._register_common_tools()
@@ -418,7 +421,7 @@ class BaseDataMCP(BaseMCPServer):
 
     def convert_to_dataframe(
         self, data: Union[Dict[str, Any], List[Dict[str, Any]]]
-    ) -> 'pd.DataFrame':
+    ) -> Any:
         """
         Convert API response data to pandas DataFrame for easier analysis.
 

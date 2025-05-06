@@ -1,0 +1,17 @@
+[Unit]
+Description=Unified MCP Servers Service
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nextgen
+ExecStart=/usr/bin/python3 mcp_tools/run_all_mcp_servers.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mcp-servers
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

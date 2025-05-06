@@ -160,13 +160,16 @@ class FinancialDataMCP(BaseMCPServer):
         self.enable_cache = self.config.get("enable_cache", True)
         self.cache_ttl = self.config.get("cache_ttl", 300)  # Default 5 minutes cache
         
+        # Configure from config and initialize clients first
+        self._configure_from_config()
+        self._initialize_data_clients()
+        
         # Start health check thread specifically for financial data sources
+        # (after clients are initialized)
         if self.config.get("enable_financial_health_check", True):
             self._start_financial_health_check_thread()
 
-        # Configure from config, initialize clients, and register tools
-        self._configure_from_config()
-        self._initialize_data_clients()
+        # Register tools
         self._register_tools()
         
         # Register monitoring tools
@@ -178,11 +181,7 @@ class FinancialDataMCP(BaseMCPServer):
         self.logger.timing("financial_data_mcp.initialization_time_ms", init_duration)
         
         # Log detailed initialization information
-        self.logger.info("Financial Data MCP initialized successfully", 
-                       init_time_ms=init_duration,
-                       sources_count=len(self.clients),
-                       cache_enabled=self.enable_cache,
-                       cache_ttl=self.cache_ttl)
+        self.logger.info(f"Financial Data MCP initialized successfully - init_time_ms: {init_duration}, sources_count: {len(self.clients)}, cache_enabled: {self.enable_cache}, cache_ttl: {self.cache_ttl}")
 
     def _start_financial_health_check_thread(self):
         """
@@ -294,16 +293,10 @@ class FinancialDataMCP(BaseMCPServer):
                         
                     # Every 5th check, log detailed health information
                     if health_check_counter % 5 == 0:
-                        self.logger.info("Detailed financial data health check completed", 
-                                      overall_status=overall_status,
-                                      healthy_sources=len(self.clients) - len(unhealthy_sources) - len(degraded_sources),
-                                      degraded_sources=len(degraded_sources),
-                                      unhealthy_sources=len(unhealthy_sources),
-                                      total_sources=len(self.clients))
+                        self.logger.info(f"Detailed financial data health check completed - overall_status: {overall_status}, healthy_sources: {len(self.clients) - len(unhealthy_sources) - len(degraded_sources)}, degraded_sources: {len(degraded_sources)}, unhealthy_sources: {len(unhealthy_sources)}, total_sources: {len(self.clients)}")
                     else:
                         # More concise log for regular checks
-                        self.logger.info("Financial data health check completed", 
-                                      overall_status=overall_status)
+                        self.logger.info(f"Financial data health check completed - overall_status: {overall_status}")
                     
                     # Check if we need to generate charts (every 10th check)
                     if health_check_counter % 10 == 0:
@@ -436,10 +429,13 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API key from environment variable
+                config["api_key"] = os.getenv("POLYGON_API_KEY")
 
                 self.clients["polygon_rest"] = PolygonRestMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_rest_ms", client_init_time)
+                self.logger.timing("client_init.polygon_rest_ms", client_init_time, source="polygon_rest")
                 self.logger.info("Polygon REST client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -460,10 +456,13 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API key from environment variable
+                config["api_key"] = os.getenv("POLYGON_API_KEY")
                     
                 self.clients["polygon_ws"] = PolygonWsMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_ws_ms", client_init_time)
+                self.logger.timing("client_init.polygon_ws_ms", client_init_time, source="polygon_ws")
                 self.logger.info("Polygon WebSocket client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -484,10 +483,13 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API key from environment variable
+                config["api_key"] = os.getenv("POLYGON_API_KEY")
                     
                 self.clients["polygon_news"] = PolygonNewsMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_news_ms", client_init_time)
+                self.logger.timing("client_init.polygon_news_ms", client_init_time, source="polygon_news")
                 self.logger.info("Polygon News client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -508,10 +510,13 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API key from environment variable if needed
+                config["api_key"] = os.getenv("YAHOO_FINANCE_API_KEY")
                     
                 self.clients["yahoo_finance"] = YahooFinanceMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.yahoo_finance_ms", client_init_time)
+                self.logger.timing("client_init.yahoo_finance_ms", client_init_time, source="yahoo_finance")
                 self.logger.info("Yahoo Finance client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -523,30 +528,6 @@ class FinancialDataMCP(BaseMCPServer):
                 self.logger.error(f"Failed to initialize Yahoo Finance client: {e}", exc_info=True)
                 failed_inits += 1
 
-        if HAVE_YAHOO_NEWS and self.sources_config.get("yahoo_news", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("yahoo_news", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                    
-                self.clients["yahoo_news"] = YahooNewsMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.yahoo_news_ms", client_init_time)
-                self.logger.info("Yahoo News client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["yahoo_news"] = 0
-                self.source_error_counts["yahoo_news"] = 0
-                self.source_latencies["yahoo_news"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Yahoo News client: {e}", exc_info=True)
-                failed_inits += 1
-
         if HAVE_REDDIT and self.sources_config.get("reddit", {}).get("enabled", True):
             try:
                 client_init_start = time.time()
@@ -556,10 +537,17 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API keys from environment variables
+                config["client_id"] = os.getenv("REDDIT_CLIENT_ID")
+                config["client_secret"] = os.getenv("REDDIT_CLIENT_SECRET")
+                config["username"] = os.getenv("REDDIT_USERNAME")
+                config["password"] = os.getenv("REDDIT_PASSWORD")
+                config["user_agent"] = os.getenv("REDDIT_USER_AGENT")
                     
                 self.clients["reddit"] = RedditMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.reddit_ms", client_init_time)
+                self.logger.timing("client_init.reddit_ms", client_init_time, source="reddit")
                 self.logger.info("Reddit client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -580,10 +568,13 @@ class FinancialDataMCP(BaseMCPServer):
                     config["logger"] = self.logger
                 if "metrics_collector" not in config:
                     config["metrics_collector"] = self.metrics_collector
+                
+                # Load API key from environment variable
+                config["api_key"] = os.getenv("UNUSUAL_WHALES_API_KEY")
                     
                 self.clients["unusual_whales"] = UnusualWhalesMCP(config)
                 client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.unusual_whales_ms", client_init_time)
+                self.logger.timing("client_init.unusual_whales_ms", client_init_time, source="unusual_whales")
                 self.logger.info("Unusual Whales client initialized", init_time_ms=client_init_time)
                 successful_inits += 1
                 
@@ -597,7 +588,7 @@ class FinancialDataMCP(BaseMCPServer):
 
         # Record metrics about client initialization
         total_init_time = (time.time() - init_start_time) * 1000
-        self.logger.timing("client_init.total_time_ms", total_init_time)
+        self.logger.timing("client_init.total_time_ms", total_init_time, source="all_clients")
         self.logger.gauge("client_init.success_count", successful_inits)
         self.logger.gauge("client_init.failed_count", failed_inits)
         
@@ -607,11 +598,7 @@ class FinancialDataMCP(BaseMCPServer):
         else:
             success_rate = successful_inits / (successful_inits + failed_inits) * 100
             self.logger.gauge("client_init.success_rate", success_rate)
-            self.logger.info("Data source client initialization complete", 
-                           success_count=successful_inits, 
-                           failed_count=failed_inits, 
-                           success_rate=f"{success_rate:.1f}%",
-                           total_time_ms=total_init_time)
+            self.logger.info(f"Data source client initialization complete - success_count: {successful_inits}, failed_count: {failed_inits}, success_rate: {success_rate:.1f}%, total_time_ms: {total_init_time}")
 
 
     def _register_tools(self):
@@ -656,6 +643,30 @@ class FinancialDataMCP(BaseMCPServer):
             "Get a list of tickers with optional filtering."
         )
         self.register_tool(
+            "get_social_sentiment",
+            "Get social media sentiment or mentions for symbols (e.g., from Reddit)."
+        )
+        self.register_tool(
+            self.get_options_data,
+            "get_options_data",
+            "Get options chain data or unusual options activity."
+        )
+        self.register_tool(
+            self.get_fundamentals,
+            "get_fundamentals",
+            "Get fundamental company data (e.g., earnings, financials, metrics)."
+        )
+        self.register_tool(
+            self.get_market_status,
+            "get_market_status",
+            "Get current market status (open/closed) and related info (e.g., VIX, SPY)."
+        )
+        self.register_tool(
+            self.get_ticker_list,
+            "get_ticker_list",
+            "Get a list of tickers with optional filtering."
+        )
+        self.register_tool(
             self.get_market_movers,
             "get_market_movers",
             "Get top market movers (gainers or losers)."
@@ -663,7 +674,7 @@ class FinancialDataMCP(BaseMCPServer):
         
         # Record registration time
         registration_time = (time.time() - start_time) * 1000
-        self.logger.timing("tool_registration_time_ms", registration_time)
+        self.logger.timing("tool_registration_time_ms", registration_time, source="financial_data_mcp")
         self.logger.info("Registered financial data tools", 
                        tool_count=8, 
                        registration_time_ms=registration_time)
@@ -713,10 +724,8 @@ class FinancialDataMCP(BaseMCPServer):
         
         # Record registration time
         registration_time = (time.time() - start_time) * 1000
-        self.logger.timing("monitoring_tool_registration_time_ms", registration_time)
-        self.logger.info("Registered financial monitoring tools", 
-                       tool_count=5, 
-                       registration_time_ms=registration_time)
+        self.logger.timing("monitoring_tool_registration_time_ms", registration_time, source="financial_data_mcp")
+        self.logger.info(f"Registered financial monitoring tools - tool_count: 5, registration_time_ms: {registration_time}")
 
 
     def _get_client(self, capability: str) -> Optional[Any]:
@@ -741,7 +750,7 @@ class FinancialDataMCP(BaseMCPServer):
             if source_name in possible_sources and source_name in self.clients:
                 # Track client selection time for performance measurement
                 selection_time = (time.time() - start_time) * 1000
-                self.logger.timing("client_selection_time_ms", selection_time)
+                self.logger.timing("client_selection_time_ms", selection_time, source="client_selector")
                 
                 # Log client selection with timing
                 self.logger.debug(f"Selected client '{source_name}' for capability '{capability}'", 
@@ -756,7 +765,7 @@ class FinancialDataMCP(BaseMCPServer):
 
         # No suitable client found - track as a failure
         selection_time = (time.time() - start_time) * 1000
-        self.logger.timing("client_selection_failed_time_ms", selection_time)
+        self.logger.timing("client_selection_failed_time_ms", selection_time, source="client_selector")
         self.logger.warning(f"No suitable client found for capability: {capability}",
                          capability=capability,
                          possible_sources=possible_sources,
@@ -1319,8 +1328,10 @@ class FinancialDataMCP(BaseMCPServer):
                         
                         # Record response time for cache hit
                         response_time = (time.time() - start_time) * 1000
-                        self.logger.timing("get_market_data_cache_hit_time_ms", response_time, 
-                                         symbol_count=len(symbols), data_type=data_type)
+                        # Include data_type in the metric name instead of as a parameter
+                        metric_name = f"get_market_data_{data_type}_cache_hit_time_ms"
+                        self.logger.timing(metric_name, response_time,
+                                          source="cache")
                         
                         # Return cached data with cache metadata
                         cached_response = self.cache[cache_key]
@@ -1495,7 +1506,9 @@ class FinancialDataMCP(BaseMCPServer):
                 
                 # Calculate and record error response time
                 error_time = (time.time() - start_time) * 1000
-                self.logger.timing("market_data_no_client_error_time_ms", error_time, data_type=data_type)
+                # Include data_type in the metric name instead of as a parameter
+                metric_name = f"market_data_no_client_{data_type}_error_time_ms"
+                self.logger.timing(metric_name, error_time)
                 
                 return {
                     "error": "No streaming client available.",
@@ -1537,8 +1550,10 @@ class FinancialDataMCP(BaseMCPServer):
                                 
                                 # Record per-symbol timing
                                 symbol_time = (time.time() - symbol_start_time) * 1000
-                                self.logger.timing("market_data_symbol_time_ms", symbol_time, 
-                                                 symbol=symbol, source=client_name)
+                                # Include symbol in metric name instead of as parameter
+                                symbol_safe = symbol.replace('.', '_').replace('-', '_')
+                                self.logger.timing(f"market_data_symbol_{symbol_safe}_time_ms", symbol_time,
+                                                  source=client_name)
                                 
                                 if data and not data.get("error"):
                                     all_data[symbol] = data.get("results", [])
@@ -1562,8 +1577,10 @@ class FinancialDataMCP(BaseMCPServer):
                                 
                                 # Record per-symbol timing
                                 symbol_time = (time.time() - symbol_start_time) * 1000
-                                self.logger.timing("market_data_symbol_time_ms", symbol_time, 
-                                                 symbol=symbol, source=client_name)
+                                # Include symbol in metric name instead of as parameter
+                                symbol_safe = symbol.replace('.', '_').replace('-', '_')
+                                self.logger.timing(f"market_data_symbol_{symbol_safe}_time_ms", symbol_time,
+                                                  source=client_name)
                                 
                                 if data and not data.get("error"):
                                     all_data[symbol] = data.get("prices", []) # Assuming key name
@@ -1597,10 +1614,16 @@ class FinancialDataMCP(BaseMCPServer):
                                              threshold_ms=self.slow_market_data_threshold_ms)
                         
                         # Record metrics
-                        self.logger.timing("get_market_data_bars_time_ms", processing_time * 1000, 
-                                         symbol_count=len(symbols), 
-                                         success_count=success_count,
-                                         error_count=error_count)
+                        # Only pass name, value, and source to timing method
+                        self.logger.timing("get_market_data_bars_time_ms", processing_time * 1000,
+                                          source=client_name)
+                        
+                        # Log additional details using info method which accepts kwargs
+                        self.logger.info("Market data bars metrics", 
+                                       symbol_count=len(symbols),
+                                       success_count=success_count,
+                                       error_count=error_count,
+                                       response_time_ms=round(processing_time * 1000, 2))
                         
                         # Update source latency metrics
                         with self.monitoring_lock:
@@ -1642,8 +1665,10 @@ class FinancialDataMCP(BaseMCPServer):
                         
                         # Calculate error response time
                         error_time = (time.time() - start_time) * 1000
-                        self.logger.timing("market_data_error_time_ms", error_time, 
-                                         source=client_name, data_type=data_type)
+                        # Include data_type in the metric name instead of as a parameter
+                        metric_name = f"market_data_{data_type}_error_time_ms"
+                        self.logger.timing(metric_name, error_time, 
+                                         source=client_name)
                         
                         self.logger.error(f"Error getting historical market data from {client_name}: {e}", exc_info=True)
                         return {
@@ -1657,7 +1682,10 @@ class FinancialDataMCP(BaseMCPServer):
                     
                     # Calculate error response time
                     error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_no_client_error_time_ms", error_time, data_type=data_type)
+                    # Include data_type in the metric name instead of as a parameter
+                    metric_name = f"market_data_no_client_{data_type}_error_time_ms"
+                    self.logger.timing(metric_name, error_time,
+                                       source="no_client")
                     
                     return {
                         "error": "No suitable historical market data client available.",
@@ -1687,8 +1715,10 @@ class FinancialDataMCP(BaseMCPServer):
                             
                             # Record per-symbol timing
                             symbol_time = (time.time() - symbol_start_time) * 1000
-                            self.logger.timing("market_data_trades_symbol_time_ms", symbol_time, 
-                                             symbol=symbol, source=client_name)
+                            # Include symbol in metric name instead of as parameter
+                            symbol_safe = symbol.replace('.', '_').replace('-', '_')
+                            self.logger.timing(f"market_data_trades_symbol_{symbol_safe}_time_ms", symbol_time,
+                                              source=client_name)
                             
                             if trades and not trades.get("error"):
                                 all_trades[symbol] = trades.get("results", [])
@@ -1713,10 +1743,16 @@ class FinancialDataMCP(BaseMCPServer):
                                              threshold_ms=self.slow_market_data_threshold_ms)
                         
                         # Record metrics
-                        self.logger.timing("get_market_data_trades_time_ms", processing_time * 1000, 
-                                         symbol_count=len(symbols),
-                                         success_count=success_count,
-                                         error_count=error_count)
+                        # Only pass name, value, and source to timing method
+                        self.logger.timing("get_market_data_trades_time_ms", processing_time * 1000,
+                                          source=client_name)
+                        
+                        # Log additional details using info method which accepts kwargs
+                        self.logger.info("Market data trades metrics", 
+                                       symbol_count=len(symbols),
+                                       success_count=success_count,
+                                       error_count=error_count,
+                                       response_time_ms=round(processing_time * 1000, 2))
                         
                         # Update source latency metrics
                         with self.monitoring_lock:
@@ -1772,7 +1808,8 @@ class FinancialDataMCP(BaseMCPServer):
                     
                     # Calculate error response time
                     error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_no_client_error_time_ms", error_time, data_type="trades")
+                    self.logger.timing("market_data_no_client_trades_error_time_ms", error_time,
+                                       source="no_client")
                     
                     return {
                         "error": "No suitable trades client available.",
@@ -1802,8 +1839,10 @@ class FinancialDataMCP(BaseMCPServer):
                             
                             # Record per-symbol timing
                             symbol_time = (time.time() - symbol_start_time) * 1000
-                            self.logger.timing("market_data_quotes_symbol_time_ms", symbol_time, 
-                                             symbol=symbol, source=client_name)
+                            # Include symbol in metric name instead of as parameter
+                            symbol_safe = symbol.replace('.', '_').replace('-', '_')
+                            self.logger.timing(f"market_data_quotes_symbol_{symbol_safe}_time_ms", symbol_time,
+                                              source=client_name)
                             
                             if quotes and not quotes.get("error"):
                                 all_quotes[symbol] = quotes.get("results", [])
@@ -1828,10 +1867,16 @@ class FinancialDataMCP(BaseMCPServer):
                                              threshold_ms=self.slow_market_data_threshold_ms)
                         
                         # Record metrics
-                        self.logger.timing("get_market_data_quotes_time_ms", processing_time * 1000, 
-                                         symbol_count=len(symbols),
-                                         success_count=success_count,
-                                         error_count=error_count)
+                        # Only pass name, value, and source to timing method
+                        self.logger.timing("get_market_data_quotes_time_ms", processing_time * 1000,
+                                          source=client_name)
+                        
+                        # Log additional details using info method which accepts kwargs
+                        self.logger.info("Market data quotes metrics", 
+                                       symbol_count=len(symbols),
+                                       success_count=success_count,
+                                       error_count=error_count,
+                                       response_time_ms=round(processing_time * 1000, 2))
                         
                         # Update source latency metrics
                         with self.monitoring_lock:
@@ -1887,7 +1932,8 @@ class FinancialDataMCP(BaseMCPServer):
                     
                     # Calculate error response time
                     error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_no_client_error_time_ms", error_time, data_type="quotes")
+                    self.logger.timing("market_data_no_client_quotes_error_time_ms", error_time,
+                                       source="no_client")
                     
                     return {
                         "error": "No suitable quotes client available.",
@@ -1900,7 +1946,8 @@ class FinancialDataMCP(BaseMCPServer):
                 
                 # Calculate error response time
                 error_time = (time.time() - start_time) * 1000
-                self.logger.timing("market_data_invalid_type_time_ms", error_time, data_type=data_type)
+                self.logger.timing("market_data_invalid_type_time_ms", error_time,
+                                   source="invalid_type")
                 
                 return {
                     "error": f"Invalid market data type requested: {data_type}. Use 'bars', 'trades', or 'quotes'.",
@@ -1953,7 +2000,8 @@ class FinancialDataMCP(BaseMCPServer):
                         seen.add(identifier)
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_news_time_ms", processing_time * 1000, news_count=len(unique_news))
+                self.logger.timing("get_news_time_ms", processing_time * 1000,
+                                   source=client.name, news_count=len(unique_news))
                 return {"news": unique_news[:limit], "source": client.name, "processing_time": processing_time}
 
             except Exception as e:
@@ -1983,7 +2031,8 @@ class FinancialDataMCP(BaseMCPServer):
                 posts = result.get("posts", []) if result and not result.get("error") else []
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_social_sentiment_time_ms", processing_time * 1000, post_count=len(posts))
+                self.logger.timing("get_social_sentiment_time_ms", processing_time * 1000,
+                                   source=client.name, post_count=len(posts))
                 return {"posts": posts, "source": client.name, "processing_time": processing_time}
 
             except Exception as e:
@@ -2014,7 +2063,8 @@ class FinancialDataMCP(BaseMCPServer):
                          return {"error": f"Client {client.name} does not support getting options chain."}
 
                     processing_time = time.time() - start_time
-                    self.logger.timing("get_options_chain_time_ms", processing_time * 1000, symbol=symbol)
+                    self.logger.timing("get_options_chain_time_ms", processing_time * 1000,
+                                       source=client.name, symbol=symbol)
                     return {"options_chain": data, "source": client.name, "processing_time": processing_time}
 
                 except Exception as e:
@@ -2031,7 +2081,8 @@ class FinancialDataMCP(BaseMCPServer):
                     result = client.get_option_activity(ticker=symbol, start_date=date) # Example params
                     flow_data = result.get("data", []) if result and not result.get("error") else []
                     processing_time = time.time() - start_time
-                    self.logger.timing("get_options_flow_time_ms", processing_time * 1000, symbol=symbol)
+                    self.logger.timing("get_options_flow_time_ms", processing_time * 1000,
+                                       source=client.name, symbol=symbol)
                     return {"options_flow": flow_data, "source": client.name, "processing_time": processing_time}
                 except Exception as e:
                      self.logger.error(f"Error getting options flow from {client.name}: {e}", exc_info=True)
@@ -2084,7 +2135,8 @@ class FinancialDataMCP(BaseMCPServer):
                 # Add other fundamental types as needed (e.g., analyst ratings)
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_fundamentals_time_ms", processing_time * 1000, symbol=symbol, type=type)
+                self.logger.timing("get_fundamentals_time_ms", processing_time * 1000,
+                                   source=client.name, symbol=symbol, type=type)
                 return {"fundamentals": data, "source": client.name, "processing_time": processing_time}
 
             except Exception as e:
@@ -2152,7 +2204,8 @@ class FinancialDataMCP(BaseMCPServer):
 
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_market_status_time_ms", processing_time * 1000)
+                self.logger.timing("get_market_status_time_ms", processing_time * 1000,
+                                   source=client.name)
                 return {"data": status_data, "source": client.name, "processing_time": processing_time}
 
             except Exception as e:
@@ -2174,7 +2227,8 @@ class FinancialDataMCP(BaseMCPServer):
                 tickers = result.get("results", []) if result and not result.get("error") else []
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_ticker_list_time_ms", processing_time * 1000, ticker_count=len(tickers))
+                self.logger.timing("get_ticker_list_time_ms", processing_time * 1000,
+                                   source=client.name, ticker_count=len(tickers))
                 return {"tickers": tickers, "source": client.name, "processing_time": processing_time}
             except Exception as e:
                  self.logger.error(f"Error getting ticker list from {client.name}: {e}", exc_info=True)
@@ -2195,7 +2249,8 @@ class FinancialDataMCP(BaseMCPServer):
                 movers = result.get("results", []) if result and not result.get("error") else []
 
                 processing_time = time.time() - start_time
-                self.logger.timing("get_market_movers_time_ms", processing_time * 1000, mover_count=len(movers))
+                self.logger.timing("get_market_movers_time_ms", processing_time * 1000,
+                                   source=client.name, mover_count=len(movers))
                 return {"movers": movers, "source": client.name, "processing_time": processing_time}
             except Exception as e:
                  self.logger.error(f"Error getting market movers from {client.name}: {e}", exc_info=True)
@@ -2244,7 +2299,8 @@ class FinancialDataMCP(BaseMCPServer):
                     
                     # Calculate and record shutdown time
                     client_shutdown_time = (time.time() - client_shutdown_start) * 1000
-                    self.logger.timing("client_shutdown_time_ms", client_shutdown_time, client=client_name)
+                    self.logger.timing("client_shutdown_time_ms", client_shutdown_time,
+                                       source=client_name)
                     
                     self.logger.info(f"Client '{client_name}' shut down successfully.", 
                                    shutdown_time_ms=client_shutdown_time)

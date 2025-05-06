@@ -317,115 +317,49 @@ Your analysis should be quantitative and evidence-based.""",
         """
 
         # Register data gathering functions
-        @register_function(
-            name="get_market_data",
-            description="Get initial universe of stocks",
-            return_type=List[Dict[str, Any]],
-        )
+        # The register_function decorator needs to be used correctly
+        # It should include the function or use a different pattern
+        @user_proxy.register_function
         def get_market_data() -> List[Dict[str, Any]]:
             return self.get_market_data()
 
-        @register_function(
-            name="get_technical_indicators",
-            description="Calculate technical indicators for the stocks",
-            parameters={
-                "stocks": {"type": "array", "description": "List of stock dictionaries"}
-            },
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def get_technical_indicators(
             stocks: List[Dict[str, Any]],
         ) -> List[Dict[str, Any]]:
             return self.get_technical_indicators(stocks)
 
-        @register_function(
-            name="get_unusual_activity",
-            description="Check for unusual activity in the stocks",
-            parameters={
-                "stocks": {"type": "array", "description": "List of stock dictionaries"}
-            },
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def get_unusual_activity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return self.get_unusual_activity(stocks)
 
         # Register filtering and scoring functions
-        @register_function(
-            name="filter_by_liquidity",
-            description="Apply liquidity filters to the universe of stocks, considering available capital",
-            parameters={
-                "stocks": {"type": "array", "description": "List of stock dictionaries"},
-                "available_capital": {"type": "number", "description": "Amount of capital available for new positions", "default": 0.0}
-            },
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def filter_by_liquidity(stocks: List[Dict[str, Any]], available_capital: float = 0.0) -> List[Dict[str, Any]]:
             return self.filter_by_liquidity(stocks, available_capital)
 
-        @register_function(
-            name="score_candidates",
-            description="Score and rank the candidate stocks, factoring in capital fit",
-            parameters={
-                "stocks": {"type": "array", "description": "List of stock dictionaries"},
-                "available_capital": {"type": "number", "description": "Amount of capital available for new positions", "default": 0.0}
-            },
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def score_candidates(stocks: List[Dict[str, Any]], available_capital: float = 0.0) -> List[Dict[str, Any]]:
             return self.score_candidates(stocks, available_capital)
 
         # Register storage and retrieval functions
-        @register_function(
-            name="store_candidates",
-            description="Store candidates in Redis",
-            parameters={
-                "candidates": {
-                    "type": "array",
-                    "description": "List of candidate dictionaries",
-                }
-            },
-            return_type=bool,
-        )
+        @user_proxy.register_function
         def store_candidates(candidates: List[Dict[str, Any]]) -> bool:
             return self.store_candidates(candidates)
 
-        @register_function(
-            name="get_candidates",
-            description="Get the current list of candidates from Redis",
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def get_candidates() -> List[Dict[str, Any]]:
             return self.get_candidates()
 
-        @register_function(
-            name="get_top_candidates",
-            description="Get the top N candidates by score from Redis",
-            parameters={
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of candidates to return",
-                    "default": 10,
-                }
-            },
-            return_type=List[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def get_top_candidates(limit: int = 10) -> List[Dict[str, Any]]:
             return self.get_top_candidates(limit)
 
-        @register_function(
-            name="get_candidate",
-            description="Get a specific candidate by symbol from Redis",
-            parameters={"symbol": {"type": "string", "description": "Stock symbol"}},
-            return_type=Optional[Dict[str, Any]],
-        )
+        @user_proxy.register_function
         def get_candidate(symbol: str) -> Optional[Dict[str, Any]]:
             return self.get_candidate(symbol)
 
-        @register_function(
-            name="get_market_context",
-            description="Get current market context",
-            return_type=Dict[str, Any],
-        )
+        @user_proxy.register_function
         def get_market_context() -> Dict[str, Any]:
             return self._get_market_context()
 
@@ -454,21 +388,7 @@ Your analysis should be quantitative and evidence-based.""",
         """
 
         # Define MCP tool access functions for consolidated MCPs
-        @register_function(
-            name="use_trading_tool",
-            description="Use a tool provided by the Trading MCP server (for Alpaca functionality)",
-            parameters={
-                "tool_name": {
-                    "type": "string",
-                    "description": "Name of the tool to execute",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the tool",
-                },
-            },
-            return_type=Any,
-        )
+        @user_proxy.register_function
         def use_trading_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.trading_mcp.call_tool(tool_name, arguments)
@@ -476,21 +396,7 @@ Your analysis should be quantitative and evidence-based.""",
                  self.mcp_tool_error_count += 1
             return result
 
-        @register_function(
-            name="use_financial_data_tool",
-            description="Use a tool provided by the Financial Data MCP server (for market data, unusual whales)",
-            parameters={
-                "tool_name": {
-                    "type": "string",
-                    "description": "Name of the tool to execute",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the tool",
-                },
-            },
-            return_type=Any,
-        )
+        @user_proxy.register_function
         def use_financial_data_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.financial_data_mcp.call_tool(tool_name, arguments)
@@ -498,21 +404,7 @@ Your analysis should be quantitative and evidence-based.""",
                  self.mcp_tool_error_count += 1
             return result
 
-        @register_function(
-            name="use_time_series_tool",
-            description="Use a tool provided by the Time Series MCP server (for technical indicators and patterns)",
-            parameters={
-                "tool_name": {
-                    "type": "string",
-                    "description": "Name of the tool to execute",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the tool",
-                },
-            },
-            return_type=Any,
-        )
+        @user_proxy.register_function
         def use_time_series_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.time_series_mcp.call_tool(tool_name, arguments)
@@ -520,17 +412,7 @@ Your analysis should be quantitative and evidence-based.""",
                  self.mcp_tool_error_count += 1
             return result
 
-        @register_function(
-            name="list_mcp_tools",
-            description="List all available tools on an MCP server",
-            parameters={
-                "server_name": {
-                    "type": "string",
-                    "description": "Name of the MCP server (trading, financial_data, time_series)",
-                }
-            },
-            return_type=List[Dict[str, str]],
-        )
+        @user_proxy.register_function
         def list_mcp_tools(server_name: str) -> List[Dict[str, str]]:
             if server_name == "trading":
                 return self.trading_mcp.list_tools()

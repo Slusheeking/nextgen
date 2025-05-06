@@ -1,16 +1,16 @@
-[Unit]
-Description=NextGen Log API Server
+back [Unit]
+Description=Unified NextGen Models Service
 After=network.target
 
 [Service]
 User=ubuntu
 WorkingDirectory=/home/ubuntu/nextgen
-ExecStart=/home/ubuntu/miniconda/bin/python /home/ubuntu/nextgen/monitoring/start_log_server.py
+ExecStart=/usr/bin/python3 nextgen_models/run_all_models.py
 Restart=always
 RestartSec=10
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=log-server
+SyslogIdentifier=nextgen-models
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

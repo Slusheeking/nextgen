@@ -30,7 +30,7 @@ from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
 # Load environment variables
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 
 
 class PolygonWsMCP(BaseDataMCP):
@@ -94,26 +94,20 @@ class PolygonWsMCP(BaseDataMCP):
             Client configuration dictionary or None if initialization fails
         """
         try:
-            api_key = self.config.get("api_key") or os.environ.get("POLYGON_API_KEY")
+            # Prioritize environment variable for API key
+            api_key = os.environ.get("POLYGON_API_KEY") or self.config.get("api_key")
             ws_url = self.config.get("ws_url", "wss://socket.polygon.io/stocks")
 
             if not api_key:
-                self.logger.warning(
-                    "No Polygon API key provided - WebSocket connections will fail"
-                )
+                self.logger.error("No Polygon API key provided - WebSocket connections will fail")
+                return None
 
-            # Return the configuration directly
+            self.logger.info(f"Loaded Polygon API key: {api_key[:4]}...{api_key[-4:]}")
+
             return {"api_key": api_key, "ws_url": ws_url}
 
         except Exception as e:
             self.logger.error(f"Failed to initialize Polygon WebSocket client: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Failed to initialize Polygon WebSocket client: {e}",
-                    component="polygon_ws_mcp",
-                    action="client_init_error",
-                    error=str(e),
-                )
             return None
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:

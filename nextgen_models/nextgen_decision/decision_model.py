@@ -348,7 +348,7 @@ class RiskManager:
             # Enhanced risk per trade check using VaR/ES contribution calculation
             # Calculate the marginal contribution of the new position to portfolio risk
             var_contribution, es_contribution = self._calculate_risk_contribution(
-                symbol, position_size, action, portfolio_data, updated_weights
+                symbol, position_size, action, portfolio_data
             )
             
             # Check if VaR contribution exceeds risk per trade limit

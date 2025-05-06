@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Document Analysis MCP Tool
 
@@ -15,6 +14,9 @@ This production-ready implementation includes:
 
 import os
 import json
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 import time
 import numpy as np
 import threading
@@ -24,7 +26,6 @@ from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
 
 # Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
@@ -473,7 +474,10 @@ class DocumentAnalysisMCP(BaseMCPServer):
             self.layout_model.to(device)
             load_time = time.time() - start_time
             self.logger.timing("model_load_time_ms.layout", load_time * 1000)
-            self.logger.info(f"Layout model loaded in {load_time:.2f}s")
+            # Separate the logging from timing - use keyword args with info() not timing()
+            self.logger.info(f"Layout model loaded in {load_time:.2f}s",
+                           model_name=self.layout_model_path,
+                           load_time_seconds=load_time)
 
             # Load Embeddings Model
             self.logger.info(f"Loading Embeddings model: {self.embeddings_model_path}")
@@ -483,7 +487,10 @@ class DocumentAnalysisMCP(BaseMCPServer):
             self.embeddings_model.to(device)
             load_time = time.time() - start_time
             self.logger.timing("model_load_time_ms.embeddings", load_time * 1000)
-            self.logger.info(f"Embeddings model loaded in {load_time:.2f}s")
+            # Separate the logging from timing - use keyword args with info() not timing()
+            self.logger.info(f"Embeddings model loaded in {load_time:.2f}s",
+                           model_name=self.embeddings_model_path,
+                           load_time_seconds=load_time)
 
             self._models_loaded = True
 

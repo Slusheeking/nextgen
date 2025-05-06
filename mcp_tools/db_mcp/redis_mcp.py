@@ -22,7 +22,7 @@ except ImportError:
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 
 # Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
@@ -60,28 +60,32 @@ class RedisMCP(BaseMCPServer):
         self.metrics_collector = SystemMetricsCollector(self.logger)
         self.metrics_collector.start()
         
-        super().__init__(name="redis_mcp", config=config)
+        self.logger.info("Initializing RedisMCP")
         
-        # Load configuration if not provided
-        if config is None:
-            self.config_path = os.path.join("config", "redis_mcp", "redis_mcp_config.json")
-            self.config = self._load_config()
+        super().__init__(name="redis_mcp", config=config)
+
+        self.config_path = os.path.join("config", "redis_mcp", "redis_mcp_config.json")
+        self.config = self._load_config()
+        self.logger.info("Configuration loaded", config_path=self.config_path)
             
-            # Set up config file monitoring
-            self._last_config_check = time.time()
-            self._config_check_interval = 30  # Check for config changes every 30 seconds
-            self._last_config_modified = os.path.getmtime(self.config_path) if os.path.exists(self.config_path) else 0
+        # Set up config file monitoring
+        self._last_config_check = time.time()
+        self._config_check_interval = 30  # Check for config changes every 30 seconds
+        self._last_config_modified = os.path.getmtime(self.config_path) if os.path.exists(self.config_path) else 0
         
         # Initialize Redis client
         self.redis_client = self._initialize_client()
+        self.logger.info("Redis client initialized")
 
         # Initialize endpoint definitions
-        self.endpoints = self._initialize_endpoints()
+        self.endpoints = self._initialize_endpoints() or {}
+        self.logger.info("Endpoints initialized", endpoint_count=len(self.endpoints))
 
         # Register specific tools
         self._register_specific_tools()
+        self.logger.info("Specific tools registered")
 
-        self.logger.info("RedisMCP initialized with integrated Redis server", 
+        self.logger.info("RedisMCP initialization completed",
                         component="redis_mcp", action="initialization")
 
     def _load_config(self) -> Dict[str, Any]:
@@ -133,56 +137,38 @@ class RedisMCP(BaseMCPServer):
             Redis client
         """
         try:
-            # Use the local Redis server instance
-            self.logger.info("Connecting to local Redis server")
-            redis_server = RedisServer.get_instance(self.config)
-            client = redis_server.get_client()
-            
-            if client:
-                # Test connection
-                client.ping()
-                self.logger.info("Connected to local Redis server successfully")
-                return client
-            else:
-                raise Exception("Failed to get Redis client from local Redis server")
+            # Get Redis configuration from environment variables or config
+            host = self.config.get("host", os.getenv("REDIS_HOST", "localhost"))
+            port = int(self.config.get("port", os.getenv("REDIS_PORT", "6379")))
+            db = int(self.config.get("db", os.getenv("REDIS_DB", "0")))
+            password = self.config.get("password", os.getenv("REDIS_PASSWORD", None))
+            decode_responses = self.config.get("decode_responses", True)
 
+            self.logger.info(f"Attempting Redis connection with config: host={host}, port={port}, db={db}, password_provided={password is not None}")
+
+            # Create Redis client
+            client = redis.Redis(
+                host=host,
+                port=port,
+                db=db,
+                password=password,
+                decode_responses=decode_responses,
+                socket_timeout=self.config.get("socket_timeout", 5),
+                socket_connect_timeout=self.config.get("socket_connect_timeout", 5),
+                socket_keepalive=self.config.get("socket_keepalive", True),
+                retry_on_timeout=self.config.get("retry_on_timeout", True),
+            )
+
+            # Test connection
+            client.ping()
+            self.logger.info(f"Connected to Redis at {host}:{port}/{db}",
+                            host=host, port=port, db=db)
+            return client
         except Exception as e:
-            self.logger.error(f"Failed to initialize Redis client: {e}", 
-                             error=str(e))
-            
-            # Fallback to direct connection if local server fails
-            self.logger.warning("Falling back to direct Redis connection")
-            try:
-                # Get Redis configuration from environment variables or config
-                host = self.config.get("host", os.getenv("REDIS_HOST", "localhost"))
-                port = int(self.config.get("port", os.getenv("REDIS_PORT", "6379")))
-                db = int(self.config.get("db", os.getenv("REDIS_DB", "0")))
-                password = self.config.get("password", os.getenv("REDIS_PASSWORD", None))
-                decode_responses = self.config.get("decode_responses", True)
-
-                # Create Redis client
-                client = redis.Redis(
-                    host=host,
-                    port=port,
-                    db=db,
-                    password=password,
-                    decode_responses=decode_responses,
-                    socket_timeout=self.config.get("socket_timeout", 5),
-                    socket_connect_timeout=self.config.get("socket_connect_timeout", 5),
-                    socket_keepalive=self.config.get("socket_keepalive", True),
-                    retry_on_timeout=self.config.get("retry_on_timeout", True),
-                )
-
-                # Test connection
-                client.ping()
-                self.logger.info(f"Connected to Redis at {host}:{port}/{db}", 
-                                host=host, port=port, db=db)
-                return client
-            except Exception as e:
-                self.logger.error(f"Failed to initialize direct Redis client: {e}", 
-                                error=str(e))
-                self.logger.warning("Using dummy client for testing/development")
-                return None
+            self.logger.error(f"Failed to initialize Redis client: {e}",
+                            error=str(e))
+            self.logger.warning("Using dummy client for testing/development")
+            return None
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -191,28 +177,36 @@ class RedisMCP(BaseMCPServer):
         Returns:
             Dictionary mapping endpoint names to their configurations
         """
-        return {
+        self.logger.info("Initializing endpoints")
+        endpoints = {
             # Basic key-value operations
             "get": {
                 "description": "Get a value from Redis",
                 "category": "state",
                 "required_params": ["key"],
                 "optional_params": [],
-                "handler": self._handle_get,
+                "handler": self._handle_get
+            },
+            "ping": {
+                "description": "Ping the Redis server",
+                "category": "system",
+                "required_params": [],
+                "optional_params": [],
+                "handler": self._handle_ping
             },
             "set": {
                 "description": "Set a value in Redis",
                 "category": "state",
                 "required_params": ["key", "value"],
                 "optional_params": ["expiry"],
-                "handler": self._handle_set,
+                "handler": self._handle_set
             },
             "delete": {
                 "description": "Delete a key from Redis",
                 "category": "state",
                 "required_params": ["key"],
                 "optional_params": [],
-                "handler": self._handle_delete,
+                "handler": self._handle_delete
             },
             # Hash operations
             "hget": {
@@ -220,28 +214,28 @@ class RedisMCP(BaseMCPServer):
                 "category": "state",
                 "required_params": ["key", "field"],
                 "optional_params": [],
-                "handler": self._handle_hget,
+                "handler": self._handle_hget
             },
             "hset": {
                 "description": "Set a value in a hash",
                 "category": "state",
                 "required_params": ["key", "field", "value"],
                 "optional_params": [],
-                "handler": self._handle_hset,
+                "handler": self._handle_hset
             },
             "hgetall": {
                 "description": "Get all fields and values from a hash",
                 "category": "state",
                 "required_params": ["key"],
                 "optional_params": [],
-                "handler": self._handle_hgetall,
+                "handler": self._handle_hgetall
             },
             "hincrby": {
                 "description": "Increment a value in a hash",
                 "category": "state",
                 "required_params": ["key", "field", "amount"],
                 "optional_params": [],
-                "handler": self._handle_hincrby,
+                "handler": self._handle_hincrby
             },
             # List operations
             "lpush": {
@@ -249,21 +243,21 @@ class RedisMCP(BaseMCPServer):
                 "category": "state",
                 "required_params": ["key", "value"],
                 "optional_params": [],
-                "handler": self._handle_lpush,
+                "handler": self._handle_lpush
             },
             "rpush": {
                 "description": "Push a value to the right of a list",
                 "category": "state",
                 "required_params": ["key", "value"],
                 "optional_params": [],
-                "handler": self._handle_rpush,
+                "handler": self._handle_rpush
             },
             "lrange": {
                 "description": "Get a range of values from a list",
                 "category": "state",
                 "required_params": ["key", "start", "stop"],
                 "optional_params": [],
-                "handler": self._handle_lrange,
+                "handler": self._handle_lrange
             },
             # Set operations
             "sadd": {
@@ -271,14 +265,14 @@ class RedisMCP(BaseMCPServer):
                 "category": "state",
                 "required_params": ["key", "value"],
                 "optional_params": [],
-                "handler": self._handle_sadd,
+                "handler": self._handle_sadd
             },
             "smembers": {
                 "description": "Get all members of a set",
                 "category": "state",
                 "required_params": ["key"],
                 "optional_params": [],
-                "handler": self._handle_smembers,
+                "handler": self._handle_smembers
             },
             # Sorted set operations
             "zadd": {
@@ -286,21 +280,21 @@ class RedisMCP(BaseMCPServer):
                 "category": "state",
                 "required_params": ["key", "score", "value"],
                 "optional_params": [],
-                "handler": self._handle_zadd,
+                "handler": self._handle_zadd
             },
             "zrange": {
                 "description": "Get a range of values from a sorted set",
                 "category": "state",
                 "required_params": ["key", "start", "stop"],
                 "optional_params": ["withscores"],
-                "handler": self._handle_zrange,
+                "handler": self._handle_zrange
             },
             "zrevrange": {
                 "description": "Get a range of values from a sorted set in reverse order",
                 "category": "state",
                 "required_params": ["key", "start", "stop"],
                 "optional_params": ["withscores"],
-                "handler": self._handle_zrevrange,
+                "handler": self._handle_zrevrange
             },
             # Pub/Sub operations
             "publish": {
@@ -308,7 +302,7 @@ class RedisMCP(BaseMCPServer):
                 "category": "pubsub",
                 "required_params": ["channel", "message"],
                 "optional_params": [],
-                "handler": self._handle_publish,
+                "handler": self._handle_publish
             },
             # JSON operations
             "json_set": {
@@ -316,15 +310,15 @@ class RedisMCP(BaseMCPServer):
                 "category": "state",
                 "required_params": ["key", "json_data"],
                 "optional_params": ["expiry"],
-                "handler": self._handle_json_set,
+                "handler": self._handle_json_set
             },
             "json_get": {
                 "description": "Get a JSON value from Redis",
                 "category": "state",
                 "required_params": ["key"],
                 "optional_params": [],
-                "handler": self._handle_json_get,
-            },
+                "handler": self._handle_json_get
+            }
         }
 
     def _register_specific_tools(self):
@@ -390,6 +384,15 @@ class RedisMCP(BaseMCPServer):
         except Exception as e:
             self.logger.error(f"Error getting value for key {key}: {e}", key=key, error=str(e))
             return {"error": f"Failed to get value: {str(e)}"}
+
+    def _handle_ping(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle ping endpoint."""
+        try:
+            self.redis_client.ping()
+            return {"status": "success", "message": "PONG"}
+        except Exception as e:
+            self.logger.error(f"Error pinging Redis server: {e}")
+            return {"error": f"Failed to ping Redis server: {str(e)}"}
 
     def _handle_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle set endpoint."""
@@ -725,13 +728,13 @@ class RedisMCP(BaseMCPServer):
     def _handle_json_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle json_set endpoint."""
         key = params.get("key")
-        json_data = params.get("json_data")
+        json_data = params.get("data")  # Changed from json_data to data
         expiry = params.get("expiry")
 
         if not key:
             return {"error": "Missing required parameter: key"}
         if json_data is None:
-            return {"error": "Missing required parameter: json_data"}
+            return {"error": "Missing required parameter: data"}
 
         try:
             # Convert to JSON string if it's not already a string
@@ -780,16 +783,26 @@ class RedisMCP(BaseMCPServer):
         Returns:
             Result of the endpoint handler
         """
-        # Check for configuration changes
-        self._check_config_changes()
-        
+        self.logger.debug(f"Fetching data for endpoint: {endpoint}")
         if endpoint not in self.endpoints:
+            self.logger.error(f"Endpoint not found: {endpoint}")
             return {"error": f"Endpoint not found: {endpoint}"}
 
-        handler = self.endpoints[endpoint]["handler"]
-        return handler(params)
+        endpoint_config = self.endpoints[endpoint]
+        handler = endpoint_config.get("handler")
+        if not handler:
+            self.logger.error(f"Handler not found for endpoint: {endpoint}")
+            return {"error": f"Handler not found for endpoint: {endpoint}"}
 
-    def get_value(self, key: str) -> Any:
+        try:
+            result = handler(params)
+            self.logger.debug(f"Data fetched successfully for endpoint: {endpoint}")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error fetching data for endpoint {endpoint}: {str(e)}")
+            return {"error": f"Error fetching data: {str(e)}"}
+
+    def get_value(self, key: str) -> Dict[str, Any]:
         """
         Get a value from Redis.
 
@@ -797,16 +810,32 @@ class RedisMCP(BaseMCPServer):
             key: Key to get
 
         Returns:
-            Value or None if key doesn't exist
+            Dictionary containing the value or None if key doesn't exist
         """
         result = self.fetch_data("get", {"key": key})
+        
+        # Ensure the result is always a dictionary with a 'value' key
         if isinstance(result, dict):
-            return result.get("value")
+            if 'value' in result:
+                # If the result is already a dictionary with a 'value' key, return it directly.
+                return result
+            elif 'error' in result:
+                # If the result is an error dictionary, return a dictionary with value as None and the error.
+                return {"value": None, "error": result["error"]}
+            else:
+                # If the result is a dictionary but doesn't have a 'value' key,
+                # assume the entire dictionary is the value.
+                self.logger.warning(f"Received dictionary without 'value' key from fetch_data for key {key}. Using entire dict as value.")
+                return {"value": result}
         elif result is not None:
-            # Handle case where result might be a string or other non-dict type
-            self.logger.warning(f"Unexpected result type from fetch_data: {type(result)}")
-            return str(result)
-        return None
+            # If the result is not a dictionary but is not None (e.g., string, bytes, number),
+            # wrap it in a dictionary with the 'value' key.
+            self.logger.debug(f"Received non-dict, non-None result type from fetch_data for key {key}: {type(result)}. Wrapping in value dict.")
+            return {"value": result}
+        else:
+            # If the result is None, return a dictionary with value as None.
+            self.logger.debug(f"Received None result from fetch_data for key {key}. Returning value as None.")
+            return {"value": None}
 
     def set_value(self, key: str, value: Any, expiry: Optional[int] = None) -> dict:
         """
@@ -967,19 +996,22 @@ class RedisMCP(BaseMCPServer):
             "receivers", 0
         )
 
-    def set_json(self, key: str, data: Any, expiry: Optional[int] = None) -> bool:
+    def set_json(self, key: str, data: Any = None, value: Any = None, expiry: Optional[int] = None) -> bool:
         """
         Set a JSON value in Redis.
-
+        
         Args:
             key: Key to set
-            data: JSON-serializable data
+            data: JSON-serializable data (preferred parameter)
+            value: Alternative parameter for data (for compatibility)
             expiry: Optional expiry time in seconds
-
+            
         Returns:
             True if successful, False otherwise
         """
-        params = {"key": key, "json_data": data}
+        # Use data if provided, otherwise fall back to value
+        store_data = data if data is not None else value
+        params = {"key": key, "data": store_data}
         if expiry:
             params["expiry"] = expiry
         return "error" not in self.fetch_data("json_set", params)

@@ -39,12 +39,12 @@ class BaseMCPServer:
         init_start_time = time.time()
         self.name = name
         self.config = config or {}
-        self.tools = {}
-        self.resources = {}
+        self.tools: Dict[str, Dict[str, Any]] = {}
+        self.resources: Dict[str, Dict[str, Any]] = {}
         self.start_time = datetime.now()
         
         # Ensure environment variables are loaded
-        load_dotenv()
+        load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
         
         # Initialize NetdataLogger for logging and metrics
         self.logger = NetdataLogger(component_name=f"{self.name}-mcp-server")
@@ -72,9 +72,9 @@ class BaseMCPServer:
         self.last_request_time = time.time()
         self.consecutive_errors = 0
         self.max_consecutive_errors = 0
-        self.tool_execution_counts = {}
-        self.resource_access_counts = {}
-        self.api_key_access_counts = {}
+        self.tool_execution_counts: Dict[str, int] = {}
+        self.resource_access_counts: Dict[str, int] = {}
+        self.api_key_access_counts: Dict[str, int] = {}
         
         # Configure health thresholds
         self.slow_request_threshold_ms = self.config.get("slow_request_threshold_ms", 500)
@@ -181,7 +181,7 @@ class BaseMCPServer:
             for name, info in self.resources.items()
         ]
 
-    def call_tool(self, tool_name: str, args: Dict[str, Any] = None) -> Any:
+    def call_tool(self, tool_name: str, args: Optional[Dict[str, Any]] = None) -> Any:
         """
         Call a tool by name with the given arguments.
 

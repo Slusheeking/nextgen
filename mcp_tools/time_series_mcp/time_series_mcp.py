@@ -12,7 +12,10 @@ import sys
 import json
 import time
 import importlib
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union, Callable, Tuple, TYPE_CHECKING
+
+# Import pandas for type annotations
+import pandas as pd
 
 # Direct imports instead of dynamic loading
 try:
@@ -21,10 +24,10 @@ except ImportError:
     np = None
     print("Warning: NumPy not installed or import failed.")
 
+# We still need to handle pandas import failure for runtime
 try:
-    import pandas as pd
+    import pandas
 except ImportError:
-    pd = None
     print("Warning: Pandas not installed or import failed.")
 
 from dotenv import load_dotenv
@@ -79,53 +82,30 @@ except ImportError:
     tf = None
     print("Warning: TensorFlow not installed or import failed. Deep learning forecasting will not be available.")
 
-# GluonTS and DeepAR for advanced forecasting
+# Enhanced Prophet + XGBoost setup for advanced time series forecasting
 try:
-    # First, try to handle the numpy bool deprecation issue
-    # This is a workaround for the MxNet numpy compatibility issue
-    import numpy as np
-    if not hasattr(np, 'bool'):
-        np.bool = bool  # Set np.bool to Python's bool as a fallback
-    
-    # Import GluonTS components with preference for torch backend
-    from gluonts.dataset.common import ListDataset
-    
-    # Always try to use torch backend first to avoid MxNet compatibility issues
-    try:
-        from gluonts.torch import DeepAREstimator
-        from gluonts.torch.model.estimator import Trainer as TorchTrainer
-        use_torch_trainer = True
-        Trainer = TorchTrainer
-        print("Using GluonTS torch trainer")
-    except ImportError:
-        # Fall back to MxNet trainer only if torch is not available
-        try:
-            # For older GluonTS versions
-            from gluonts.mx.model.deepar import DeepAREstimator
-            from gluonts.mx.trainer import Trainer
-            use_torch_trainer = False
-            print("Using GluonTS MxNet trainer")
-        except ImportError:
-            # Try alternative import paths for newer GluonTS versions
-            try:
-                from gluonts.mx.model.deepar import DeepAREstimator
-                from gluonts.mx.trainer import Trainer
-                use_torch_trainer = False
-                print("Using GluonTS MxNet trainer (alternative import)")
-            except Exception as mx_e:
-                print(f"Warning: MxNet trainer unavailable: {mx_e}")
-                use_torch_trainer = True
-                Trainer = None
-    
-    from gluonts.evaluation.backtest import make_evaluation_predictions
-    HAVE_GLUONTS = True
-    print("GluonTS successfully integrated for advanced time series forecasting.")
-except ImportError as e:
-    HAVE_GLUONTS = False
-    print(f"Warning: GluonTS not installed or import failed: {e}. Advanced forecasting with DeepAR will not be available.")
+    # Check for Prophet with proper import
+    from prophet import Prophet
+    HAVE_PROPHET = True
+    print("Prophet successfully integrated for advanced time series forecasting.")
+except ImportError:
+    HAVE_PROPHET = False
+    print("Warning: Prophet not installed or import failed. Advanced time series forecasting will be limited.")
+
+# XGBoost for advanced regression capabilities
+try:
+    import xgboost as xgb
+    HAVE_XGBOOST = True
+    print("XGBoost successfully integrated for enhanced forecasting.")
+except ImportError:
+    HAVE_XGBOOST = False
+    print("Warning: XGBoost not installed or import failed. Using Prophet alone for forecasting.")
+
+# Set GluonTS flag to False to avoid using it
+HAVE_GLUONTS = False
 
 # Set overall advanced time series capability flag
-HAVE_ADVANCED_TS = HAVE_STATSMODELS or HAVE_PROPHET or HAVE_TF or HAVE_GLUONTS
+HAVE_ADVANCED_TS = HAVE_STATSMODELS or HAVE_PROPHET or HAVE_TF or HAVE_XGBOOST
 
 # Import libraries for peak detection and drift detection
 HAVE_SCIPY = False
@@ -230,7 +210,7 @@ class TimeSeriesMCP(BaseMCPServer):
         """
         # Initialize forecasting models
         self.forecast_model = None
-        self.forecast_models = {}  # Dictionary to store multiple models
+        self.forecast_models: Dict[str, Any] = {}  # Dictionary to store multiple models
         
         # Check if advanced time series libraries are available
         if HAVE_ADVANCED_TS and self.forecast_model_path:
@@ -354,7 +334,7 @@ class TimeSeriesMCP(BaseMCPServer):
                 self.logger.error(f"Failed to initialize basic statistical models: {e}")
 
         # Initialize drift detectors
-        self.drift_detectors = {}  # Store detectors per series/metric
+        self.drift_detectors: Dict[str, Any] = {}  # Store detectors per series/metric
         
         if HAVE_DRIFT_DETECTION:
             self.logger.info("Drift detection library available, initializing detectors")
@@ -402,7 +382,7 @@ class TimeSeriesMCP(BaseMCPServer):
             self.logger.info("Initialized basic drift detection parameters")
         
         # Initialize pattern recognition models if needed
-        self.pattern_models = {}
+        self.pattern_models: Dict[str, Any] = {}
         if HAVE_TALIB:
             self.logger.info("TA-Lib available for pattern recognition")
             # TA-Lib patterns are already available through the library
@@ -450,13 +430,13 @@ class TimeSeriesMCP(BaseMCPServer):
             "Generate forecasts for time series data."
         )
 
-    def _validate_dataframe(self, data: Any) -> Optional["pd.DataFrame"]:
+    def _validate_dataframe(self, data: Any) -> Optional[pd.DataFrame]:
         """Validate and convert input data to a Pandas DataFrame with expected columns."""
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
             try:
                 df = pd.DataFrame(data)
                 # Ensure standard OHLCV columns exist (case-insensitive check)
-                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                required_cols = ["open", "high", "low", "close", "volume"]
                 df.columns = df.columns.str.lower() # Standardize column names
                 if not all(col in df.columns for col in required_cols):
                      self.logger.error(f"Input data missing required OHLCV columns. Found: {list(df.columns)}")
@@ -557,7 +537,13 @@ class TimeSeriesMCP(BaseMCPServer):
                 results[indicator] = {"error": str(e)}
 
         processing_time = time.time() - start_time
-        self.logger.timing("calculate_indicators_time_ms", processing_time * 1000, indicator_count=len(indicators_to_calc))
+        # Only pass name and value to timing method
+        self.logger.timing("calculate_indicators_time_ms", processing_time * 1000)
+        
+        # Log additional details using info method which accepts kwargs
+        self.logger.info("Indicator calculation metrics", 
+                       indicator_count=len(indicators_to_calc),
+                       processing_time_ms=round(processing_time * 1000, 2))
         return {"indicators": results, "processing_time": processing_time}
 
 
@@ -597,7 +583,13 @@ class TimeSeriesMCP(BaseMCPServer):
                     self.logger.warning(f"Error executing TA-Lib pattern function {func_name}: {e}")
 
         processing_time = time.time() - start_time
-        self.logger.timing("detect_patterns_time_ms", processing_time * 1000, pattern_count=len(patterns))
+        # Only pass name and value to timing method
+        self.logger.timing("detect_patterns_time_ms", processing_time * 1000)
+        
+        # Log additional details using info method which accepts kwargs
+        self.logger.info("Pattern detection metrics", 
+                       pattern_count=len(patterns),
+                       processing_time_ms=round(processing_time * 1000, 2))
         return {"patterns": patterns, "processing_time": processing_time}
 
 
@@ -618,19 +610,39 @@ class TimeSeriesMCP(BaseMCPServer):
             # Calculate prominence relative to the series range
             series_range = np.ptp(series) # Peak-to-peak range
             if series_range == 0: # Avoid division by zero for flat series
-                 prominence_value = None
+                 # If series is flat, use a minimal prominence value instead of None
+                 prominence_value = 0.0001  # Small non-zero value
             else:
                  prominence_value = self.peak_prominence * series_range
 
-            # Find peaks
-            peaks, peak_props = find_peaks(series, prominence=prominence_value, distance=self.peak_distance)  # type: ignore
+            # Find peaks - ensure find_peaks is callable
+            if not HAVE_SCIPY or find_peaks is None:
+                return {"error": "SciPy not installed or find_peaks not available. Cannot detect peaks/troughs."}
+                
+            peaks, peak_props = find_peaks(series, prominence=prominence_value, distance=self.peak_distance)
             # Find troughs (by inverting the series)
-            troughs, trough_props = find_peaks(-series, prominence=prominence_value, distance=self.peak_distance)  # type: ignore
+            troughs, trough_props = find_peaks(-series, prominence=prominence_value, distance=self.peak_distance)
 
             results = {
-                "peaks": [{"index": int(p), "value": series[p], "prominence": peak_props['prominences'][i]}
+                "peaks": [{"index": int(p), "value": float(series[p]), "prominence": float(peak_props['prominences'][i])}
                           for i, p in enumerate(peaks)],
-                "troughs": [{"index": int(t), "value": series[t], "prominence": trough_props['prominences'][i]}
+                "troughs": [{"index": int(t), "value": float(series[t]), "prominence": float(trough_props['prominences'][i])}
+                            for i, t in enumerate(troughs)]
+            }
+            processing_time = time.time() - start_time
+            self.logger.timing("detect_peaks_troughs_time_ms", processing_time * 1000, peak_count=len(peaks), trough_count=len(troughs))
+            return {"extrema": results, "processing_time": processing_time}
+
+        except Exception as e:
+            self.logger.error(f"Error detecting peaks/troughs: {e}", exc_info=True)
+            return {"error": str(e)}
+            # Find troughs (by inverting the series)
+            troughs, trough_props = find_peaks(-series, prominence=prominence_value, distance=self.peak_distance)
+
+            results = {
+                "peaks": [{"index": int(p), "value": float(series[p]), "prominence": float(peak_props['prominences'][i])}
+                          for i, p in enumerate(peaks)],
+                "troughs": [{"index": int(t), "value": float(series[t]), "prominence": float(trough_props['prominences'][i])}
                             for i, t in enumerate(troughs)]
             }
             processing_time = time.time() - start_time
@@ -715,9 +727,15 @@ class TimeSeriesMCP(BaseMCPServer):
                     levels["nearest_resistance"]["distance_pct"] = (resistance_value - current_price) / current_price * 100
             
             processing_time = time.time() - start_time
-            self.logger.timing("detect_support_resistance_time_ms", processing_time * 1000, 
-                              method=method, support_count=len(levels["support"]), 
-                              resistance_count=len(levels["resistance"]))
+            # Only pass name and value to timing method with method in the name
+            self.logger.timing(f"detect_support_resistance_{method}_time_ms", processing_time * 1000)
+            
+            # Log additional details using info method which accepts kwargs
+            self.logger.info("Support/resistance detection metrics", 
+                           method=method,
+                           support_count=len(levels["support"]),
+                           resistance_count=len(levels["resistance"]),
+                           processing_time_ms=round(processing_time * 1000, 2))
             
             return {
                 "levels": levels,
@@ -729,7 +747,7 @@ class TimeSeriesMCP(BaseMCPServer):
             self.logger.error(f"Error detecting support/resistance: {e}", exc_info=True)
             return {"error": str(e)}
     
-    def _detect_sr_using_peaks(self, df: "pd.DataFrame", column: str = 'close',
+    def _detect_sr_using_peaks(self, df: pd.DataFrame, column: str = 'close',
                                cluster_threshold: float = 0.02) -> Dict[str, Any]:
         """
         Detect support and resistance levels using peak/trough analysis.
@@ -750,10 +768,15 @@ class TimeSeriesMCP(BaseMCPServer):
         # Calculate prominence based on price range
         series_range = np.ptp(series)
         if series_range == 0:  # Avoid division by zero
-            prominence_value = None
+            # Use a minimal prominence value instead of None for flat series
+            prominence_value = 0.0001  # Small non-zero value
         else:
             # Use a more aggressive prominence for S/R detection
             prominence_value = self.peak_prominence * 1.5 * series_range
+            
+        # Check if scipy is available
+        if not HAVE_SCIPY or find_peaks is None:
+            return {"error": "SciPy not installed or find_peaks not available. Cannot detect peaks/troughs."}
             
         # Find peaks (potential resistance)
         peaks, peak_props = find_peaks(series, prominence=prominence_value, distance=self.peak_distance)
@@ -783,7 +806,7 @@ class TimeSeriesMCP(BaseMCPServer):
             "resistance": resistance_levels
         }
     
-    def _detect_sr_using_histogram(self, df: "pd.DataFrame", column: str = 'close') -> Dict[str, Any]:
+    def _detect_sr_using_histogram(self, df: pd.DataFrame, column: str = 'close') -> Dict[str, Any]:
         """
         Detect support and resistance levels using price histogram analysis.
         
@@ -804,7 +827,7 @@ class TimeSeriesMCP(BaseMCPServer):
         hist, bin_edges = np.histogram(series, bins=hist_bins)
         
         # Find local maxima in histogram (price levels with high frequency)
-        if HAVE_SCIPY:
+        if HAVE_SCIPY and find_peaks is not None:
             # Use scipy's find_peaks for better detection
             peaks, _ = find_peaks(hist, height=np.mean(hist), distance=2)
             
@@ -844,7 +867,7 @@ class TimeSeriesMCP(BaseMCPServer):
             "resistance": resistance_levels
         }
     
-    def _detect_sr_using_fibonacci(self, df: "pd.DataFrame", column: str = 'close') -> Dict[str, Any]:
+    def _detect_sr_using_fibonacci(self, df: pd.DataFrame, column: str = 'close') -> Dict[str, Any]:
         """
         Detect support and resistance levels using Fibonacci retracement levels.
         
@@ -933,7 +956,7 @@ class TimeSeriesMCP(BaseMCPServer):
             "lowest": float(lowest)
         }
     
-    def _detect_sr_using_pivot_points(self, df: "pd.DataFrame") -> Dict[str, Any]:
+    def _detect_sr_using_pivot_points(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
         Detect support and resistance levels using pivot point analysis.
         
@@ -1101,7 +1124,7 @@ class TimeSeriesMCP(BaseMCPServer):
                         z_threshold=z_threshold)
 
         series = df[column].values.astype(float)
-        drift_points = []  # type: ignore
+        drift_points = []
 
         try:
             # Use the provided window size or default from config
@@ -1208,9 +1231,14 @@ class TimeSeriesMCP(BaseMCPServer):
                 regime_change = len(recent_drifts) > 0 or len(recent_changes) > 0
 
             processing_time = time.time() - start_time
-            self.logger.timing("detect_drift_time_ms", processing_time * 1000, 
-                              drift_count=len(drift_points),
-                              change_point_count=len(change_points))
+            # Only pass name and value to timing method
+            self.logger.timing("detect_drift_time_ms", processing_time * 1000)
+            
+            # Log additional details using info method which accepts kwargs
+            self.logger.info("Drift detection metrics", 
+                           drift_count=len(drift_points),
+                           change_point_count=len(change_points),
+                           processing_time_ms=round(processing_time * 1000, 2))
             
             return {
                 "drift_points": drift_points,
@@ -1236,12 +1264,18 @@ class TimeSeriesMCP(BaseMCPServer):
         try:
             df = pd.DataFrame(data)
             # Calculate rolling correlation (example: pairwise correlation matrix over a window)
-            rolling_corr = df.rolling(window=window).corr()  # type: ignore
+            rolling_corr = df.rolling(window=window).corr()
             # Get the latest correlation matrix
-            latest_corr_matrix = rolling_corr.iloc[-len(df.columns):] # Get the last N rows
+            latest_corr_matrix = rolling_corr.iloc[-len(df.columns):]  # Get the last N rows
 
             processing_time = time.time() - start_time
-            self.logger.timing("analyze_correlation_time_ms", processing_time * 1000, series_count=len(data))
+            # Only pass name and value to timing method
+            self.logger.timing("analyze_correlation_time_ms", processing_time * 1000)
+            
+            # Log additional details using info method which accepts kwargs
+            self.logger.info("Correlation analysis metrics", 
+                           series_count=len(data),
+                           processing_time_ms=round(processing_time * 1000, 2))
             # Convert DataFrame to dict for JSON serialization
             return {"correlation_matrix": latest_corr_matrix.to_dict(), "processing_time": processing_time}
 
@@ -1250,11 +1284,11 @@ class TimeSeriesMCP(BaseMCPServer):
             return {"error": str(e)}
 
 
-    def forecast_series(self, data: Any, column: str = 'close', horizon: Optional[int] = None, 
-                       method: str = 'auto', seasonality: int = 0) -> Dict[str, Any]:
+    def forecast_series(self, data: Any, column: str = "close", horizon: Optional[int] = None,
+                       method: str = "auto", seasonality: int = 0) -> Dict[str, Any]:
         """
         Generate forecasts for time series data using multiple methods.
-        
+
         Args:
             data: Time series data (list of dicts or DataFrame)
             column: Column to forecast
@@ -1438,99 +1472,36 @@ class TimeSeriesMCP(BaseMCPServer):
                     self.logger.error(f"Error in Prophet forecasting: {e}", exc_info=True)
                     forecasts['prophet'] = {"error": str(e)}
             
-            # Use GluonTS DeepAR model if available
-            if HAVE_GLUONTS and ('deepar' in methods_to_use or method == 'auto' or method == 'deepar'):
+            # Enhanced Prophet + XGBoost integrated forecast
+            if HAVE_PROPHET and HAVE_XGBOOST and ('prophet' in methods_to_use or method == 'auto'):
                 try:
-                    self.logger.info("Using GluonTS DeepAR for advanced time series forecasting")
-                    
-                    # Convert to proper format for GluonTS
-                    gluon_start_time = time.time()
-                    freq = "D"  # Default to daily frequency
-                    
-                    # Convert dataframe index to datetime if needed
-                    if not isinstance(df.index, pd.DatetimeIndex):
-                        df.index = pd.date_range(start='2020-01-01', periods=len(df), freq=freq)
-                    else:
-                        # Infer frequency from the DatetimeIndex
-                        inferred_freq = pd.infer_freq(df.index)
-                        if inferred_freq:
-                            freq = inferred_freq
-                    
-                    # Prepare training data for GluonTS
-                    training_data = [{
-                        "target": series.values,
-                        "start": df.index[0],
-                        "item_id": column
-                    }]
-                    
-                    # Create GluonTS dataset
-                    gluonts_dataset = ListDataset(training_data, freq=freq)
-                    
-                    # Check if we have a pre-trained model
-                    if self.forecast_model and isinstance(self.forecast_model, DeepAREstimator):
-                        predictor = self.forecast_model.train(gluonts_dataset)
-                        self.logger.info("Using pre-configured DeepAR estimator")
-                    else:
-                        # Initialize DeepAR estimator with reasonable defaults
-                        trainer = Trainer(
-                            epochs=10,
-                            learning_rate=1e-3,
-                            batch_size=32,
-                            num_batches_per_epoch=100
-                        )
-                        
-                        estimator = DeepAREstimator(
-                            freq=freq,
-                            prediction_length=forecast_horizon,
-                            trainer=trainer,
-                            context_length=min(2 * forecast_horizon, len(series)),
-                            num_layers=2,
-                            num_cells=40,
-                            dropout_rate=0.1
-                        )
-                        
-                        # Train the model
-                        self.logger.info("Training DeepAR model")
-                        predictor = estimator.train(gluonts_dataset)
-                    
-                    # Generate forecasts
-                    self.logger.info("Generating DeepAR forecasts")
-                    forecast_it, ts_it = make_evaluation_predictions(
-                        dataset=gluonts_dataset,
-                        predictor=predictor,
-                        num_samples=100
+                    prophet_xgboost_forecast = self._implement_prophet_xgboost_forecast(
+                        series=series,
+                        df=df,
+                        horizon=forecast_horizon,
+                        detected_seasonality=detected_seasonality
                     )
                     
-                    # Get forecast
-                    forecasts_list = list(forecast_it)
-                    if forecasts_list:
-                        deepar_forecast = forecasts_list[0]
-                        # Extract mean forecast
-                        mean_forecast = deepar_forecast.mean.tolist()
-                        # Extract prediction intervals
-                        prediction_intervals = deepar_forecast.quantile(0.05), deepar_forecast.quantile(0.95)
-                        
-                        # Store results
-                        forecasts['deepar'] = mean_forecast
-                        confidence_intervals['deepar'] = {
-                            'lower': prediction_intervals[0].tolist(),
-                            'upper': prediction_intervals[1].tolist()
-                        }
-                        
-                        # Log performance metrics
-                        gluon_time = (time.time() - gluon_start_time) * 1000  # ms
-                        self.logger.timing("deepar_forecasting_time_ms", gluon_time)
-                        self.logger.info(f"DeepAR forecast completed in {gluon_time:.2f}ms")
-                    else:
-                        self.logger.warning("DeepAR forecasting returned empty results")
-                        forecasts['deepar'] = {"error": "Empty forecast results"}
+                    # Add the Prophet+XGBoost forecast to results
+                    forecasts['prophet_xgboost'] = prophet_xgboost_forecast['forecast']
+                    confidence_intervals['prophet_xgboost'] = {
+                        'lower': prophet_xgboost_forecast['lower'],
+                        'upper': prophet_xgboost_forecast['upper']
+                    }
                     
+                    # If we have XGBoost forecast, make it the recommended method
+                    recommended_method = 'prophet_xgboost'
+                    
+                    self.logger.info("Prophet+XGBoost integrated forecast completed successfully")
                 except Exception as e:
-                    self.logger.error(f"Error in DeepAR forecasting: {e}", exc_info=True)
-                    forecasts['deepar'] = {"error": str(e)}
+                    self.logger.error(f"Error in Prophet+XGBoost forecasting: {e}", exc_info=True)
+                    forecasts['prophet_xgboost'] = {"error": str(e)}
+            elif HAVE_PROPHET and ('prophet' in methods_to_use or method == 'auto'):
+                # Fallback to Prophet-only forecast
+                self.logger.info("Using Prophet for time series forecasting (XGBoost not available)")
             
             # If other advanced model is loaded, use it
-            if self.forecast_model and not isinstance(self.forecast_model, DeepAREstimator):
+            if self.forecast_model:
                 try:
                     # Handle other types of forecast models
                     model_type = type(self.forecast_model).__name__
@@ -1618,8 +1589,14 @@ class TimeSeriesMCP(BaseMCPServer):
                     recommended_method = 'ensemble'
             
             processing_time = time.time() - start_time
-            self.logger.timing("forecast_series_time_ms", processing_time * 1000, 
-                              horizon=forecast_horizon, method=method)
+            # Only pass name and value to timing method with method in the name
+            self.logger.timing(f"forecast_series_{method}_time_ms", processing_time * 1000)
+            
+            # Log additional details using info method which accepts kwargs
+            self.logger.info("Forecast metrics", 
+                           method=method,
+                           horizon=forecast_horizon,
+                           processing_time_ms=round(processing_time * 1000, 2))
             
             return {
                 "forecasts": forecasts,
@@ -1634,7 +1611,7 @@ class TimeSeriesMCP(BaseMCPServer):
             self.logger.error(f"Error forecasting series: {e}", exc_info=True)
             return {"error": str(e)}
             
-    def _implement_basic_forecast(self, series: "pd.Series", horizon: int) -> Dict[str, Any]:
+    def _implement_basic_forecast(self, series: pd.Series, horizon: int) -> Dict[str, Any]:
         """
         Implement basic forecasting methods.
         
@@ -1692,4 +1669,144 @@ class TimeSeriesMCP(BaseMCPServer):
             },
             "methods": ["naive_last_value", "simple_moving_average", "linear_trend", "exponential_smoothing"],
             "recommended": "trend" if len(series) >= 5 else "naive"
+        }
+        
+    def _implement_prophet_xgboost_forecast(self, series: pd.Series, df: pd.DataFrame,
+                                           horizon: int, detected_seasonality: int = 0) -> Dict[str, Any]:
+        """
+        Implement combined Prophet + XGBoost forecasting.
+        
+        This method uses Prophet for decomposition and capturing seasonality,
+        then feeds the components along with additional features into XGBoost
+        for improved accuracy.
+        
+        Args:
+            series: Time series to forecast
+            df: Original dataframe with the time index
+            horizon: Number of periods to forecast
+            detected_seasonality: Detected seasonality period
+            
+        Returns:
+            Dictionary with forecast values and confidence intervals
+        """
+        # Step 1: Prepare data for Prophet
+        prophet_df = pd.DataFrame({
+            'ds': df.index if isinstance(df.index, pd.DatetimeIndex) else
+                  pd.date_range(start='2020-01-01', periods=len(series), freq='D'),
+            'y': series.values
+        })
+        
+        # Step 2: Initialize and fit Prophet model
+        prophet_model = Prophet(
+            yearly_seasonality='auto',
+            weekly_seasonality='auto',
+            daily_seasonality=False,
+            seasonality_mode='multiplicative' if np.mean(series) > 0 else 'additive'
+        )
+        
+        # Add custom seasonality if detected and not already included
+        if detected_seasonality > 0 and detected_seasonality not in [7, 365]:
+            prophet_model.add_seasonality(
+                name=f'custom_{detected_seasonality}',
+                period=detected_seasonality,
+                fourier_order=min(5, detected_seasonality // 2)
+            )
+        
+        # Fit Prophet model
+        prophet_model.fit(prophet_df)
+        
+        # Step 3: Generate Prophet forecast and components
+        future = prophet_model.make_future_dataframe(periods=horizon, freq='D')
+        forecast = prophet_model.predict(future)
+        
+        # Get Prophet components (trend, seasonalities, etc.)
+        components = prophet_model.predict(future)
+        
+        # Step 4: Create features for XGBoost
+        # Split data into training (historical) and prediction (future)
+        train_components = components.iloc[:-horizon].copy()
+        future_components = components.iloc[-horizon:].copy()
+        
+        # Add more time-based features
+        for df_comp in [train_components, future_components]:
+            # Day of week
+            df_comp['dow'] = df_comp['ds'].dt.dayofweek
+            # Month
+            df_comp['month'] = df_comp['ds'].dt.month
+            # Quarter
+            df_comp['quarter'] = df_comp['ds'].dt.quarter
+            # Is weekend
+            df_comp['is_weekend'] = (df_comp['dow'] >= 5).astype(int)
+        
+        # Create lag features for training data
+        if len(series) >= 7:  # Only if we have enough historical data
+            y_historical = series.values
+            
+            # Add lag features to training data
+            lags = [1, 2, 3, 7, 14]  # Various lags that might be useful
+            for lag in lags:
+                if lag < len(y_historical):
+                    # Shift and pad with zeros
+                    lagged = np.zeros(len(train_components))
+                    lagged[lag:] = y_historical[:-lag]
+                    train_components[f'lag_{lag}'] = lagged
+        
+        # Step 5: Prepare XGBoost training data
+        # Drop the date and target columns, keep features
+        X_cols = [col for col in train_components.columns if col not in ['ds', 'y', 'yhat']]
+        X_train = train_components[X_cols]
+        y_train = series.values
+        
+        # Step 6: Train XGBoost model
+        xgb_model = xgb.XGBRegressor(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=3,
+            objective='reg:squarederror',
+            random_state=42,
+            n_jobs=-1  # Use all CPU cores
+        )
+        
+        xgb_model.fit(X_train, y_train)
+        
+        # Step 7: Make predictions with XGBoost
+        X_future = future_components[X_cols]
+        xgb_forecast = xgb_model.predict(X_future)
+        
+        # Step 8: Blend Prophet and XGBoost forecasts
+        # Option 1: Use Prophet for trend and seasonality, XGBoost for the rest
+        prophet_forecast = forecast.iloc[-horizon:]['yhat'].values
+        
+        # Simple average of both models
+        blend_ratio = 0.5  # Adjust based on model performance
+        combined_forecast = blend_ratio * prophet_forecast + (1 - blend_ratio) * xgb_forecast
+        
+        # Step 9: Generate confidence intervals
+        # Use Prophet's confidence intervals as a base, adjusted by XGBoost's precision
+        lower = forecast.iloc[-horizon:]['yhat_lower'].values
+        upper = forecast.iloc[-horizon:]['yhat_upper'].values
+        
+        # Calculate MAE of XGBoost on training data if possible
+        if len(X_train) > 0:
+            xgb_train_preds = xgb_model.predict(X_train)
+            xgb_mae = np.mean(np.abs(xgb_train_preds - y_train))
+            
+            # Adjust intervals based on XGBoost MAE
+            interval_width = (upper - lower) / 2
+            interval_adjustment = np.minimum(xgb_mae / interval_width, 1.0)  # Don't widen, only narrow
+            
+            # Centered around combined forecast with XGBoost-based width
+            mid_point = combined_forecast
+            half_width = interval_width * interval_adjustment
+            
+            lower = mid_point - half_width
+            upper = mid_point + half_width
+        
+        # Return the combined forecast and confidence intervals
+        return {
+            'forecast': combined_forecast.tolist(),
+            'prophet': prophet_forecast.tolist(),
+            'xgboost': xgb_forecast.tolist(),
+            'lower': lower.tolist(),
+            'upper': upper.tolist()
         }

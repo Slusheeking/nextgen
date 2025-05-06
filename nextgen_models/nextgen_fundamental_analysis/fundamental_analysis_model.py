@@ -1,7 +1,7 @@
 """
 Fundamental Analysis Model
 
-This module defines the FundamentalAnalysisModel, responsible for analyzing
+fiThis module defines the FundamentalAnalysisModel, responsible for analyzing
 financial statements, calculating key ratios, and evaluating company fundamentals.
 It integrates with AutoGen for advanced analysis and decision making.
 """
@@ -14,6 +14,9 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+
+# Import base agent
+from nextgen_models.base_mcp_agent import BaseMCPAgent
 
 # Import monitoring components
 from monitoring.netdata_logger import NetdataLogger
@@ -28,7 +31,7 @@ from mcp_tools.db_mcp.redis_mcp import RedisMCP
 from autogen import Agent, AssistantAgent, UserProxyAgent, register_function
 
 
-class FundamentalAnalysisModel:
+class FundamentalAnalysisModel(BaseMCPAgent):
     """
     Analyzes company fundamentals using financial statements and key metrics.
 
@@ -55,20 +58,28 @@ class FundamentalAnalysisModel:
                     - risk_free_rate: Annual risk-free rate (default: 0.02 or 2%)
         """
         init_start_time = time.time()
-        # Initialize NetdataLogger for monitoring and logging
-        self.logger = NetdataLogger(component_name="nextgen-fundamental-analysis-model")
 
-        # Initialize StockChartGenerator
-        self.chart_generator = StockChartGenerator()
-        self.logger.info("StockChartGenerator initialized")
+        # Initialize BaseMCPAgent first
+        super().__init__(config=config)
 
-        # Initialize counters for fundamental analysis metrics
-        self.companies_analyzed_count = 0
-        self.analysis_errors_count = 0
-        self.llm_api_call_count = 0
-        self.mcp_tool_call_count = 0
-        self.mcp_tool_error_count = 0
-        self.total_analysis_cycles = 0 # Total times run_periodic_analysis completes a cycle
+        try:
+            # Initialize NetdataLogger
+            self.logger = NetdataLogger("nextgen_fundamental_analysis")
+
+            # Initialize StockChartGenerator
+            self.chart_generator = StockChartGenerator("stock-charts")
+            self.logger.info("StockChartGenerator initialized")
+
+            # Initialize counters for fundamental analysis metrics
+            self.companies_analyzed_count = 0
+            self.analysis_errors_count = 0
+            self.llm_api_call_count = 0
+            self.mcp_tool_call_count = 0
+            self.mcp_tool_error_count = 0
+            self.total_analysis_cycles = 0 # Total times run_periodic_analysis completes a cycle
+        except Exception as e:
+            print(f"Error initializing FundamentalAnalysisModel: {e}")
+            raise
 
 
 
@@ -79,7 +90,7 @@ class FundamentalAnalysisModel:
                 try:
                     with open(config_path, 'r') as f:
                         self.config = json.load(f)
-                    self.logger.info(f"Configuration loaded from {config_path}")
+                    self.logger.info(f"Configuration successfully loaded from {config_path}")
                 except json.JSONDecodeError as e:
                     self.logger.error(f"Error parsing configuration file {config_path}: {e}")
                     self.config = {}
@@ -91,12 +102,36 @@ class FundamentalAnalysisModel:
                 self.config = {}
         else:
             self.config = config
+            self.logger.info("Configuration successfully loaded from provided config dictionary")
+
+        # Ensure critical configuration parameters are set
+        financial_data_config_path = self.config.get("financial_data_config_path")
+        if not financial_data_config_path:
+            default_path = os.path.join("config", "financial_data_mcp", "financial_data_mcp_config.json")
+            self.logger.warning(f"Missing financial_data_config_path in configuration. Using default: {default_path}")
+            financial_data_config_path = default_path
+
+        if not self.config.get("risk_analysis_config"):
+            self.logger.error("Missing risk_analysis_config in configuration")
+            raise ValueError("Missing risk_analysis_config in configuration")
+
+        # Load financial data config from path
+        financial_data_config = {}
+        if os.path.exists(financial_data_config_path):
+            try:
+                with open(financial_data_config_path, 'r') as f:
+                    financial_data_config = json.load(f)
+                self.logger.info(f"Financial data configuration successfully loaded from {financial_data_config_path}")
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error parsing financial data configuration file {financial_data_config_path}: {e}")
+            except Exception as e:
+                self.logger.error(f"Error loading financial data configuration file {financial_data_config_path}: {e}")
+        else:
+            self.logger.warning(f"Financial data configuration file not found at {financial_data_config_path}")
 
         # Initialize Consolidated MCP clients
         # FinancialDataMCP handles data retrieval (Polygon, Yahoo)
-        self.financial_data_mcp = FinancialDataMCP(
-            self.config.get("financial_data_config")
-        )
+        self.financial_data_mcp = FinancialDataMCP(financial_data_config)
         # RiskAnalysisMCP handles risk metrics and potentially other analysis
         self.risk_analysis_mcp = RiskAnalysisMCP(
              self.config.get("risk_analysis_config")
@@ -898,6 +933,21 @@ class FundamentalAnalysisModel:
                 self.logger.gauge("fundamental_analysis_overall_score", overall_score, symbol=symbol)
                 self.logger.gauge("fundamental_analysis_confidence", overall_score / 100.0 if overall_score else 0.0, symbol=symbol)
             
+            # Generate and store chart for visualization of fundamental analysis results
+            try:
+                chart_data = {
+                    "financial_health_score": health_score_data.get("overall_score", 0),
+                    "growth_score": growth_score_data.get("overall_score", 0),
+                    "value_metrics": value_metrics_data
+                }
+                chart_file = self.chart_generator.generate_fundamental_analysis_chart(chart_data, symbol)
+                self.logger.info(f"Generated fundamental analysis chart for {symbol}", chart_file=chart_file)
+                
+                # Add chart file path to comprehensive analysis
+                comprehensive_analysis["chart_file"] = chart_file
+            except Exception as chart_error:
+                self.logger.error(f"Error generating chart for {symbol}: {chart_error}")
+                comprehensive_analysis["chart_file"] = None
 
             # Send feedback to selection model (e.g., key scores and metrics)
             feedback_data = {

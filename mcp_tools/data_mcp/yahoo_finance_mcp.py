@@ -67,7 +67,6 @@ class YahooFinanceMCP(BaseDataMCP):
         self.logger.info(
             f"YahooFinanceMCP initialized with {len(self.endpoints)} endpoints"
         )
-        # Removed self.monitor.log_info for endpoints
 
     def _initialize_client(self) -> Dict[str, Any]:
         """
@@ -85,17 +84,11 @@ class YahooFinanceMCP(BaseDataMCP):
                 "default_interval": self.config.get("default_interval", "1d"),
             }
 
+            self.logger.info("Yahoo Finance client initialized successfully")
             return config
 
         except Exception as e:
             self.logger.error(f"Failed to initialize Yahoo Finance client: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Failed to initialize Yahoo Finance client: {e}",
-                    component="yahoo_finance_mcp",
-                    action="client_init_error",
-                    error=str(e),
-                )
             return None
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
@@ -597,37 +590,105 @@ class YahooFinanceMCP(BaseDataMCP):
             Dictionary with stock price information
         """
         # Use the stock data endpoint with minimal period to get latest price
-        data = self.fetch_data(
-            "stock_data", {"ticker": ticker, "period": "1d", "interval": "1m"}
-        )
-
-        # Extract the most recent data point
-        if "data" in data and data["data"]:
-            latest = data["data"][-1]
-
-            # Get company info for additional details
+        self.logger.info(f"Getting stock price for {ticker}")
+        
+        # Get company info first - we'll use this as a fallback source of current price
+        company_info = {}
+        try:
             info = self.fetch_data("company_info", {"ticker": ticker})
-            company_info = info.get("company_info", {})
+            company_info = info.get("company_info", {}) if "error" not in info else {}
+            
+            # If we have currentPrice in company info, we can use it as a fallback
+            if "currentPrice" in company_info:
+                self.logger.info(f"Successfully found price in company info for {ticker}: {company_info['currentPrice']}")
+        except Exception as e:
+            self.logger.warning(f"Error getting company info for {ticker}: {e}")
+            
+        # Try with different time periods (from shortest to longest)
+        for period in ["1d", "5d", "1mo", "3mo", "6mo", "1y"]:
+            try:
+                self.logger.info(f"Attempting to get {ticker} price data with period {period}")
+                data = self.fetch_data(
+                    "stock_data", {"ticker": ticker, "period": period, "interval": "1d"}
+                )
+                
+                # Check if we got valid data back
+                if "error" in data:
+                    self.logger.warning(f"Error getting stock data with period {period}: {data['error']}")
+                    continue
+                    
+                # Extract the most recent data point
+                if "data" in data and data["data"] and len(data["data"]) > 0:
+                    latest = data["data"][-1]
+                    
+                    # Check if we have Close price
+                    if "Close" not in latest:
+                        self.logger.warning(f"No Close price found in data for {ticker}")
+                        continue
 
+                    result = {
+                        "ticker": ticker,
+                        "price": latest.get("Close"),
+                        "change": latest.get("Close") - latest.get("Open")
+                        if "Close" in latest and "Open" in latest
+                        else None,
+                        "change_percent": ((latest.get("Close") / latest.get("Open") - 1) * 100)
+                        if "Close" in latest and "Open" in latest and latest.get("Open") > 0
+                        else None,
+                        "volume": latest.get("Volume"),
+                        "company_name": company_info.get("shortName", ""),
+                        "market_cap": company_info.get("marketCap"),
+                        "pe_ratio": company_info.get("trailingPE"),
+                        "dividend_yield": company_info.get("dividendYield"),
+                        "data_period": period,
+                    }
+
+                    self.logger.info(f"Successfully retrieved stock price for {ticker} using {period} data")
+                    return result
+                else:
+                    self.logger.warning(f"No data points found for {ticker} with period {period}")
+            except Exception as e:
+                self.logger.error(f"Exception getting stock price for {ticker} with period {period}: {e}")
+                
+        # If we get here, all historical data attempts failed
+        self.logger.warning(f"Failed to get historical price data for {ticker} - checking for fallback options")
+        
+        # Fallback to company info if available
+        if company_info and "currentPrice" in company_info:
+            self.logger.info(f"Using company info price as fallback for {ticker}")
+            
             result = {
                 "ticker": ticker,
-                "price": latest.get("Close"),
-                "change": latest.get("Close") - latest.get("Open")
-                if "Close" in latest and "Open" in latest
-                else None,
-                "change_percent": ((latest.get("Close") / latest.get("Open") - 1) * 100)
-                if "Close" in latest and "Open" in latest and latest.get("Open") > 0
-                else None,
-                "volume": latest.get("Volume"),
+                "price": company_info.get("currentPrice"),
                 "company_name": company_info.get("shortName", ""),
                 "market_cap": company_info.get("marketCap"),
                 "pe_ratio": company_info.get("trailingPE"),
                 "dividend_yield": company_info.get("dividendYield"),
+                "data_source": "company_info",  # Flag that we used fallback
+                "warning": "Using company info current price as fallback"
             }
-
+            
+            # Try to add change data if available
+            if "previousClose" in company_info and company_info["previousClose"]:
+                result["change"] = company_info["currentPrice"] - company_info["previousClose"]
+                result["change_percent"] = ((company_info["currentPrice"] / company_info["previousClose"] - 1) * 100) if company_info["previousClose"] > 0 else None
+            
             return result
-
-        return {"error": "No price data found"}
+            
+        # If we get here, both historical data and company info price failed
+        self.logger.error(f"All attempts to get stock price for {ticker} failed")
+        
+        # Instead of returning an error, provide a more graceful fallback
+        # with a placeholder price and clear indication that it's an estimate
+        return {
+            "ticker": ticker,
+            "price": None,  # Explicitly set price to None instead of error
+            "company_name": company_info.get("shortName", ""),
+            "estimated": True,
+            "warning": "Could not retrieve current price data after multiple attempts",
+            "status": "price_unavailable",
+            "fallback": True
+        }
 
     def get_company_info(self, ticker: str) -> Dict[str, Any]:
         """

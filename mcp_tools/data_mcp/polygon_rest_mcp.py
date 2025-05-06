@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Union
 
 # Direct imports with graceful error handling
-import importlib
 
 # Try to import required dependencies
 try:
@@ -29,7 +28,7 @@ from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
 # Load environment variables
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 
 
 class PolygonRestMCP(BaseDataMCP):
@@ -79,27 +78,20 @@ class PolygonRestMCP(BaseDataMCP):
             Client configuration or None if initialization fails
         """
         try:
-            # Get API key using base class method that uses our env_loader
-            api_key = self.get_api_key("polygon")
+            # Prioritize environment variable for API key
+            api_key = os.environ.get("POLYGON_API_KEY") or self.config.get("api_key")
             base_url = self.config.get("base_url", "https://api.polygon.io")
 
             if not api_key:
-                self.logger.warning("No Polygon API key provided - API calls will fail")
+                self.logger.error("No Polygon API key provided - API calls will fail")
+                return None
 
-            #
-            # Return the configuration directly - no need for a separate client
-            # class
+            self.logger.info(f"Loaded Polygon API key: {api_key[:4]}...{api_key[-4:]}")
+
             return {"api_key": api_key, "base_url": base_url}
 
         except Exception as e:
             self.logger.error(f"Failed to initialize Polygon REST client: {e}")
-            if hasattr(self, "monitor") and self.monitor:
-                self.monitor.log_error(
-                    f"Failed to initialize Polygon REST client: {e}",
-                    component="polygon_rest_mcp",
-                    action="client_init_error",
-                    error=str(e),
-                )
             return None
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
@@ -508,8 +500,15 @@ class PolygonRestMCP(BaseDataMCP):
 
                 elapsed = (time.time() - start_time) * 1000  # ms
                 self.logger.counter("external_api_call_count", 1)
-                self.logger.timing("data_fetch_time_ms", elapsed)
+                self.logger.timing("data_fetch_time_ms", elapsed)  # Simple timing call with no extra keywords
                 self.logger.gauge("response_status_code", response.status_code)
+                
+                # Log additional information separately using info() which accepts kwargs
+                self.logger.info("API request completed",
+                               method=method,
+                               path=formatted_path,
+                               status_code=response.status_code,
+                               elapsed_ms=elapsed)
                 if response.content:
                     self.logger.gauge("data_volume_bytes", len(response.content))
 
@@ -775,9 +774,16 @@ class PolygonRestMCP(BaseDataMCP):
                     url, params=query_params, headers=headers, timeout=15
                 )
                 
-                # Record timing
+                # Record timing - never add any extra keyword arguments to timing()
                 elapsed = (time.time() - start_time) * 1000
                 self.logger.timing("polygon_request_time_ms", elapsed)
+                
+                # Log additional context using info() which accepts kwargs
+                self.logger.info("Polygon request completed",
+                               request_path=formatted_path,
+                               endpoint=endpoint_name,
+                               status_code=response.status_code,
+                               elapsed_ms=elapsed)
 
                 if response.status_code == 200:
                     return response.json()
@@ -843,42 +849,61 @@ class PolygonRestMCP(BaseDataMCP):
         return self.fetch_data("ticker_details", {"ticker": ticker})
 
     def get_historical_data(
-        self, ticker: str, period: str = "1mo", interval: str = "1d"
+        self, ticker: str = None, symbol: str = None, period: str = "1mo", interval: str = "1d", start_date: Union[str, datetime] = None, end_date: Union[str, datetime] = None
     ) -> Dict[str, Any]:
         """
         Get historical price data.
-
+        
         Args:
-            ticker: Stock ticker symbol
+            ticker: Stock ticker symbol (preferred parameter)
+            symbol: Alternative parameter for ticker (for compatibility)
             period: Time period ("1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd")
             interval: Data interval ("1d", "1h", "15m")
-
+            start_date: Start date for historical data (overrides period if provided)
+            end_date: End date for historical data (overrides period if provided)
+            
         Returns:
             Historical price data
         """
-        # Convert period to from/to dates
-        to_date = datetime.now()
+        # Use ticker if provided, otherwise fall back to symbol
+        ticker = ticker if ticker is not None else symbol
+        if not ticker:
+            raise ValueError("Either ticker or symbol must be provided")
+            
+        # Convert period to from/to dates if start_date and end_date are not provided
+        if start_date is None or end_date is None:
+            to_date = datetime.now()
 
-        if period == "1d":
-            from_date = to_date - timedelta(days=1)
-        elif period == "5d":
-            from_date = to_date - timedelta(days=5)
-        elif period == "1mo":
-            from_date = to_date - timedelta(days=30)
-        elif period == "3mo":
-            from_date = to_date - timedelta(days=90)
-        elif period == "6mo":
-            from_date = to_date - timedelta(days=180)
-        elif period == "1y":
-            from_date = to_date - timedelta(days=365)
-        elif period == "2y":
-            from_date = to_date - timedelta(days=2 * 365)
-        elif period == "5y":
-            from_date = to_date - timedelta(days=5 * 365)
-        elif period == "ytd":
-            from_date = datetime(to_date.year, 1, 1)
+            if period == "1d":
+                from_date = to_date - timedelta(days=1)
+            elif period == "5d":
+                from_date = to_date - timedelta(days=5)
+            elif period == "1mo":
+                from_date = to_date - timedelta(days=30)
+            elif period == "3mo":
+                from_date = to_date - timedelta(days=90)
+            elif period == "6mo":
+                from_date = to_date - timedelta(days=180)
+            elif period == "1y":
+                from_date = to_date - timedelta(days=365)
+            elif period == "2y":
+                from_date = to_date - timedelta(days=2 * 365)
+            elif period == "5y":
+                from_date = to_date - timedelta(days=5 * 365)
+            elif period == "ytd":
+                from_date = datetime(to_date.year, 1, 1)
+            else:
+                raise ValueError(f"Invalid period: {period}")
         else:
-            raise ValueError(f"Invalid period: {period}")
+            if isinstance(start_date, str):
+                from_date = datetime.strptime(start_date, "%Y-%m-%d")
+            else:
+                from_date = start_date
+                
+            if isinstance(end_date, str):
+                to_date = datetime.strptime(end_date, "%Y-%m-%d")
+            else:
+                to_date = end_date
 
         # Convert interval to multiplier/timespan
         if interval == "1d":
@@ -1082,3 +1107,4 @@ class PolygonRestMCP(BaseDataMCP):
         if not self.rest_client:
             return "https://api.polygon.io"
         return self.rest_client.get("base_url", "https://api.polygon.io").rstrip("/")
+

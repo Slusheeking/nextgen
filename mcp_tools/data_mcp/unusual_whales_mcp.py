@@ -7,10 +7,12 @@ API, providing access to options flow and unusual activity data.
 
 import os
 import time
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 from typing import Dict, Any, Optional
 
 # Direct imports with graceful error handling
-import importlib
 
 # Try to import required dependencies
 try:
@@ -28,7 +30,6 @@ from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
 # Load environment variables
-dotenv.load_dotenv()
 
 
 class UnusualWhalesMCP(BaseDataMCP):
@@ -78,30 +79,38 @@ class UnusualWhalesMCP(BaseDataMCP):
             Client configuration or None if initialization fails
         """
         try:
-            # Get API key from config or environment variable
-            api_key = self.config.get("api_key") or os.environ.get(
-                "UNUSUAL_WHALES_API_KEY"
-            )
-            base_url = self.config.get(
-                "base_url", "https://api.unusualwhales.com"
-            ).rstrip("/")
+            # Prioritize environment variable for API key
+            api_key = os.environ.get("UNUSUAL_WHALES_API_KEY") or self.config.get("api_key")
+            base_url = self.config.get("base_url", "https://api.unusualwhales.com").rstrip("/")
 
             if not api_key:
-                self.logger.warning(
-                    "No Unusual Whales API key provided - API calls will fail"
-                )
+                self.logger.error("No Unusual Whales API key provided - API calls will fail")
+                return None
+
+            if api_key == "${UNUSUAL_WHALES_API_KEY}":
+                self.logger.error("Unusual Whales API key is still set to the placeholder value. Please set the actual API key.")
+                return None
+
+            # Mask the API key for logging
+            masked_key = api_key[:4] + '*' * (len(api_key) - 8) + api_key[-4:]
+            self.logger.info(f"Loaded Unusual Whales API key: {masked_key}")
 
             # Verify API connectivity
-            self._verify_api_connectivity(api_key, base_url)
+            connectivity_result = self._verify_api_connectivity(api_key, base_url)
+            if not isinstance(connectivity_result, dict) or not connectivity_result.get('success'):
+                error_msg = connectivity_result.get('message') if isinstance(connectivity_result, dict) else str(connectivity_result)
+                self.logger.error(f"API connectivity verification failed: {error_msg}")
+                return {"error": error_msg}
 
+            self.logger.info("Unusual Whales client initialized successfully")
             return {"api_key": api_key, "base_url": base_url}
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize Unusual Whales client: {e}")
+            self.logger.error(f"Failed to initialize Unusual Whales client: {str(e)}")
             self.logger.counter("error_count", 1)
-            return None
+            return {"error": str(e)}
 
-    def _verify_api_connectivity(self, api_key: str, base_url: str) -> bool:
+    def _verify_api_connectivity(self, api_key: str, base_url: str) -> Dict[str, Any]:
         """
         Verify API connectivity by making a simple test request.
 
@@ -110,10 +119,11 @@ class UnusualWhalesMCP(BaseDataMCP):
             base_url: Base URL
 
         Returns:
-            Whether the connection was successful
+            Dictionary with success status and message
         """
         if not api_key:
-            return False
+            self.logger.error("No API key provided for Unusual Whales")
+            return {"success": False, "message": "No API key provided"}
 
         try:
             # Try a simple API request to check connectivity
@@ -125,24 +135,23 @@ class UnusualWhalesMCP(BaseDataMCP):
 
             if response.status_code == 200:
                 self.logger.info(f"API connectivity verified: {base_url}")
-                return True
+                return {"success": True, "message": "API connectivity verified"}
             else:
-                self.logger.error(
-                    f"API connectivity failed with status {response.status_code}: {response.text}"
-                )
+                error_msg = f"API connectivity failed with status {response.status_code}: {response.text}"
+                self.logger.error(error_msg)
                 self.logger.error(
                     f"Please check the API base URL ({base_url}) and API key"
                 )
-                return False
+                return {"success": False, "message": error_msg}
 
-        except Exception as e:
-            self.logger.error(f"API connectivity check failed: {e}")
-            self.logger.error(f"API connectivity check failed: {e}")
+        except requests.RequestException as e:
+            error_msg = f"API connectivity check failed: {e}"
+            self.logger.error(error_msg)
             self.logger.counter("error_count", 1)
             self.logger.error(
                 f"Please verify the API base URL ({base_url}) is accessible"
             )
-            return False
+            return {"success": False, "message": error_msg}
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -284,12 +293,31 @@ class UnusualWhalesMCP(BaseDataMCP):
         # Construct full URL
         url = f"{base_url}{path}"
 
+        # Check if the API key is the literal string "${UNUSUAL_WHALES_API_KEY}"
+        if api_key == "${UNUSUAL_WHALES_API_KEY}":
+            self.logger.error("API key is not properly set. It's still the placeholder value.")
+            return {"error": "API key is not properly configured"}
+
+        # Log the raw API key (for debugging purposes only, remove in production)
+        self.logger.debug(f"Raw API key: {api_key}")
+
         # Prepare headers with authentication
         headers = {
             "Authorization": f"Bearer {api_key}",
             "User-Agent": f"FinGPT/NextGen-{os.environ.get('VERSION', '1.0.0')}",
             "X-Request-Source": "fingpt-mcp-unusual-whales",
         }
+
+        # Log the API key being used (masked for security)
+        masked_key = api_key[:4] + '*' * (len(api_key) - 8) + api_key[-4:]
+        self.logger.info(f"Using API key: {masked_key}")
+        
+        # Log the full Authorization header (masked) for debugging
+        masked_auth_header = f"Bearer {masked_key}"
+        self.logger.debug(f"Authorization header: {masked_auth_header}")
+
+        # Log the actual Authorization header being sent (for debugging purposes only, remove in production)
+        self.logger.debug(f"Actual Authorization header: {headers['Authorization']}")
 
         # Execute request with retry logic
         retry_count = 0
@@ -331,6 +359,10 @@ class UnusualWhalesMCP(BaseDataMCP):
                         )
                         time.sleep(sleep_time)
                         continue
+                elif response.status_code == 401:  # Unauthorized
+                    error_msg = f"API request failed due to authentication error: {response.status_code} - {response.text}"
+                    self.logger.error(error_msg)
+                    return {"error": error_msg}
 
                 # Handle other error codes
                 error_msg = (

@@ -399,6 +399,109 @@ class StockChartGenerator:
                              duration_ms=duration * 1000)
             raise
 
+    def generate_fundamental_analysis_chart(self, data, symbol, output_file=None):
+        """
+        Generate a chart for fundamental analysis data.
+
+        Args:
+            data (dict): Dictionary containing fundamental analysis data.
+                Expected keys:
+                - 'financial_health_score': Overall financial health score
+                - 'growth_score': Overall growth score
+                - 'value_metrics': Dictionary of value metrics (e.g., P/E ratio, EPS, etc.)
+            symbol (str): Stock symbol
+            output_file (str, optional): File path to save the chart. If None, a default path will be generated.
+
+        Returns:
+            str: Path to the saved chart file
+
+        Raises:
+            ValueError: If required data is missing
+            Exception: For any other errors during chart generation
+        """
+        self.logger.info("Generating fundamental analysis chart", symbol=symbol)
+        start_time = time.time()
+
+        try:
+            # Validate input data
+            if not all(key in data for key in ['financial_health_score', 'growth_score', 'value_metrics']):
+                raise ValueError("Missing required data for fundamental analysis chart")
+
+            # Create figure with subplots
+            fig = make_subplots(rows=2, cols=2, subplot_titles=("Financial Health", "Growth", "Value Metrics", "Overall Score"))
+
+            # Financial Health Score
+            fig.add_trace(go.Indicator(
+                mode="gauge+number",
+                value=data['financial_health_score'],
+                title={'text': "Financial Health"},
+                gauge={'axis': {'range': [0, 100]},
+                       'bar': {'color': "darkblue"}},
+                domain={'row': 0, 'column': 0}
+            ))
+
+            # Growth Score
+            fig.add_trace(go.Indicator(
+                mode="gauge+number",
+                value=data['growth_score'],
+                title={'text': "Growth"},
+                gauge={'axis': {'range': [0, 100]},
+                       'bar': {'color': "green"}},
+                domain={'row': 0, 'column': 1}
+            ))
+
+            # Value Metrics
+            metrics = list(data['value_metrics'].keys())
+            values = list(data['value_metrics'].values())
+            fig.add_trace(go.Bar(
+                x=metrics,
+                y=values,
+                name="Value Metrics"
+            ), row=1, col=2)
+
+            # Overall Score (average of financial health and growth scores)
+            overall_score = (data['financial_health_score'] + data['growth_score']) / 2
+            fig.add_trace(go.Indicator(
+                mode="gauge+number",
+                value=overall_score,
+                title={'text': "Overall Score"},
+                gauge={'axis': {'range': [0, 100]},
+                       'bar': {'color': "red"}},
+                domain={'row': 1, 'column': 0}
+            ))
+
+            # Update layout
+            fig.update_layout(
+                title=f"Fundamental Analysis Chart for {symbol}",
+                height=800,
+                width=1000
+            )
+
+            # Generate output file name if not provided
+            if output_file is None:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_file = os.path.join(self.output_dir, f"{symbol}_fundamental_analysis_{timestamp}.html")
+
+            # Save the chart
+            fig.write_html(output_file)
+
+            duration = time.time() - start_time
+            self.logger.timing("fundamental_chart_creation_time_ms", duration * 1000)
+            self.logger.info("Fundamental analysis chart created successfully",
+                            symbol=symbol,
+                            output_file=output_file,
+                            duration_ms=duration * 1000)
+
+            return output_file
+
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.error("Failed to create fundamental analysis chart",
+                             symbol=symbol,
+                             error=str(e),
+                             duration_ms=duration * 1000)
+            raise
+
 # Example usage
 if __name__ == "__main__":
     # Create chart generator
@@ -413,3 +516,17 @@ if __name__ == "__main__":
     symbols = ["AAPL", "MSFT", "GOOGL", "AMZN"]
     comparison_file = generator.create_multi_stock_chart(symbols, normalize=True)
     print(f"Comparison chart saved to: {comparison_file}")
+
+    # Generate a fundamental analysis chart
+    fundamental_data = {
+        'financial_health_score': 85,
+        'growth_score': 72,
+        'value_metrics': {
+            'P/E': 25.6,
+            'EPS': 3.28,
+            'ROE': 0.35,
+            'Debt/Equity': 1.5
+        }
+    }
+    fundamental_chart_file = generator.generate_fundamental_analysis_chart(fundamental_data, "AAPL")
+    print(f"Fundamental analysis chart saved to: {fundamental_chart_file}")

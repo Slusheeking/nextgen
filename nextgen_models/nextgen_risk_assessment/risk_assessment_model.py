@@ -528,9 +528,9 @@ class RiskAssessmentModel:
                 
                 # Check system resources
                 try:
-                    # Get current CPU and memory usage
-                    cpu_percent = self.system_metrics.get_cpu_usage()
-                    memory_percent = self.system_metrics.get_memory_usage()
+                    # Get last collected CPU and memory usage
+                    cpu_percent = self.system_metrics.get_last_cpu_usage()
+                    memory_percent = self.system_metrics.get_last_memory_usage()
                     
                     # Update maximum memory usage
                     self.performance_metrics["peak_memory_usage"] = max(
@@ -879,8 +879,8 @@ class RiskAssessmentModel:
                     "unique_symbols_processed": len(self.performance_metrics["symbols_processed"]),
                     "largest_portfolio_size": self.performance_metrics["largest_portfolio_size"],
                     "system_resources": {
-                        "cpu_usage": self.system_metrics.get_cpu_usage(),
-                        "memory_usage": self.system_metrics.get_memory_usage(),
+                        "cpu_usage": self.system_metrics.get_last_cpu_usage(),
+                        "memory_usage": self.system_metrics.get_last_memory_usage(),
                         "peak_memory_usage": self.performance_metrics["peak_memory_usage"]
                     },
                     "risk_metrics_stats": {
@@ -1979,7 +1979,7 @@ class RiskAssessmentModel:
             "temperature": llm_config.get("temperature", 0.1),
             "timeout": llm_config.get("timeout", 600),
             "seed": llm_config.get("seed", 42),  # Adding seed for reproducibility
-            "context_window": llm_config.get("context_window", 100000),  # Claude-3 context window
+            # Removed "context_window" as it's not a valid parameter for _LLMConfig
         }
         
         # Track API access information for monitoring

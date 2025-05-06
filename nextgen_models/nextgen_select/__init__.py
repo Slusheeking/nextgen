@@ -1,9 +1,7 @@
 """
-FinGPT Selection Module
+NextGen Select Model Initialization
 
-Identifies and filters trading candidates based on multiple criteria.
+This module initializes the SelectionModel as SelectModel for backwards compatibility.
 """
 
-from nextgen_models.nextgen_select.select_model import SelectionModel
-
-__all__ = ["SelectionModel"]
+from .select_model import SelectionModel as SelectModel

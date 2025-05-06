@@ -11,7 +11,7 @@ import json
 import time
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union, Set
 import uuid # Import uuid for generating unique IDs
@@ -37,9 +37,19 @@ class SentimentAnalysisModel:
     This model interacts with FinancialTextMCP and FinancialDataMCP.
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Initialize the SentimentAnalysisModel.
+
+        Args:
+            config: Configuration dictionary, expected to contain:
+                - financial_text_config: Config for FinancialTextMCP.
+                - financial_data_config: Config for FinancialDataMCP.
+                - symbol_entity_mapping: Optional mapping of entities to symbols.
+                - batch_size: Size of batches for processing (default: 10).
+                - sentiment_ttl: Time-to-live for sentiment data in seconds (default: 86400 - 1 day).
+                - llm_config: Configuration for AutoGen LLM.
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
 
         Args:
             config: Configuration dictionary, expected to contain:
@@ -225,6 +235,35 @@ class SentimentAnalysisModel:
         # Initialize AutoGen integration
         self.llm_config = self._get_llm_config()
         self.agents = self._setup_agents()
+
+        # Define the score_sentiment_func before registering it
+        def score_sentiment_func(text: str) -> Dict[str, Any]:
+            """
+            Score the sentiment of a given text.
+            
+            Args:
+                text: Text to analyze
+                
+            Returns:
+                Sentiment analysis result
+            """
+            try:
+                # Use the financial text MCP to score sentiment
+                result = self.financial_text_mcp.call_tool(
+                    "score_sentiment", {"text": text}
+                )
+                
+                if result and not result.get("error"):
+                    return result
+                else:
+                    return {
+                        "error": result.get("error", "Failed to score sentiment")
+                    }
+            except Exception as e:
+                self.logger.error(f"Error scoring sentiment: {e}", exc_info=True)
+                return {"error": str(e)}
+
+        self.score_sentiment_func = score_sentiment_func
 
         # Register functions with the agents
         self._register_functions()
@@ -900,16 +939,22 @@ class SentimentAnalysisModel:
     async def _load_symbol_entity_mapping(self):
         """Attempt to load the symbol-entity mapping from Redis."""
         try:
+            if not hasattr(self, 'redis_keys'):
+                self.logger.warning("redis_keys attribute not found. Skipping symbol-entity mapping load.")
+                return
+
             self.mcp_tool_call_count += 1
             result = self.redis_mcp.call_tool("get_json", {"key": self.redis_keys["symbol_entity_mapping"]})
             if result and not result.get("error") and result.get("value"):
                 self.symbol_entity_mapping = result.get("value")
                 self.logger.info("Loaded symbol-entity mapping from Redis.")
             elif result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-                 self.logger.warning(f"Failed to load symbol-entity mapping from Redis: {result.get('error')}")
+                self.mcp_tool_error_count += 1
+                self.logger.warning(f"Failed to load symbol-entity mapping from Redis: {result.get('error')}")
             else:
-                 self.logger.info("No symbol-entity mapping found in Redis. Using default.")
+                self.logger.info("No symbol-entity mapping found in Redis. Using default.")
+        except AttributeError:
+            self.logger.warning("redis_mcp attribute not found. Skipping symbol-entity mapping load.")
         except Exception as e:
             self.logger.error(f"Error loading symbol-entity mapping from Redis: {e}", exc_info=True)
             self.execution_errors += 1
@@ -980,187 +1025,241 @@ class SentimentAnalysisModel:
 
         return agents
 
-    def _register_functions(self):
+    # --- Tool Methods (to be registered) ---
+
+    async def _tool_extract_entities(self, text: str) -> Dict[str, Any]:
+        """Internal method for entity extraction tool."""
+        result = await self._call_entity_extraction(text)
+        return result or {"entities": [], "error": "Entity extraction failed"}
+
+    async def _tool_score_sentiment(
+        self, text: str, entities: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Internal method for sentiment scoring tool."""
+        result = await self._call_sentiment_scoring(text, entities)
+        return result or {
+            "overall_sentiment": None,
+            "entity_sentiments": {},
+            "error": "Sentiment scoring failed",
+        }
+
+    async def _tool_analyze_text(self, text: str) -> Dict[str, Any]:
+        """Internal method for full text analysis tool."""
+        result = await self._analyze_single_text(text)
+        return result
+
+    async def _tool_process_news_batch(
+        self, news_items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Internal method for batch processing tool."""
+        result = await self.process_news_batch(news_items)
+        return result
+
+    async def _tool_get_symbol_sentiment(
+        self, symbol: str, lookback_hours: int = 24
+    ) -> Dict[str, Any]:
+        """Internal method for symbol sentiment retrieval tool."""
+        result = await self.get_symbol_sentiment(symbol, lookback_hours)
+        return result
+
+    async def _tool_get_all_symbols_sentiment(
+        self, lookback_hours: int = 24,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Internal method for retrieving all symbols' sentiment."""
+        result = await self.get_all_symbols_sentiment(lookback_hours)
+        return result
+
+    async def _tool_get_sentiment_history(self, symbol: str, days: int = 7) -> Dict[str, Any]:
+        """Internal method for sentiment history retrieval tool."""
+        result = await self.get_sentiment_history(symbol, days)
+        return result
+
+    async def _tool_update_symbol_entity_mapping(
+        self, mapping: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Internal method for updating symbol-entity mapping."""
+        result = await self.update_symbol_entity_mapping(mapping)
+        return result
+
+    async def _tool_fetch_latest_news(
+        self, symbol: Optional[str] = None, topic: Optional[str] = None, limit: int = 10
+    ) -> Dict[str, Any]:
+        """Internal method for fetching latest news."""
+        result = await self.fetch_latest_news(symbol, topic, limit)
+        return result
+
+    def _tool_get_selection_data(self) -> Dict[str, Any]:
+        """Internal method for getting selection data."""
+        return self.get_selection_data()
+
+    def _tool_send_feedback_to_selection(self, sentiment_data: Dict[str, Any]) -> bool:
+        """Internal method for sending feedback to selection model."""
+        return self.send_feedback_to_selection(sentiment_data)
+
+    def _tool_use_financial_text_tool(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> Any:
+        """Internal method for using FinancialTextMCP tools."""
+        self.mcp_tool_call_count += 1
+        result = self.financial_text_mcp.call_tool(tool_name, arguments)
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    def _tool_use_financial_data_tool(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> Any:
+        """Internal method for using FinancialDataMCP tools."""
+        self.mcp_tool_call_count += 1
+        result = self.financial_data_mcp.call_tool(tool_name, arguments)
+        if result and result.get("error"):
+             self.mcp_tool_error_count += 1
+        return result
+
+    # --- Registration Methods ---
+
+    def _register_functions(self, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Register functions with the user proxy agent.
+
+        Args:
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
+                              If None, uses the default user_proxy agent created internally.
         """
-        user_proxy = self.agents["user_proxy"]
+        # Use the provided user_proxy_agent if available, otherwise use the internal one
+        user_proxy = user_proxy_agent if user_proxy_agent is not None else self.agents["user_proxy"]
         sentiment_assistant = self.agents["sentiment_assistant"]
 
-        # Register entity extraction functions
-        @register_function(
-            name="extract_entities",
-            description="Extract entities from text",
-            caller=sentiment_assistant,
-            executor=user_proxy,
-        )
-        async def extract_entities(text: str) -> Dict[str, Any]:
-            result = await self._call_entity_extraction(text)
-            return result or {"entities": [], "error": "Entity extraction failed"}
-
-        # Register sentiment scoring functions
-        @register_function(
+        # Register entity extraction functions with type annotations
+        def extract_entities_func(text: str) -> Dict[str, Any]:
+            return self._tool_extract_entities(text)
+            
+        # Register sentiment scoring functions with type annotations
+        register_function(
+            self.score_sentiment_func,
             name="score_sentiment",
             description="Score sentiment for text and entities",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def score_sentiment(
-            text: str, entities: Optional[List[str]] = None
-        ) -> Dict[str, Any]:
-            result = await self._call_sentiment_scoring(text, entities)
-            return result or {
-                "overall_sentiment": None,
-                "entity_sentiments": {},
-                "error": "Sentiment scoring failed",
-            }
 
-        # Register full analysis function
-        @register_function(
+        # Register full analysis function with type annotations
+        def analyze_text_func(text: str) -> Dict[str, Any]:
+            return self._tool_analyze_text(text)
+            
+        register_function(
+            analyze_text_func,
             name="analyze_text",
             description="Perform full sentiment analysis on text",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def analyze_text(text: str) -> Dict[str, Any]:
-            result = await self._analyze_single_text(text)
-            return result
 
         # Register batch processing function
-        @register_function(
+        def process_news_batch_func(news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+            return self._tool_process_news_batch(news_items)
+            
+        register_function(
+            process_news_batch_func,
             name="process_news_batch",
             description="Process a batch of news items",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def process_news_batch(
-            news_items: List[Dict[str, Any]],
-        ) -> Dict[str, Any]:
-            result = await self.process_news_batch(news_items)
-            return result
 
         # Register symbol sentiment retrieval
-        @register_function(
+        register_function(
+            lambda symbol, lookback_hours=24: self._tool_get_symbol_sentiment(symbol, lookback_hours),
             name="get_symbol_sentiment",
             description="Get aggregated sentiment for a symbol from Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def get_symbol_sentiment(
-            symbol: str, lookback_hours: int = 24
-        ) -> Dict[str, Any]:
-            result = await self.get_symbol_sentiment(symbol, lookback_hours)
-            return result
 
         # Register all symbols sentiment retrieval
-        @register_function(
+        register_function(
+            lambda lookback_hours=24: self._tool_get_all_symbols_sentiment(lookback_hours),
             name="get_all_symbols_sentiment",
             description="Get sentiment for all symbols from Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def get_all_symbols_sentiment(
-            lookback_hours: int = 24,
-        ) -> Dict[str, Dict[str, Any]]:
-            result = await self.get_all_symbols_sentiment(lookback_hours)
-            return result
 
         # Register sentiment history retrieval
-        @register_function(
+        register_function(
+            lambda symbol, days=7: self._tool_get_sentiment_history(symbol, days),
             name="get_sentiment_history",
             description="Get historical sentiment for a symbol from Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def get_sentiment_history(symbol: str, days: int = 7) -> Dict[str, Any]:
-            result = await self.get_sentiment_history(symbol, days)
-            return result
 
         # Register symbol-entity mapping update
-        @register_function(
+        register_function(
+            lambda mapping: self._tool_update_symbol_entity_mapping(mapping),
             name="update_symbol_entity_mapping",
             description="Update the mapping between entities and symbols and store in Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def update_symbol_entity_mapping(
-            mapping: Dict[str, str],
-        ) -> Dict[str, Any]:
-            result = await self.update_symbol_entity_mapping(mapping)
-            return result
 
         # Register direct news fetching functions
-        @register_function(
+        register_function(
+            lambda symbol=None, topic=None, limit=10: self._tool_fetch_latest_news(symbol, topic, limit),
             name="fetch_latest_news",
             description="Fetch latest news for a symbol or topic using FinancialDataMCP",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        async def fetch_latest_news(
-            symbol: Optional[str] = None, topic: Optional[str] = None, limit: int = 10
-        ) -> Dict[str, Any]:
-            result = await self.fetch_latest_news(symbol, topic, limit)
-            return result
 
         # Register selection model integration functions
-        @register_function(
+        register_function(
+            lambda: self._tool_get_selection_data(),
             name="get_selection_data",
             description="Get data from the Selection Model from Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        def get_selection_data() -> Dict[str, Any]:
-            return self.get_selection_data()
 
-        @register_function(
+        register_function(
+            lambda sentiment_data: self._tool_send_feedback_to_selection(sentiment_data),
             name="send_feedback_to_selection",
             description="Send sentiment feedback to the Selection Model via Redis Stream",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        def send_feedback_to_selection(sentiment_data: Dict[str, Any]) -> bool:
-            return self.send_feedback_to_selection(sentiment_data)
 
         # Register MCP tool access functions
-        self._register_mcp_tool_access()
+        self._register_mcp_tool_access(user_proxy_agent)
 
-    def _register_mcp_tool_access(self):
+    def _register_mcp_tool_access(self, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Register MCP tool access functions with the user proxy agent.
+        
+        Args:
+            user_proxy_agent: Optional UserProxyAgent instance to register functions with.
+                              If None, uses the default user_proxy agent created internally.
         """
-        user_proxy = self.agents["user_proxy"]
+        # Use the provided user_proxy_agent if available, otherwise use the internal one
+        user_proxy = user_proxy_agent if user_proxy_agent is not None else self.agents["user_proxy"]
         sentiment_assistant = self.agents["sentiment_assistant"]
 
         # Define MCP tool access functions for consolidated MCPs
-        @register_function(
+        register_function(
+            self._tool_use_financial_text_tool, # Pass the method reference
             name="use_financial_text_tool",
             description="Use a tool provided by the Financial Text MCP server (for entity extraction and sentiment scoring)",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        def use_financial_text_tool(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> Any:
-            self.mcp_tool_call_count += 1
-            result = self.financial_text_mcp.call_tool(tool_name, arguments)
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
-        @register_function(
+        register_function(
+            self._tool_use_financial_data_tool, # Pass the method reference
             name="use_financial_data_tool",
             description="Use a tool provided by the Financial Data MCP server (for news, social, etc.)",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-        def use_financial_data_tool(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> Any:
-            self.mcp_tool_call_count += 1
-            result = self.financial_data_mcp.call_tool(tool_name, arguments)
-            if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
-            return result
 
         # Old MCP tool access functions removed
 

@@ -1,3 +1,4 @@
+
 """
 Reddit MCP Server
 
@@ -7,6 +8,9 @@ providing access to posts, comments, and sentiment analysis for financial subred
 
 import os
 import time
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 from typing import Dict, List, Any, Optional
 
 # Direct imports with graceful error handling
@@ -28,7 +32,6 @@ from monitoring.netdata_logger import NetdataLogger
 from mcp_tools.data_mcp.base_data_mcp import BaseDataMCP
 
 # Load environment variables
-dotenv.load_dotenv()
 
 
 class RedditMCP(BaseDataMCP):
@@ -91,26 +94,21 @@ class RedditMCP(BaseDataMCP):
             Client configuration or None if initialization fails
         """
         try:
-            # Get credentials from config or environment variables
-            client_id = self.config.get("client_id") or os.environ.get(
-                "REDDIT_CLIENT_ID"
-            )
-            client_secret = self.config.get("client_secret") or os.environ.get(
-                "REDDIT_CLIENT_SECRET"
-            )
-            user_agent = self.config.get("user_agent") or os.environ.get(
-                "REDDIT_USER_AGENT", "fingpt-mcp-reddit"
-            )
+            # Prioritize environment variables for credentials
+            client_id = os.environ.get("REDDIT_CLIENT_ID") or self.config.get("client_id")
+            client_secret = os.environ.get("REDDIT_CLIENT_SECRET") or self.config.get("client_secret")
+            user_agent = os.environ.get("REDDIT_USER_AGENT") or self.config.get("user_agent", "fingpt-mcp-reddit")
 
             if not client_id or not client_secret:
-                self.logger.warning(
-                    "Missing Reddit API credentials - API calls will fail"
-                )
+                self.logger.error("Missing Reddit API credentials - API calls will fail")
+                return None
 
             # Initialize PRAW client
             reddit = praw.Reddit(
                 client_id=client_id, client_secret=client_secret, user_agent=user_agent
             )
+
+            self.logger.info(f"Loaded Reddit API credentials: client_id={client_id[:4]}...{client_id[-4:]}")
 
             return {
                 "client_id": client_id,
