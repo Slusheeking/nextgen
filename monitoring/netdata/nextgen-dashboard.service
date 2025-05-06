@@ -1,4 +1,4 @@
-[Unit]
+$ bash scripts/run_model_accuracy_tests.sh --verbose sentiment$ bash scripts/run_model_accuracy_tests.sh --verbose sentiment[Unit]
 Description=NextGen Dashboard Service
 After=network.target
 

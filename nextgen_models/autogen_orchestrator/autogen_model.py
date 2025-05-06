@@ -786,7 +786,9 @@ class AutoGenOrchestrator:
             "risk_analysis_config_path": "config/mcp_tools/risk_analysis_mcp_config.json",
             "document_analysis_config_path": "config/mcp_tools/document_analysis_mcp_config.json",
             "vector_store_config_path": "config/mcp_tools/vector_store_mcp_config.json",
-            "financial_text_config_path": "config/mcp_tools/financial_text_mcp_config.json",
+            # Financial text MCP removed - functionality consolidated into FinancialDataMCP
+            # Keep config path for backward compatibility
+            "financial_text_config_path": "config/mcp_tools/financial_data_mcp_config.json",
             "redis_config": base_config.get("redis_config") # Redis config is passed directly
         }
 

@@ -1,2391 +1,2366 @@
 #!/usr/bin/env python3
 """
-Financial Data MCP Tool
+Integrated Financial Analytics System
 
-This module implements a consolidated Model Context Protocol (MCP) server that provides
-a unified interface for retrieving financial data from various external sources like
-Polygon.io, Yahoo Finance, Reddit, and Unusual Whales.
+This module combines FinBERT for financial text analysis with XGBoost for predictive modeling,
+creating a powerful system for financial market prediction that leverages both textual and
+numerical data.
 
-Features:
-- Unified API for market data, news, social sentiment, and options flow
-- Source prioritization and fallback
-- Performance monitoring and metrics
-- Detailed health reporting
-- Visualization of financial data and performance
+Key features:
+- Sentiment analysis using pre-trained FinBERT
+- Market data processing and feature engineering
+- XGBoost-based prediction models
+- Integrated caching and performance monitoring
+- Comprehensive backtesting framework
+- Configuration via /home/ubuntu/nextgen/config/financial_data_mcp/financial_data_mcp_config.json
 """
 
 import os
 import json
 import time
+import numpy as np
+import pandas as pd
 import threading
-import importlib
-from typing import Dict, List, Any, Optional
-from datetime import datetime
+import requests
+from typing import Dict, List, Any, Optional, Tuple, Union
+from datetime import datetime, timedelta
 
-# Direct imports instead of dynamic loading
-from dotenv import load_dotenv
+# ML imports
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import xgboost as xgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split, GridSearchCV
 
-# Load environment variables
-load_dotenv()
-
-# Import base MCP server
+# Financial data handling imports
 from mcp_tools.base_mcp_server import BaseMCPServer
 
-# Standard imports for MCP data clients with proper error handling
-try:
-    from mcp_tools.data_mcp.polygon_rest_mcp import PolygonRestMCP
-    HAVE_POLYGON_REST = True
-except ImportError:
-    HAVE_POLYGON_REST = False
-    print("Warning: PolygonRestMCP not found. Historical market data from Polygon will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.polygon_ws_mcp import PolygonWsMCP
-    HAVE_POLYGON_WS = True
-except ImportError:
-    HAVE_POLYGON_WS = False
-    print("Warning: PolygonWsMCP not found. Streaming market data from Polygon will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.polygon_news_mcp import PolygonNewsMCP
-    HAVE_POLYGON_NEWS = True
-except ImportError:
-    HAVE_POLYGON_NEWS = False
-    print("Warning: PolygonNewsMCP not found. News data from Polygon will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.yahoo_finance_mcp import YahooFinanceMCP
-    HAVE_YAHOO_FINANCE = True
-except ImportError:
-    HAVE_YAHOO_FINANCE = False
-    print("Warning: YahooFinanceMCP not found. Financial data from Yahoo Finance will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.yahoo_news_mcp import YahooNewsMCP
-    HAVE_YAHOO_NEWS = True
-except ImportError:
-    HAVE_YAHOO_NEWS = False
-    print("Warning: YahooNewsMCP not found. News data from Yahoo News will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.reddit_mcp import RedditMCP
-    HAVE_REDDIT = True
-except ImportError:
-    HAVE_REDDIT = False
-    print("Warning: RedditMCP not found. Social sentiment data from Reddit will be unavailable.")
-
-try:
-    from mcp_tools.data_mcp.unusual_whales_mcp import UnusualWhalesMCP
-    HAVE_UNUSUAL_WHALES = True
-except ImportError:
-    HAVE_UNUSUAL_WHALES = False
-    print("Warning: UnusualWhalesMCP not found. Unusual options activity data will be unavailable.")
+# Monitoring imports
+from monitoring.netdata_logger import NetdataLogger
+from monitoring.system_metrics import SystemMetricsCollector
+from monitoring.stock_charts import StockChartGenerator
 
 
 class FinancialDataMCP(BaseMCPServer):
     """
-    Consolidated MCP server for retrieving financial data from multiple sources.
-    Provides a unified API for market data, news, social sentiment, and options flow.
-    
-    Features:
-    - Comprehensive monitoring and metrics collection
-    - Detailed health reporting with source-specific diagnostics
-    - Performance tracking for all data operations
-    - Automatic visualization of market and performance data
-    - Cache management with detailed metrics
-    - Health checking with proactive monitoring
+    Integrated system combining FinBERT for financial sentiment analysis with XGBoost
+    for market prediction models. This class serves as the primary interface for financial data operations.
     """
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    
+    def __init__(self, config_path: str = "/home/ubuntu/nextgen/config/financial_data_mcp/financial_data_mcp_config.json"):
         """
-        Initialize the Financial Data MCP server.
+        Initialize the integrated FinBERT-XGBoost system.
 
         Args:
-            config: Optional configuration dictionary. If None, loads from
-                  config/mcp_tools/financial_data_mcp_config.json
+            config_path: Path to configuration file
         """
-        init_start_time = time.time()
+        # Initialize logger first for proper error handling
+        self.logger = NetdataLogger(component_name="finbert-xgboost-integration")
         
-        if config is None:
-            config_path = os.path.join("config", "mcp_tools", "financial_data_mcp_config.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                except Exception as e:
-                    print(f"Error loading config from {config_path}: {e}")
-                    config = {}
-            else:
-                print(f"Warning: Config file not found at {config_path}. Using default settings.")
-                config = {}
-
-        super().__init__(name="financial_data_mcp", config=config)
-
-        # Initialize monitoring locks
-        self.monitoring_lock = threading.RLock()
-
-        # Initialize detailed performance metrics for financial data operations
-        self.market_data_count = 0
-        self.news_request_count = 0
-        self.social_sentiment_count = 0
-        self.options_data_count = 0
-        self.fundamentals_count = 0
-        self.market_status_count = 0
-        self.ticker_list_count = 0
-        self.market_movers_count = 0
+        # Load configuration from the specified path
+        self.config = self._load_config(config_path)
         
-        # Initialize source usage tracking
-        self.source_usage_counts = {}
-        self.source_error_counts = {}
-        self.source_latencies = {}
+        # Initialize base MCP server with name from config if available
+        super().__init__(
+            name=self.config.get("component_name", "finbert_xgboost_integration"),
+            config=self.config
+        )
         
-        # Initialize API rate limit tracking
-        self.api_rate_limits = {}
-        self.api_rate_limit_resets = {}
+        # Initialize locks for thread safety
+        self.model_lock = threading.RLock()
+        self.cache_lock = threading.RLock()
+        self.rate_limit_lock = threading.RLock()
         
-        # Initialize cache metrics
-        self.cache_hits = 0
-        self.cache_misses = 0
-        self.cache_expirations = 0
+        # Initialize cache
+        self.cache = {}
+        self.cache_timestamps = {}
         
-        # Initialize metrics by symbol to track most queried financial instruments
-        self.symbol_query_counts = {}
+        # Initialize rate limiting data structures
+        self.request_timestamps = []
         
-        # Configure performance thresholds
-        self.slow_market_data_threshold_ms = self.config.get("slow_market_data_threshold_ms", 1000)
-        self.slow_news_threshold_ms = self.config.get("slow_news_threshold_ms", 1500)
-        self.slow_fundamental_data_threshold_ms = self.config.get("slow_fundamental_data_threshold_ms", 2000)
-        
-        # Configure cache settings
-        self.enable_cache = self.config.get("enable_cache", True)
-        self.cache_ttl = self.config.get("cache_ttl", 300)  # Default 5 minutes cache
-        
-        # Configure from config and initialize clients first
+        # Extract configuration
         self._configure_from_config()
-        self._initialize_data_clients()
         
-        # Start health check thread specifically for financial data sources
-        # (after clients are initialized)
-        if self.config.get("enable_financial_health_check", True):
-            self._start_financial_health_check_thread()
-
+        # Initialize component MCPs with their respective configurations
+        data_mcp_config = self.config.get("financial_data_mcp", {})
+        text_mcp_config = self.config.get("financial_text_mcp", {})
+        
+        # Add API keys from config to the respective MCP configs
+        if "api_keys" in self.config:
+            # Add API keys to data MCP config
+            if "polygon" in self.config["api_keys"]:
+                data_mcp_config.setdefault("sources", {}).setdefault("polygon_rest", {})["api_key"] = self._resolve_env_var(self.config["api_keys"]["polygon"])
+            if "unusual_whales" in self.config["api_keys"]:
+                data_mcp_config.setdefault("sources", {}).setdefault("unusual_whales", {})["api_key"] = self._resolve_env_var(self.config["api_keys"]["unusual_whales"])
+            if "yahoo_finance" in self.config["api_keys"]:
+                data_mcp_config.setdefault("sources", {}).setdefault("yahoo_finance", {})["api_key"] = self._resolve_env_var(self.config["api_keys"]["yahoo_finance"])
+        
+        # Enable/disable data sources based on config
+        if "data_sources" in self.config:
+            for source in data_mcp_config.get("sources", {}):
+                data_mcp_config["sources"][source]["enabled"] = source in self.config["data_sources"]
+        
+        # Initialize data_mcp with the appropriate configuration
+        # Since FinancialDataMCP is now this class, use a different approach if needed
+        # For now, we'll use self as the data_mcp or initialize a sub-component if required
+        self.data_mcp = self  # Self-reference as this class is FinancialDataMCP
+        
+        # Initialize models
+        self._initialize_models()
+        
+        # Initialize metrics collector and chart generator
+        self.metrics_collector = SystemMetricsCollector(self.logger)
+        self.metrics_collector.start()
+        self.chart_generator = StockChartGenerator()
+        
         # Register tools
         self._register_tools()
         
-        # Register monitoring tools
-        if self.config.get("enable_monitoring", True):
-            self._register_financial_monitoring_tools()
+        # Start health check thread if enabled
+        if self.config.get("monitoring", {}).get("health_check_interval_mins"):
+            self._start_health_check_thread()
         
-        # Record initialization time
-        init_duration = (time.time() - init_start_time) * 1000  # milliseconds
-        self.logger.timing("financial_data_mcp.initialization_time_ms", init_duration)
-        
-        # Log detailed initialization information
-        self.logger.info(f"Financial Data MCP initialized successfully - init_time_ms: {init_duration}, sources_count: {len(self.clients)}, cache_enabled: {self.enable_cache}, cache_ttl: {self.cache_ttl}")
-
-    def _start_financial_health_check_thread(self):
-        """
-        Start a background thread for periodic health checks specific to financial data sources.
-        This thread will monitor the health of each individual data source and API rate limits.
-        """
-        def financial_health_check_loop():
-            self.logger.info("Starting financial data health check thread")
-            
-            # Get health check interval from config (with default of 60 seconds)
-            health_check_interval = self.config.get("financial_health_check_interval", 60)
-            
-            # Initialize health check counter for periodic detailed reports
-            health_check_counter = 0
-            
-            while not hasattr(self, 'shutdown_requested') or not self.shutdown_requested:
-                try:
-                    # Increment the counter
-                    health_check_counter += 1
-                    
-                    # Check the health of each data source
-                    source_health = {}
-                    
-                    with self.monitoring_lock:
-                        # For each data source, check its health
-                        for source_name, client in self.clients.items():
-                            try:
-                                # Check if the client has a health_check method
-                                if hasattr(client, "health_check"):
-                                    health_result = client.health_check()
-                                    source_health[source_name] = health_result
-                                else:
-                                    # Default health check based on error rates
-                                    usage_count = self.source_usage_counts.get(source_name, 0)
-                                    error_count = self.source_error_counts.get(source_name, 0)
-                                    error_rate = error_count / max(1, usage_count) if usage_count > 0 else 0
-                                    
-                                    # Set health status based on error rate
-                                    if error_rate > 0.2:  # 20% error rate is high
-                                        status = "unhealthy"
-                                    elif error_rate > 0.05:  # 5% error rate is concerning
-                                        status = "degraded"
-                                    else:
-                                        status = "healthy"
-                                    
-                                    # Record the health information
-                                    source_health[source_name] = {
-                                        "status": status,
-                                        "error_rate": f"{error_rate:.2%}",
-                                        "request_count": usage_count,
-                                        "error_count": error_count
-                                    }
-                                    
-                                    # Check API rate limits if applicable
-                                    if source_name in self.api_rate_limits:
-                                        # Add rate limit information
-                                        source_health[source_name]["rate_limit"] = {
-                                            "remaining": self.api_rate_limits.get(source_name, 0),
-                                            "reset_time": self.api_rate_limit_resets.get(source_name, 0)
-                                        }
-                                        
-                                        # Add warning if we're close to rate limit
-                                        if self.api_rate_limits.get(source_name, 0) < 50:
-                                            source_health[source_name]["warnings"] = [
-                                                f"API rate limit running low: {self.api_rate_limits.get(source_name, 0)} remaining"
-                                            ]
-                            except Exception as e:
-                                self.logger.error(f"Error checking health for {source_name}: {e}")
-                                source_health[source_name] = {
-                                    "status": "unknown",
-                                    "error": str(e)
-                                }
-                    
-                    # Determine overall financial data health
-                    unhealthy_sources = [name for name, health in source_health.items() 
-                                        if health.get("status") == "unhealthy"]
-                    degraded_sources = [name for name, health in source_health.items() 
-                                       if health.get("status") == "degraded"]
-                    
-                    if len(unhealthy_sources) > len(self.clients) / 2:
-                        # More than half of sources are unhealthy
-                        overall_status = "critical"
-                        self.logger.critical("Financial data sources in critical state", 
-                                           unhealthy_count=len(unhealthy_sources),
-                                           total_sources=len(self.clients))
-                    elif unhealthy_sources:
-                        # Some sources are unhealthy
-                        overall_status = "degraded"
-                        self.logger.warning("Some financial data sources are unhealthy", 
-                                          unhealthy_sources=unhealthy_sources)
-                    elif degraded_sources:
-                        # Some sources are degraded
-                        overall_status = "warning"
-                        self.logger.warning("Some financial data sources are degraded", 
-                                          degraded_sources=degraded_sources)
-                    else:
-                        # All sources are healthy
-                        overall_status = "healthy"
-                    
-                    # Update metrics based on health check
-                    if overall_status == "healthy":
-                        self.logger.gauge("financial_data_health_status", 3)  # 3 = healthy
-                    elif overall_status == "warning":
-                        self.logger.gauge("financial_data_health_status", 2)  # 2 = warning
-                    elif overall_status == "degraded":
-                        self.logger.gauge("financial_data_health_status", 1)  # 1 = degraded
-                    else:
-                        self.logger.gauge("financial_data_health_status", 0)  # 0 = critical
-                        
-                    # Every 5th check, log detailed health information
-                    if health_check_counter % 5 == 0:
-                        self.logger.info(f"Detailed financial data health check completed - overall_status: {overall_status}, healthy_sources: {len(self.clients) - len(unhealthy_sources) - len(degraded_sources)}, degraded_sources: {len(degraded_sources)}, unhealthy_sources: {len(unhealthy_sources)}, total_sources: {len(self.clients)}")
-                    else:
-                        # More concise log for regular checks
-                        self.logger.info(f"Financial data health check completed - overall_status: {overall_status}")
-                    
-                    # Check if we need to generate charts (every 10th check)
-                    if health_check_counter % 10 == 0:
-                        self._generate_financial_performance_charts()
-                    
-                except Exception as e:
-                    self.logger.error(f"Error in financial health check thread: {e}", exc_info=True)
-                    self.logger.counter("financial_health_check_errors")
-                
-                # Sleep until next check interval
-                time.sleep(health_check_interval)
-        
-        # Start health check thread
-        health_thread = threading.Thread(target=financial_health_check_loop, daemon=True)
-        health_thread.start()
-        self.financial_health_thread = health_thread
-        self.logger.info("Financial health check thread started")
+        self.logger.info("FinBERT-XGBoost Integration initialized successfully")
     
-    def _generate_financial_performance_charts(self):
+    def _load_config(self, config_path: str) -> Dict[str, Any]:
         """
-        Generate performance charts for financial data visualization.
-        """
-        try:
-            # Generate charts only if chart generator is available
-            if not hasattr(self, 'chart_generator'):
-                return
+        Load configuration from file with error handling.
+        
+        Args:
+            config_path: Path to the configuration file
             
-            with self.monitoring_lock:
-                # Generate API usage chart
-                api_usage_data = {
-                    'Market Data': self.market_data_count,
-                    'News': self.news_request_count,
-                    'Social Sentiment': self.social_sentiment_count,
-                    'Options Data': self.options_data_count,
-                    'Fundamentals': self.fundamentals_count,
-                    'Market Status': self.market_status_count,
-                    'Ticker List': self.ticker_list_count,
-                    'Market Movers': self.market_movers_count
-                }
-                
-                try:
-                    api_chart = self.chart_generator.create_performance_chart(
-                        api_usage_data,
-                        title="Financial Data API Usage",
-                        include_timestamps=True
-                    )
-                    self.logger.info("Generated API usage chart", chart_file=api_chart)
-                except Exception as e:
-                    self.logger.warning(f"Failed to create API usage chart: {e}")
-                
-                # Generate source usage chart
-                if self.source_usage_counts:
-                    try:
-                        source_chart = self.chart_generator.create_performance_chart(
-                            self.source_usage_counts,
-                            title="Data Source Usage",
-                            include_timestamps=True
-                        )
-                        self.logger.info("Generated source usage chart", chart_file=source_chart)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create source usage chart: {e}")
-                
-                # Generate cache performance chart
-                cache_data = {
-                    'Hits': self.cache_hits,
-                    'Misses': self.cache_misses,
-                    'Expirations': self.cache_expirations
-                }
-                
-                try:
-                    cache_chart = self.chart_generator.create_performance_chart(
-                        cache_data,
-                        title="Cache Performance",
-                        include_timestamps=True
-                    )
-                    self.logger.info("Generated cache performance chart", chart_file=cache_chart)
-                except Exception as e:
-                    self.logger.warning(f"Failed to create cache performance chart: {e}")
-                
-                # Generate top symbols chart - get top 10 most queried symbols
-                if self.symbol_query_counts:
-                    try:
-                        # Sort by query count and take top 10
-                        top_symbols = dict(sorted(
-                            self.symbol_query_counts.items(), 
-                            key=lambda x: x[1], 
-                            reverse=True
-                        )[:10])
-                        
-                        if top_symbols:
-                            symbol_chart = self.chart_generator.create_performance_chart(
-                                top_symbols,
-                                title="Top Queried Symbols",
-                                include_timestamps=True
-                            )
-                            self.logger.info("Generated top symbols chart", chart_file=symbol_chart)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create top symbols chart: {e}")
-        
-        except Exception as e:
-            self.logger.error(f"Error generating financial performance charts: {e}", exc_info=True)
-
-    def _configure_from_config(self):
-        """Extract configuration values."""
-        # Use the 'sources' key from the config file
-        self.sources_config = self.config.get("sources", {})
-        self.default_source_priority = self.config.get("default_source_priority",
-                                                      ["polygon_rest", "yahoo_finance", "reddit", "unusual_whales", "polygon_news", "yahoo_news", "polygon_ws"]) # Updated priority list
-        self.cache_ttl = self.config.get("cache_ttl", 300) # Default 5 minutes cache
-
-        # Log loaded sources
-        enabled_sources = [src for src, cfg in self.sources_config.items() if cfg.get("enabled", False)]
-        self.logger.info("Data sources configured", enabled_sources=enabled_sources)
-
-
-    def _initialize_data_clients(self):
-        """Initialize clients for each configured data source."""
-        init_start_time = time.time()
-        self.clients = {}
-        successful_inits = 0
-        failed_inits = 0
-
-        # Initialize clients based on availability and config with detailed metrics
-        if HAVE_POLYGON_REST and self.sources_config.get("polygon_rest", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("polygon_rest", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API key from environment variable
-                config["api_key"] = os.getenv("POLYGON_API_KEY")
-
-                self.clients["polygon_rest"] = PolygonRestMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_rest_ms", client_init_time, source="polygon_rest")
-                self.logger.info("Polygon REST client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["polygon_rest"] = 0
-                self.source_error_counts["polygon_rest"] = 0
-                self.source_latencies["polygon_rest"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Polygon REST client: {e}", exc_info=True)
-                failed_inits += 1
-
-        if HAVE_POLYGON_WS and self.sources_config.get("polygon_ws", {}).get("enabled", False): # WS usually needs explicit enable
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("polygon_ws", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API key from environment variable
-                config["api_key"] = os.getenv("POLYGON_API_KEY")
-                    
-                self.clients["polygon_ws"] = PolygonWsMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_ws_ms", client_init_time, source="polygon_ws")
-                self.logger.info("Polygon WebSocket client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["polygon_ws"] = 0
-                self.source_error_counts["polygon_ws"] = 0
-                self.source_latencies["polygon_ws"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Polygon WebSocket client: {e}", exc_info=True)
-                failed_inits += 1
-
-        if HAVE_POLYGON_NEWS and self.sources_config.get("polygon_news", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("polygon_news", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API key from environment variable
-                config["api_key"] = os.getenv("POLYGON_API_KEY")
-                    
-                self.clients["polygon_news"] = PolygonNewsMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.polygon_news_ms", client_init_time, source="polygon_news")
-                self.logger.info("Polygon News client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["polygon_news"] = 0
-                self.source_error_counts["polygon_news"] = 0
-                self.source_latencies["polygon_news"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Polygon News client: {e}", exc_info=True)
-                failed_inits += 1
-
-        if HAVE_YAHOO_FINANCE and self.sources_config.get("yahoo_finance", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("yahoo_finance", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API key from environment variable if needed
-                config["api_key"] = os.getenv("YAHOO_FINANCE_API_KEY")
-                    
-                self.clients["yahoo_finance"] = YahooFinanceMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.yahoo_finance_ms", client_init_time, source="yahoo_finance")
-                self.logger.info("Yahoo Finance client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["yahoo_finance"] = 0
-                self.source_error_counts["yahoo_finance"] = 0
-                self.source_latencies["yahoo_finance"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Yahoo Finance client: {e}", exc_info=True)
-                failed_inits += 1
-
-        if HAVE_REDDIT and self.sources_config.get("reddit", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("reddit", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API keys from environment variables
-                config["client_id"] = os.getenv("REDDIT_CLIENT_ID")
-                config["client_secret"] = os.getenv("REDDIT_CLIENT_SECRET")
-                config["username"] = os.getenv("REDDIT_USERNAME")
-                config["password"] = os.getenv("REDDIT_PASSWORD")
-                config["user_agent"] = os.getenv("REDDIT_USER_AGENT")
-                    
-                self.clients["reddit"] = RedditMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.reddit_ms", client_init_time, source="reddit")
-                self.logger.info("Reddit client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["reddit"] = 0
-                self.source_error_counts["reddit"] = 0
-                self.source_latencies["reddit"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Reddit client: {e}", exc_info=True)
-                failed_inits += 1
-
-        if HAVE_UNUSUAL_WHALES and self.sources_config.get("unusual_whales", {}).get("enabled", True):
-            try:
-                client_init_start = time.time()
-                config = self.sources_config.get("unusual_whales", {})
-                # Add monitoring context to config
-                if "logger" not in config:
-                    config["logger"] = self.logger
-                if "metrics_collector" not in config:
-                    config["metrics_collector"] = self.metrics_collector
-                
-                # Load API key from environment variable
-                config["api_key"] = os.getenv("UNUSUAL_WHALES_API_KEY")
-                    
-                self.clients["unusual_whales"] = UnusualWhalesMCP(config)
-                client_init_time = (time.time() - client_init_start) * 1000
-                self.logger.timing("client_init.unusual_whales_ms", client_init_time, source="unusual_whales")
-                self.logger.info("Unusual Whales client initialized", init_time_ms=client_init_time)
-                successful_inits += 1
-                
-                # Set initial source usage counts for monitoring
-                self.source_usage_counts["unusual_whales"] = 0
-                self.source_error_counts["unusual_whales"] = 0
-                self.source_latencies["unusual_whales"] = 0
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Unusual Whales client: {e}", exc_info=True)
-                failed_inits += 1
-
-        # Record metrics about client initialization
-        total_init_time = (time.time() - init_start_time) * 1000
-        self.logger.timing("client_init.total_time_ms", total_init_time, source="all_clients")
-        self.logger.gauge("client_init.success_count", successful_inits)
-        self.logger.gauge("client_init.failed_count", failed_inits)
-        
-        if not self.clients:
-            self.logger.warning("No data source clients were initialized. FinancialDataMCP may not function.")
-            self.logger.gauge("client_init.success_rate", 0)
-        else:
-            success_rate = successful_inits / (successful_inits + failed_inits) * 100
-            self.logger.gauge("client_init.success_rate", success_rate)
-            self.logger.info(f"Data source client initialization complete - success_count: {successful_inits}, failed_count: {failed_inits}, success_rate: {success_rate:.1f}%, total_time_ms: {total_init_time}")
-
-
-    def _register_tools(self):
-        """Register unified data retrieval tools."""
-        # Record the start time for timing metrics
-        start_time = time.time()
-        
-        # Register core financial data tools
-        self.register_tool(
-            self.get_market_data,
-            "get_market_data",
-            "Get historical or real-time market data (OHLCV, trades, quotes) for symbols."
-        )
-        self.register_tool(
-            self.get_news,
-            "get_news",
-            "Get financial news for specific symbols or general market."
-        )
-        self.register_tool(
-            self.get_social_sentiment,
-            "get_social_sentiment",
-            "Get social media sentiment or mentions for symbols (e.g., from Reddit)."
-        )
-        self.register_tool(
-            self.get_options_data,
-            "get_options_data",
-            "Get options chain data or unusual options activity."
-        )
-        self.register_tool(
-            self.get_fundamentals,
-            "get_fundamentals",
-            "Get fundamental company data (e.g., earnings, financials, metrics)."
-        )
-        self.register_tool(
-            self.get_market_status,
-            "get_market_status",
-            "Get current market status (open/closed) and related info (e.g., VIX, SPY)."
-        )
-        self.register_tool(
-            self.get_ticker_list,
-            "get_ticker_list",
-            "Get a list of tickers with optional filtering."
-        )
-        self.register_tool(
-            "get_social_sentiment",
-            "Get social media sentiment or mentions for symbols (e.g., from Reddit)."
-        )
-        self.register_tool(
-            self.get_options_data,
-            "get_options_data",
-            "Get options chain data or unusual options activity."
-        )
-        self.register_tool(
-            self.get_fundamentals,
-            "get_fundamentals",
-            "Get fundamental company data (e.g., earnings, financials, metrics)."
-        )
-        self.register_tool(
-            self.get_market_status,
-            "get_market_status",
-            "Get current market status (open/closed) and related info (e.g., VIX, SPY)."
-        )
-        self.register_tool(
-            self.get_ticker_list,
-            "get_ticker_list",
-            "Get a list of tickers with optional filtering."
-        )
-        self.register_tool(
-            self.get_market_movers,
-            "get_market_movers",
-            "Get top market movers (gainers or losers)."
-        )
-        
-        # Record registration time
-        registration_time = (time.time() - start_time) * 1000
-        self.logger.timing("tool_registration_time_ms", registration_time, source="financial_data_mcp")
-        self.logger.info("Registered financial data tools", 
-                       tool_count=8, 
-                       registration_time_ms=registration_time)
-    
-    def _register_financial_monitoring_tools(self):
-        """
-        Register monitoring tools specific to financial data operations.
-        These tools provide detailed performance and health metrics for financial data sources.
-        """
-        # Record the start time for timing metrics
-        start_time = time.time()
-        
-        # Register financial health report tool
-        self.register_tool(
-            self.generate_financial_health_report,
-            "get_financial_health_report",
-            "Get detailed health information for all financial data sources."
-        )
-        
-        # Register financial performance report tool
-        self.register_tool(
-            self.generate_financial_performance_report,
-            "get_financial_performance_report", 
-            "Generate a comprehensive performance report for financial data operations with metrics and visualizations."
-        )
-        
-        # Register source usage stats tool
-        self.register_tool(
-            self.get_source_usage_stats,
-            "get_source_usage_stats",
-            "Get detailed usage statistics for all financial data sources."
-        )
-        
-        # Register symbol stats tool
-        self.register_tool(
-            self.get_symbol_stats,
-            "get_symbol_stats",
-            "Get statistics about most frequently queried financial symbols."
-        )
-        
-        # Register cache status tool
-        self.register_tool(
-            self.get_cache_stats,
-            "get_cache_stats",
-            "Get detailed statistics about cache performance for financial data."
-        )
-        
-        # Record registration time
-        registration_time = (time.time() - start_time) * 1000
-        self.logger.timing("monitoring_tool_registration_time_ms", registration_time, source="financial_data_mcp")
-        self.logger.info(f"Registered financial monitoring tools - tool_count: 5, registration_time_ms: {registration_time}")
-
-
-    def _get_client(self, capability: str) -> Optional[Any]:
-        """Find the best available client for a given capability based on priority."""
-        start_time = time.time()
-        
-        # Define which clients provide which capabilities (this needs refinement based on actual client methods)
-        capability_map = {
-            "market_data_hist": ["polygon_rest", "yahoo_finance"],
-            "market_data_stream": ["polygon_ws"],
-            "news": ["polygon_news", "yahoo_news"],
-            "social": ["reddit"],
-            "options_chain": ["polygon_rest", "yahoo_finance"],
-            "options_flow": ["unusual_whales"],
-            "fundamentals": ["polygon_rest", "yahoo_finance"],
-            "market_info": ["polygon_rest"], # For market status, holidays etc.
-            "reference": ["polygon_rest"] # For ticker lists, exchanges etc.
-        }
-
-        possible_sources = capability_map.get(capability, [])
-        for source_name in self.default_source_priority:
-            if source_name in possible_sources and source_name in self.clients:
-                # Track client selection time for performance measurement
-                selection_time = (time.time() - start_time) * 1000
-                self.logger.timing("client_selection_time_ms", selection_time, source="client_selector")
-                
-                # Log client selection with timing
-                self.logger.debug(f"Selected client '{source_name}' for capability '{capability}'", 
-                               selection_time_ms=selection_time)
-                
-                # Update source selection metrics
-                with self.monitoring_lock:
-                    if source_name not in self.source_usage_counts:
-                        self.source_usage_counts[source_name] = 0
-                
-                return self.clients[source_name]
-
-        # No suitable client found - track as a failure
-        selection_time = (time.time() - start_time) * 1000
-        self.logger.timing("client_selection_failed_time_ms", selection_time, source="client_selector")
-        self.logger.warning(f"No suitable client found for capability: {capability}",
-                         capability=capability,
-                         possible_sources=possible_sources,
-                         selection_time_ms=selection_time)
-        self.logger.counter("client_selection_failures")
-        
-        return None
-        
-    def generate_financial_health_report(self) -> Dict[str, Any]:
-        """
-        Generate a comprehensive health report for all financial data sources.
-        
         Returns:
-            Dictionary containing health metrics for all financial data sources
+            Configuration dictionary
         """
-        # Record start time for performance measurement
-        start_time = time.time()
-        
-        # Check the health of each data source
-        source_health = {}
-        
-        with self.monitoring_lock:
-            # For each data source, check its health
-            for source_name, client in self.clients.items():
-                try:
-                    # Check if the client has a health_check method
-                    if hasattr(client, "health_check"):
-                        health_result = client.health_check()
-                        source_health[source_name] = health_result
-                    else:
-                        # Default health check based on error rates
-                        usage_count = self.source_usage_counts.get(source_name, 0)
-                        error_count = self.source_error_counts.get(source_name, 0)
-                        error_rate = error_count / max(1, usage_count) if usage_count > 0 else 0
-                        
-                        # Calculate average response time if available
-                        avg_response_time = 0
-                        if source_name in self.source_latencies and usage_count > 0:
-                            avg_response_time = self.source_latencies[source_name] / usage_count
-                        
-                        # Set health status based on error rate
-                        if error_rate > 0.2:  # 20% error rate is high
-                            status = "unhealthy"
-                        elif error_rate > 0.05:  # 5% error rate is concerning
-                            status = "degraded"
-                        else:
-                            status = "healthy"
-                        
-                        # Record the health information
-                        source_health[source_name] = {
-                            "status": status,
-                            "error_rate": f"{error_rate:.2%}",
-                            "request_count": usage_count,
-                            "error_count": error_count,
-                            "avg_response_time_ms": round(avg_response_time, 2) if avg_response_time > 0 else "unknown"
-                        }
-                        
-                        # Check API rate limits if applicable
-                        if source_name in self.api_rate_limits:
-                            # Add rate limit information
-                            source_health[source_name]["rate_limit"] = {
-                                "remaining": self.api_rate_limits.get(source_name, 0),
-                                "reset_time": self.api_rate_limit_resets.get(source_name, 0)
-                            }
-                except Exception as e:
-                    self.logger.error(f"Error checking health for {source_name}: {e}")
-                    source_health[source_name] = {
-                        "status": "unknown",
-                        "error": str(e)
-                    }
-        
-        # Determine overall financial data health
-        unhealthy_sources = [name for name, health in source_health.items() 
-                            if health.get("status") == "unhealthy"]
-        degraded_sources = [name for name, health in source_health.items() 
-                           if health.get("status") == "degraded"]
-        
-        if len(unhealthy_sources) > len(self.clients) / 2:
-            # More than half of sources are unhealthy
-            overall_status = "critical"
-        elif unhealthy_sources:
-            # Some sources are unhealthy
-            overall_status = "degraded"
-        elif degraded_sources:
-            # Some sources are degraded
-            overall_status = "warning"
-        else:
-            # All sources are healthy
-            overall_status = "healthy"
-            
-        # Calculate health score (100 = perfect, 0 = complete failure)
-        if not self.clients:
-            health_score = 0  # No clients = no health
-        else:
-            # Healthy sources contribute 100%, degraded 50%, unhealthy 0%
-            healthy_sources = len(self.clients) - len(unhealthy_sources) - len(degraded_sources)
-            health_score = (healthy_sources * 100 + len(degraded_sources) * 50) / len(self.clients)
-        
-        # Compile the health report
-        report = {
-            "timestamp": datetime.now().isoformat(),
-            "overall_status": overall_status,
-            "health_score": round(health_score, 1),
-            "healthy_sources": len(self.clients) - len(unhealthy_sources) - len(degraded_sources),
-            "degraded_sources": len(degraded_sources),
-            "unhealthy_sources": len(unhealthy_sources),
-            "total_sources": len(self.clients),
-            "source_health": source_health
-        }
-        
-        # Add overall request metrics
-        report["requests"] = {
-            "market_data": self.market_data_count,
-            "news": self.news_request_count,
-            "social_sentiment": self.social_sentiment_count,
-            "options_data": self.options_data_count,
-            "fundamentals": self.fundamentals_count,
-            "market_status": self.market_status_count,
-            "ticker_list": self.ticker_list_count,
-            "market_movers": self.market_movers_count
-        }
-        
-        # Add total counts
-        report["totals"] = {
-            "total_requests": sum(report["requests"].values()),
-            "total_errors": sum(self.source_error_counts.values() if self.source_error_counts else [0])
-        }
-        
-        # Calculate report generation time
-        report_time = (time.time() - start_time) * 1000
-        report["generation_time_ms"] = round(report_time, 2)
-        
-        # Log report generation
-        self.logger.info("Generated financial health report", 
-                       overall_status=overall_status,
-                       health_score=f"{health_score:.1f}",
-                       generation_time_ms=report_time)
-        
-        return report
-        
-    def generate_financial_performance_report(self) -> Dict[str, Any]:
-        """
-        Generate a comprehensive performance report for financial data operations.
-        Includes detailed metrics and charts for each data source and operation type.
-        
-        Returns:
-            Dictionary with performance metrics and paths to generated charts
-        """
-        # Record start time for performance measurement
-        start_time = time.time()
-        
-        # Get latest health report for status information
-        health_report = self.generate_financial_health_report()
-        
-        # Generate performance charts
-        charts = []
-        
-        with self.monitoring_lock:
-            try:
-                # Create financial API usage chart
-                api_usage_data = {
-                    'Market Data': self.market_data_count,
-                    'News': self.news_request_count,
-                    'Social Sentiment': self.social_sentiment_count,
-                    'Options Data': self.options_data_count,
-                    'Fundamentals': self.fundamentals_count,
-                    'Market Status': self.market_status_count,
-                    'Ticker List': self.ticker_list_count,
-                    'Market Movers': self.market_movers_count
-                }
-                
-                # Generate chart if we have a chart generator
-                if hasattr(self, 'chart_generator'):
-                    try:
-                        api_chart = self.chart_generator.create_performance_chart(
-                            api_usage_data,
-                            title="Financial Data API Usage",
-                            include_timestamps=True
-                        )
-                        charts.append({
-                            "name": "api_usage",
-                            "path": api_chart,
-                            "description": "Financial data API usage by method"
-                        })
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create API usage chart: {e}")
-                
-                # Generate source usage chart
-                if self.source_usage_counts and hasattr(self, 'chart_generator'):
-                    try:
-                        source_chart = self.chart_generator.create_performance_chart(
-                            self.source_usage_counts,
-                            title="Data Source Usage",
-                            include_timestamps=True
-                        )
-                        charts.append({
-                            "name": "source_usage",
-                            "path": source_chart,
-                            "description": "Usage frequency by data source"
-                        })
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create source usage chart: {e}")
-                
-                # Generate error rate chart
-                if self.source_error_counts and hasattr(self, 'chart_generator'):
-                    try:
-                        # Calculate error rates for each source
-                        error_rates = {}
-                        for source_name in self.source_usage_counts:
-                            usage = self.source_usage_counts.get(source_name, 0)
-                            errors = self.source_error_counts.get(source_name, 0)
-                            if usage > 0:
-                                error_rates[source_name] = (errors / usage) * 100  # As percentage
-                        
-                        if error_rates:
-                            error_chart = self.chart_generator.create_performance_chart(
-                                error_rates,
-                                title="Data Source Error Rates (%)",
-                                include_timestamps=True
-                            )
-                            charts.append({
-                                "name": "error_rates",
-                                "path": error_chart,
-                                "description": "Error rates by data source"
-                            })
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create error rate chart: {e}")
-                
-                # Generate cache performance chart
-                if hasattr(self, 'chart_generator'):
-                    try:
-                        cache_data = {
-                            'Hits': self.cache_hits,
-                            'Misses': self.cache_misses,
-                            'Expirations': self.cache_expirations
-                        }
-                        
-                        cache_chart = self.chart_generator.create_performance_chart(
-                            cache_data,
-                            title="Cache Performance",
-                            include_timestamps=True
-                        )
-                        charts.append({
-                            "name": "cache_performance",
-                            "path": cache_chart,
-                            "description": "Cache hit/miss statistics"
-                        })
-                        
-                        # Calculate hit rate percentage
-                        total_cache_attempts = self.cache_hits + self.cache_misses
-                        if total_cache_attempts > 0:
-                            hit_rate = (self.cache_hits / total_cache_attempts) * 100
-                            hit_rate_chart = self.chart_generator.create_performance_chart(
-                                {"Hit Rate": hit_rate},
-                                title="Cache Hit Rate (%)",
-                                include_timestamps=True
-                            )
-                            charts.append({
-                                "name": "cache_hit_rate",
-                                "path": hit_rate_chart,
-                                "description": "Cache hit rate percentage"
-                            })
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create cache performance chart: {e}")
-            
-            except Exception as e:
-                self.logger.error(f"Error generating performance charts: {e}", exc_info=True)
-        
-        # Create the performance report
-        total_requests = sum(api_usage_data.values())
-        total_errors = sum(self.source_error_counts.values()) if self.source_error_counts else 0
-        error_rate = (total_errors / total_requests * 100) if total_requests > 0 else 0
-        
-        # Calculate response time metrics across all sources
-        avg_response_times = {}
-        for source_name in self.source_usage_counts:
-            usage = self.source_usage_counts.get(source_name, 0)
-            total_time = self.source_latencies.get(source_name, 0)
-            if usage > 0:
-                avg_response_times[source_name] = round(total_time / usage, 2)
-        
-        # Build the report
-        report = {
-            "timestamp": datetime.now().isoformat(),
-            "operations": {
-                "total_requests": total_requests,
-                "total_errors": total_errors,
-                "error_rate": f"{error_rate:.2f}%",
-                "requests_by_type": api_usage_data
+        default_config = {
+            "api_keys": {},
+            "data_sources": ["polygon"],
+            "cache_settings": {
+                "enabled": True,
+                "ttl": 300,
+                "max_items": 1000
             },
-            "sources": {
-                "total_count": len(self.clients),
-                "usage_counts": self.source_usage_counts,
-                "error_counts": self.source_error_counts,
-                "avg_response_times_ms": avg_response_times
+            "rate_limiting": {
+                "max_requests_per_minute": 60,
+                "backoff_factor": 2,
+                "max_retries": 3
+            },
+            "finbert_settings": {
+                "model_path": "ProsusAI/finbert",
+                "sentiment_weight": 0.3
+            },
+            "xgboost_settings": {
+                "params": {
+                    "objective": "binary:logistic",
+                    "eval_metric": "logloss",
+                    "eta": 0.1,
+                    "max_depth": 6
+                },
+                "prediction_threshold": 0.5
+            },
+            "feature_engineering": {
+                "lookback_periods": [1, 3, 5, 10, 20]
+            }
+        }
+        
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                self.logger.info(f"Configuration loaded from {config_path}")
+                return config
+            else:
+                self.logger.warning(f"Configuration file not found at {config_path}. Using default configuration.")
+                return default_config
+        except Exception as e:
+            self.logger.error(f"Error loading configuration from {config_path}: {e}")
+            return default_config
+            
+    def _resolve_env_var(self, value: str) -> str:
+        """
+        Resolve environment variable references in string values.
+        
+        Args:
+            value: String potentially containing ${ENV_VAR} references
+            
+        Returns:
+            String with environment variables resolved
+        """
+        if not isinstance(value, str):
+            return value
+            
+        if value.startswith("${") and value.endswith("}"):
+            env_var = value[2:-1]
+            return os.environ.get(env_var, "")
+            
+        return value
+        
+    def _configure_from_config(self):
+        """Extract configuration values from loaded config."""
+        # Cache settings
+        cache_config = self.config.get("cache_settings", {})
+        self.enable_cache = cache_config.get("enabled", True)
+        self.cache_ttl = cache_config.get("ttl", 300)  # 5 minutes default
+        self.max_cache_items = cache_config.get("max_items", 1000)
+        self.cache_cleanup_threshold = cache_config.get("cleanup_threshold", 0.2)
+        
+        # Rate limiting settings
+        rate_config = self.config.get("rate_limiting", {})
+        self.max_requests_per_minute = rate_config.get("max_requests_per_minute", 60)
+        self.backoff_factor = rate_config.get("backoff_factor", 2)
+        self.max_retries = rate_config.get("max_retries", 3)
+        
+        # FinBERT settings
+        finbert_config = self.config.get("finbert_settings", {})
+        self.finbert_model_path = finbert_config.get("model_path", "ProsusAI/finbert")
+        self.max_sequence_length = finbert_config.get("max_sequence_length", 512)
+        self.use_gpu = finbert_config.get("use_gpu", True) and torch.cuda.is_available()
+        self.sentiment_weight = finbert_config.get("sentiment_weight", 0.3)
+        self.batch_size = finbert_config.get("batch_size", 16)
+        
+        # XGBoost settings
+        xgboost_config = self.config.get("xgboost_settings", {})
+        self.xgboost_params = xgboost_config.get("params", {
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "eta": 0.1,
+            "max_depth": 6,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "min_child_weight": 1
+        })
+        self.early_stopping_rounds = xgboost_config.get("early_stopping_rounds", 10)
+        self.num_boost_round = xgboost_config.get("num_boost_round", 100)
+        self.prediction_threshold = xgboost_config.get("prediction_threshold", 0.5)
+        
+        # Convert hours to seconds for model update interval
+        update_hours = xgboost_config.get("model_update_interval_hours", 24)
+        self.model_update_interval = update_hours * 3600
+        
+        # Feature engineering settings
+        feature_config = self.config.get("feature_engineering", {})
+        self.lookback_periods = feature_config.get("lookback_periods", [1, 3, 5, 10, 20])
+        self.include_ta_features = feature_config.get("include_technical_indicators", True)
+        self.include_volatility = feature_config.get("include_volatility", True)
+        self.include_sentiment = feature_config.get("include_sentiment", True)
+        
+        # Advanced features
+        self.advanced_features = feature_config.get("advanced_features", {
+            "use_macd": True,
+            "use_bollinger_bands": True,
+            "use_rsi": True,
+            "use_stochastic": False
+        })
+        
+        # Backtesting settings
+        backtest_config = self.config.get("backtesting", {})
+        self.default_train_size = backtest_config.get("default_train_size", 0.7)
+        self.evaluation_metrics = backtest_config.get("evaluation_metrics", 
+                                                    ["accuracy", "f1"])
+        
+        # Trading simulation settings
+        trading_config = self.config.get("trading_simulation", {})
+        self.initial_capital = trading_config.get("initial_capital", 10000)
+        self.position_size_pct = trading_config.get("position_size_pct", 0.1)
+        
+        # Sentiment analysis settings
+        sentiment_config = self.config.get("sentiment_analysis", {})
+        self.sentiment_weighting = sentiment_config.get("weighting_scheme", "exponential_decay")
+        self.title_multiplier = sentiment_config.get("title_multiplier", 2.0)
+        
+        # Logging settings
+        logging_config = self.config.get("logging", {})
+        self.log_level = logging_config.get("level", "INFO")
+        
+        # Log loaded configuration
+        self.logger.info("Configuration loaded", 
+                        finbert_model=self.finbert_model_path,
+                        prediction_threshold=self.prediction_threshold,
+                        sentiment_weight=self.sentiment_weight,
+                        cache_enabled=self.enable_cache,
+                        max_requests_per_minute=self.max_requests_per_minute)
+        
+    def _initialize_models(self):
+        """Initialize FinBERT and XGBoost models based on configuration."""
+        # Initialize model containers
+        self.finbert_model = None
+        self.finbert_tokenizer = None
+        self.xgboost_models = {}  # Dictionary of XGBoost models by symbol
+        self.model_last_updated = {}  # Timestamp of last model update by symbol
+        
+        # Load FinBERT if sentiment analysis is enabled
+        if self.include_sentiment:
+            try:
+                self.logger.info(f"Loading FinBERT model: {self.finbert_model_path}")
+                start_time = time.time()
+                
+                self.finbert_tokenizer = AutoTokenizer.from_pretrained(self.finbert_model_path)
+                self.finbert_model = AutoModelForSequenceClassification.from_pretrained(self.finbert_model_path)
+                
+                # Set to evaluation mode and move to GPU if available and enabled
+                self.finbert_model.eval()
+                if self.use_gpu:
+                    self.finbert_model = self.finbert_model.to('cuda')
+                    self.logger.info("FinBERT model moved to GPU")
+                    
+                load_time = time.time() - start_time
+                self.logger.timing("model_load_time_ms.finbert", load_time * 1000)
+                self.logger.info(f"FinBERT model loaded in {load_time:.2f}s")
+            except Exception as e:
+                self.logger.error(f"Error loading FinBERT model: {e}", exc_info=True)
+        else:
+            self.logger.info("Sentiment analysis disabled in config, skipping FinBERT model loading")
+            
+        # XGBoost models will be created on-demand per symbol
+        
+    def _start_health_check_thread(self):
+        """Start a background thread for health monitoring."""
+        def health_check_loop():
+            check_interval = self.config.get("monitoring", {}).get("health_check_interval_mins", 15) * 60
+            self.logger.info(f"Starting health check thread with interval {check_interval} seconds")
+            
+            while True:
+                try:
+                    # Get system health
+                    health_report = self.get_system_health()
+                    
+                    # Log health status
+                    self.logger.info(f"Health check: {health_report['overall_status']}")
+                    
+                    # Check for model degradation if configured
+                    if self.config.get("monitoring", {}).get("alert_on_model_degradation", False):
+                        degradation_threshold = self.config.get("monitoring", {}).get("degradation_threshold", 0.1)
+                        
+                        # Check models with performance metrics
+                        for symbol, model in health_report.get("components", {}).get("models", {}).get("symbol_metrics", {}).items():
+                            if model.get("degradation", 0) > degradation_threshold:
+                                self.logger.warning(f"Model degradation detected for {symbol}: {model['degradation']:.2f}")
+                                
+                                # Trigger model update if degradation is severe
+                                if model.get("degradation", 0) > degradation_threshold * 2:
+                                    self.logger.info(f"Severe degradation detected, triggering model update for {symbol}")
+                                    try:
+                                        # Run model update in a separate thread to avoid blocking health check
+                                        update_thread = threading.Thread(
+                                            target=self.train_prediction_model,
+                                            args=(symbol,)
+                                        )
+                                        update_thread.daemon = True
+                                        update_thread.start()
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to trigger model update: {e}")
+                                    
+                except Exception as e:
+                    self.logger.error(f"Error in health check thread: {e}", exc_info=True)
+                    
+                # Sleep until next check
+                time.sleep(check_interval)
+        
+        # Start the health check thread
+        health_thread = threading.Thread(target=health_check_loop)
+        health_thread.daemon = True
+        health_thread.start()
+        
+    def _register_tools(self):
+        """Register all available tools based on configuration."""
+        # Register market prediction tools
+        self.register_tool(
+            self.predict_price_movement,
+            "predict_price_movement",
+            "Predict price movement direction (up/down) for a given symbol"
+        )
+        self.register_tool(
+            self.analyze_symbol_with_news,
+            "analyze_symbol_with_news",
+            "Combined analysis of market data and news sentiment for a symbol"
+        )
+        self.register_tool(
+            self.train_prediction_model,
+            "train_prediction_model",
+            "Train or update a prediction model for a specific symbol"
+        )
+        self.register_tool(
+            self.backtest_model,
+            "backtest_model",
+            "Backtest a prediction model over historical data"
+        )
+        self.register_tool(
+            self.get_model_performance,
+            "get_model_performance",
+            "Get performance metrics for a prediction model"
+        )
+        
+        # Register monitoring and maintenance tools
+        self.register_tool(
+            self.get_system_health,
+            "get_system_health",
+            "Get system health metrics"
+        )
+        self.register_tool(
+            self.clear_cache,
+            "clear_cache",
+            "Clear the cache for a specific symbol or all symbols"
+        )
+        
+        # Register configuration tools
+        self.register_tool(
+            self.get_current_config,
+            "get_current_config",
+            "Get the current configuration settings"
+        )
+        self.register_tool(
+            self.update_config,
+            "update_config",
+            "Update configuration settings at runtime"
+        )
+    
+    def _check_rate_limit(self) -> bool:
+        """
+        Check if we are within rate limits.
+        
+        Returns:
+            True if request can proceed, False if rate limited
+        """
+        with self.rate_limit_lock:
+            current_time = time.time()
+            
+            # Remove timestamps older than 1 minute
+            self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
+            
+            # Check if we are within rate limits
+            if len(self.request_timestamps) >= self.max_requests_per_minute:
+                return False
+                
+            # Add current timestamp
+            self.request_timestamps.append(current_time)
+            return True
+    
+    def analyze_symbol_with_news(self, symbol: str, days: int = 7) -> Dict[str, Any]:
+        """
+        Perform a comprehensive analysis of a symbol using both market data and news sentiment.
+        
+        Args:
+            symbol: The stock symbol to analyze
+            days: Number of days of historical data to include
+            
+        Returns:
+            Dict with combined market and sentiment analysis
+        """
+        start_time = time.time()
+        self.logger.info(f"Analyzing symbol {symbol} with news for past {days} days")
+        
+        # Check rate limit
+        if not self._check_rate_limit():
+            self.logger.warning(f"Rate limit exceeded. Try again later.")
+            return {"error": "Rate limit exceeded. Try again later."}
+            
+        # Check cache first
+        cache_key = f"analyze_symbol_with_news:{symbol}:{days}"
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result:
+            self.logger.info(f"Using cached analysis for {symbol}")
+            return cached_result
+        
+        try:
+            # Get market data
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            market_data_result = self.data_mcp.get_market_data(
+                symbols=[symbol],
+                timeframe="1d",
+                start_date=start_date,
+                end_date=end_date,
+                data_type="bars"
+            )
+            
+            if "error" in market_data_result:
+                return {"error": f"Failed to get market data: {market_data_result['error']}"}
+                
+            # Get news for the symbol
+            news_result = self.data_mcp.get_news(symbols=[symbol], limit=30)
+            
+            if "error" in news_result:
+                self.logger.warning(f"Failed to get news for {symbol}: {news_result['error']}")
+                news_articles = []
+            else:
+                news_articles = news_result.get("news", [])
+            
+            # Analyze sentiment for each news article
+            sentiment_scores = []
+            
+            for article in news_articles:
+                title = article.get("title", "")
+                content = article.get("summary", "")
+                
+                # Skip articles with missing content
+                if not title and not content:
+                    continue
+                
+                # Apply title multiplier if configured
+                if self.title_multiplier > 1.0:
+                    combined_text = f"{title} " * int(self.title_multiplier) + content
+                else:
+                    combined_text = f"{title} {content}"
+                
+                # Analyze sentiment
+                sentiment_result = self.text_mcp.analyze_sentiment(combined_text)
+                
+                if "error" not in sentiment_result:
+                    # Get published date for weighting if using exponential decay
+                    published_date = article.get("published_utc", "")
+                    published_timestamp = None
+                    
+                    if published_date and self.sentiment_weighting == "exponential_decay":
+                        try:
+                            if isinstance(published_date, str):
+                                published_timestamp = datetime.fromisoformat(published_date).timestamp()
+                            else:
+                                published_timestamp = published_date
+                        except ValueError:
+                            published_timestamp = None
+                    
+                    # Add to sentiment scores with metadata
+                    sentiment_scores.append({
+                        "date": article.get("published_utc", ""),
+                        "title": title,
+                        "sentiment": sentiment_result.get("sentiment", "neutral"),
+                        "score": sentiment_result.get("score", 0.5),
+                        "timestamp": published_timestamp
+                    })
+            
+            # Process market data
+            price_data = self._process_price_data(market_data_result.get("data", {}).get(symbol, []))
+            
+            # Calculate summary metrics
+            price_change = 0
+            if price_data and len(price_data) > 1:
+                first_price = price_data[0].get("c", 0)
+                last_price = price_data[-1].get("c", 0)
+                price_change = (last_price - first_price) / first_price if first_price > 0 else 0
+            
+            # Calculate sentiment summary with configured weighting scheme
+            avg_sentiment_score = self._calculate_weighted_sentiment(sentiment_scores)
+            
+            # Make prediction if we have a model
+            prediction = None
+            with self.model_lock:
+                if symbol in self.xgboost_models:
+                    # Get features for prediction
+                    features = self._extract_features(
+                        price_data, 
+                        avg_sentiment_score, 
+                        include_sentiment=self.include_sentiment
+                    )
+                    
+                    if features is not None:
+                        # Predict using XGBoost model
+                        xgb_data = xgb.DMatrix([features])
+                        prediction_prob = float(self.xgboost_models[symbol].predict(xgb_data)[0])
+                        prediction = {
+                            "direction": "up" if prediction_prob > self.prediction_threshold else "down",
+                            "probability": prediction_prob,
+                            "confidence": abs(prediction_prob - 0.5) * 2  # Scale to 0-1
+                        }
+            
+            # Create the result
+            result = {
+                "symbol": symbol,
+                "current_price": price_data[-1].get("c") if price_data else None,
+                "price_change_pct": price_change * 100,
+                "period_days": days,
+                "news_count": len(news_articles),
+                "avg_sentiment": avg_sentiment_score,
+                "sentiment_summary": "positive" if avg_sentiment_score > 0.1 else "negative" if avg_sentiment_score < -0.1 else "neutral",
+                "recent_news": sentiment_scores[:5],  # Include 5 most recent news articles
+                "prediction": prediction,
+                "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+            }
+            
+            # Cache the result
+            self._add_to_cache(cache_key, result)
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing symbol {symbol} with news: {e}", exc_info=True)
+            return {"error": str(e), "symbol": symbol}
+    
+    def _calculate_weighted_sentiment(self, sentiment_scores: List[Dict[str, Any]]) -> float:
+        """
+        Calculate weighted sentiment score using the configured weighting scheme.
+        
+        Args:
+            sentiment_scores: List of sentiment score dicts
+            
+        Returns:
+            Weighted average sentiment score
+        """
+        if not sentiment_scores:
+            return 0
+            
+        # Apply weighting scheme
+        if self.sentiment_weighting == "exponential_decay":
+            # Weight recent articles more heavily
+            current_time = time.time()
+            weighted_sum = 0
+            total_weight = 0
+            
+            # Get half-life in seconds (default 48 hours)
+            half_life_hours = self.config.get("sentiment_analysis", {}).get("recency_half_life_hours", 48)
+            half_life = half_life_hours * 3600
+            
+            for score in sentiment_scores:
+                # Get sentiment value (-1 to 1 scale)
+                value = score.get("score", 0.5)
+                if score.get("sentiment") == "negative":
+                    value = -value
+                elif score.get("sentiment") == "neutral":
+                    value = 0
+                
+                # Calculate time-based weight
+                timestamp = score.get("timestamp")
+                if timestamp:
+                    age = current_time - timestamp
+                    weight = 2 ** (-age / half_life)  # Exponential decay
+                else:
+                    weight = 1.0  # Default weight if no timestamp
+                
+                weighted_sum += value * weight
+                total_weight += weight
+            
+            return weighted_sum / total_weight if total_weight > 0 else 0
+            
+        elif self.sentiment_weighting == "source_based":
+            # Weight by news source importance
+            # This would require source information in the sentiment scores
+            # Use simple average as fallback
+            values = []
+            for score in sentiment_scores:
+                value = score.get("score", 0.5)
+                if score.get("sentiment") == "negative":
+                    value = -value
+                elif score.get("sentiment") == "neutral":
+                    value = 0
+                
+                values.append(value)
+                
+            return sum(values) / len(values) if values else 0
+            
+        else:
+            # Simple average (default)
+            values = []
+            for score in sentiment_scores:
+                value = score.get("score", 0.5)
+                if score.get("sentiment") == "negative":
+                    value = -value
+                elif score.get("sentiment") == "neutral":
+                    value = 0
+                
+                values.append(value)
+                
+            return sum(values) / len(values) if values else 0
+    
+    def predict_price_movement(self, symbol: str, include_sentiment: bool = None) -> Dict[str, Any]:
+        """
+        Predict price movement direction for a given symbol.
+        
+        Args:
+            symbol: The stock symbol to predict
+            include_sentiment: Whether to include sentiment data in prediction (defaults to config setting)
+            
+        Returns:
+            Dict with prediction results
+        """
+        start_time = time.time()
+        self.logger.info(f"Predicting price movement for {symbol}")
+        
+        # Use config default if include_sentiment is not specified
+        if include_sentiment is None:
+            include_sentiment = self.include_sentiment
+        
+        # Check rate limit
+        if not self._check_rate_limit():
+            self.logger.warning(f"Rate limit exceeded. Try again later.")
+            return {"error": "Rate limit exceeded. Try again later."}
+            
+        # Check cache first
+        cache_key = f"predict_price_movement:{symbol}:{include_sentiment}"
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result:
+            self.logger.info(f"Using cached prediction for {symbol}")
+            return cached_result
+        
+        try:
+            # Check if we need to train/update the model
+            self._ensure_model_is_current(symbol)
+            
+            # Get latest market data
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            lookback_days = max(self.lookback_periods) * 2  # Need enough data for features
+            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            
+            market_data_result = self.data_mcp.get_market_data(
+                symbols=[symbol],
+                timeframe="1d",
+                start_date=start_date,
+                end_date=end_date,
+                data_type="bars"
+            )
+            
+            if "error" in market_data_result:
+                return {"error": f"Failed to get market data: {market_data_result['error']}"}
+                
+            # Process price data
+            price_data = self._process_price_data(market_data_result.get("data", {}).get(symbol, []))
+            
+            if not price_data or len(price_data) < max(self.lookback_periods):
+                return {"error": f"Insufficient price data for {symbol}"}
+            
+            # Get sentiment if needed
+            sentiment_score = 0
+            if include_sentiment:
+                # Get recent news
+                news_result = self.data_mcp.get_news(symbols=[symbol], limit=10)
+                
+                news_articles = []
+                if "error" not in news_result:
+                    news_articles = news_result.get("news", [])
+                
+                # Analyze sentiment
+                sentiment_scores = []
+                for article in news_articles:
+                    title = article.get("title", "")
+                    content = article.get("summary", "")
+                    
+                    if not title and not content:
+                        continue
+                    
+                    # Apply title multiplier if configured
+                    if self.title_multiplier > 1.0:
+                        combined_text = f"{title} " * int(self.title_multiplier) + content
+                    else:
+                        combined_text = f"{title} {content}"
+                    
+                    sentiment_result = self.text_mcp.analyze_sentiment(combined_text)
+                    
+                    if "error" not in sentiment_result:
+                        # Get published date for weighting
+                        published_date = article.get("published_utc", "")
+                        published_timestamp = None
+                        
+                        if published_date and self.sentiment_weighting == "exponential_decay":
+                            try:
+                                if isinstance(published_date, str):
+                                    published_timestamp = datetime.fromisoformat(published_date).timestamp()
+                                else:
+                                    published_timestamp = published_date
+                            except ValueError:
+                                published_timestamp = None
+                        
+                        # Add to sentiment scores with metadata
+                        sentiment_scores.append({
+                            "date": article.get("published_utc", ""),
+                            "title": title,
+                            "sentiment": sentiment_result.get("sentiment", "neutral"),
+                            "score": sentiment_result.get("score", 0.5),
+                            "timestamp": published_timestamp
+                        })
+                
+                # Calculate weighted sentiment
+                sentiment_score = self._calculate_weighted_sentiment(sentiment_scores)
+            
+            # Extract features
+            features = self._extract_features(price_data, sentiment_score, include_sentiment)
+            
+            if features is None:
+                return {"error": "Failed to extract features for prediction"}
+            
+            # Make prediction
+            with self.model_lock:
+                if symbol not in self.xgboost_models:
+                    return {"error": f"No prediction model available for {symbol}"}
+                
+                # Convert features to DMatrix
+                xgb_data = xgb.DMatrix([features])
+                
+                # Predict
+                prediction_prob = float(self.xgboost_models[symbol].predict(xgb_data)[0])
+                
+                # Create result
+                result = {
+                    "symbol": symbol,
+                    "prediction": "up" if prediction_prob > self.prediction_threshold else "down",
+                    "probability": prediction_prob,
+                    "confidence": abs(prediction_prob - 0.5) * 2,  # Scale to 0-1
+                    "current_price": price_data[-1].get("c") if price_data else None,
+                    "sentiment_included": include_sentiment,
+                    "sentiment_score": sentiment_score if include_sentiment else None,
+                    "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+                }
+                
+                # Add model information
+                result["model_info"] = {
+                    "last_updated": self.model_last_updated.get(symbol, "never"),
+                    "features_used": len(features)
+                }
+                
+                # Cache the result
+                self._add_to_cache(cache_key, result)
+                
+                return result
+        except Exception as e:
+            self.logger.error(f"Error predicting price movement for {symbol}: {e}", exc_info=True)
+            return {"error": str(e), "symbol": symbol}
+    
+    def train_prediction_model(self, symbol: str, lookback_days: int = 365, 
+                              include_sentiment: bool = None) -> Dict[str, Any]:
+        """
+        Train or update a prediction model for a specific symbol.
+        
+        Args:
+            symbol: The stock symbol to train for
+            lookback_days: Number of days of historical data to use
+            include_sentiment: Whether to include sentiment features (defaults to config setting)
+            
+        Returns:
+            Dict with training results
+        """
+        start_time = time.time()
+        self.logger.info(f"Training prediction model for {symbol}")
+        
+        # Use config default if include_sentiment is not specified
+        if include_sentiment is None:
+            include_sentiment = self.include_sentiment
+        
+        # Check rate limit
+        if not self._check_rate_limit():
+            self.logger.warning(f"Rate limit exceeded. Try again later.")
+            return {"error": "Rate limit exceeded. Try again later."}
+        
+        try:
+            # Get historical market data
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            
+            market_data_result = self.data_mcp.get_market_data(
+                symbols=[symbol],
+                timeframe="1d",
+                start_date=start_date,
+                end_date=end_date,
+                data_type="bars"
+            )
+            
+            if "error" in market_data_result:
+                return {"error": f"Failed to get market data: {market_data_result['error']}"}
+                
+            # Process price data
+            price_data = self._process_price_data(market_data_result.get("data", {}).get(symbol, []))
+            
+            if not price_data or len(price_data) < 60:  # Need enough data for training
+                return {"error": f"Insufficient price data for {symbol}"}
+            
+            # Get sentiment data if needed
+            sentiment_data = None
+            if include_sentiment:
+                sentiment_data = self._get_historical_sentiment(symbol, start_date, end_date)
+            
+            # Prepare training data
+            X, y = self._prepare_training_data(price_data, sentiment_data, include_sentiment)
+            
+            if len(X) < 50 or len(y) < 50:
+                return {"error": f"Insufficient processed data for training (need at least 50 samples)"}
+            
+            # Split data for training and validation
+            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            # Create DMatrix objects
+            dtrain = xgb.DMatrix(X_train, label=y_train)
+            dval = xgb.DMatrix(X_val, label=y_val)
+            
+            # Set up parameters from config
+            params = self.xgboost_params.copy()
+            
+            # Train the model
+            evals = [(dtrain, 'train'), (dval, 'val')]
+            
+            model = xgb.train(
+                params,
+                dtrain,
+                self.num_boost_round,
+                evals=evals,
+                early_stopping_rounds=self.early_stopping_rounds,
+                verbose_eval=False
+            )
+            
+            # Evaluate model
+            y_pred_proba = model.predict(dval)
+            y_pred = (y_pred_proba > self.prediction_threshold).astype(int)
+            
+            # Calculate metrics
+            metrics = {}
+            if "accuracy" in self.evaluation_metrics:
+                metrics["accuracy"] = float(accuracy_score(y_val, y_pred))
+            if "precision" in self.evaluation_metrics:
+                metrics["precision"] = float(precision_score(y_val, y_pred))
+            if "recall" in self.evaluation_metrics:
+                metrics["recall"] = float(recall_score(y_val, y_pred))
+            if "f1" in self.evaluation_metrics:
+                metrics["f1_score"] = float(f1_score(y_val, y_pred))
+            
+            # Save the model
+            with self.model_lock:
+                self.xgboost_models[symbol] = model
+                self.model_last_updated[symbol] = datetime.now().isoformat()
+            
+            # Create result
+            result = {
+                "symbol": symbol,
+                "training_samples": len(X_train),
+                "validation_samples": len(X_val),
+                "metrics": metrics,
+                "model_info": {
+                    "feature_count": X.shape[1],
+                    "includes_sentiment": include_sentiment,
+                    "best_iteration": model.best_iteration if hasattr(model, "best_iteration") else None,
+                    "training_time_ms": round((time.time() - start_time) * 1000, 2)
+                }
+            }
+            
+            # Log top features
+            if "feature_importance" in self.evaluation_metrics:
+                feature_importance = model.get_score(importance_type='gain')
+                result["feature_importance"] = {f"feature_{k}": v for k, v in feature_importance.items()}
+            
+            self.logger.info(f"Model for {symbol} trained successfully. Metrics: {metrics}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error training model for {symbol}: {e}", exc_info=True)
+            return {"error": str(e), "symbol": symbol}
+    
+    def backtest_model(self, symbol: str, start_date: str, end_date: str = None,
+                      include_sentiment: bool = None, sliding_window: bool = None) -> Dict[str, Any]:
+        """
+        Backtest a prediction model over historical data.
+        
+        Args:
+            symbol: The stock symbol to backtest
+            start_date: Start date for backtesting in YYYY-MM-DD format
+            end_date: End date for backtesting (defaults to today)
+            include_sentiment: Whether to include sentiment in backtesting (defaults to config setting)
+            sliding_window: Whether to use sliding window backtesting (defaults to config setting)
+            
+        Returns:
+            Dict with backtesting results
+        """
+        start_time = time.time()
+        
+        # Use config defaults if parameters not specified
+        if include_sentiment is None:
+            include_sentiment = self.include_sentiment
+            
+        if sliding_window is None:
+            sliding_window = self.config.get("backtesting", {}).get("sliding_window", {}).get("enabled", False)
+        
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            
+        self.logger.info(f"Backtesting model for {symbol} from {start_date} to {end_date}")
+        
+        # Check rate limit
+        if not self._check_rate_limit():
+            self.logger.warning(f"Rate limit exceeded. Try again later.")
+            return {"error": "Rate limit exceeded. Try again later."}
+        
+        try:
+            # Get historical market data
+            market_data_result = self.data_mcp.get_market_data(
+                symbols=[symbol],
+                timeframe="1d",
+                start_date=start_date,
+                end_date=end_date,
+                data_type="bars"
+            )
+            
+            if "error" in market_data_result:
+                return {"error": f"Failed to get market data: {market_data_result['error']}"}
+                
+            # Process price data
+            price_data = self._process_price_data(market_data_result.get("data", {}).get(symbol, []))
+            
+            if not price_data or len(price_data) < 60:  # Need enough data for meaningful backtest
+                return {"error": f"Insufficient price data for {symbol}"}
+            
+            # Get sentiment data if needed
+            sentiment_data = None
+            if include_sentiment:
+                sentiment_data = self._get_historical_sentiment(symbol, start_date, end_date)
+            
+            # Use sliding window approach if enabled
+            if sliding_window:
+                return self._sliding_window_backtest(symbol, price_data, sentiment_data, include_sentiment)
+            else:
+                # Use single train/test split
+                return self._standard_backtest(symbol, price_data, sentiment_data, include_sentiment)
+            
+        except Exception as e:
+            self.logger.error(f"Error backtesting model for {symbol}: {e}", exc_info=True)
+            return {"error": str(e), "symbol": symbol}
+    
+    def _standard_backtest(self, symbol: str, price_data: List[Dict[str, Any]], 
+                          sentiment_data: Optional[Dict[str, float]], 
+                          include_sentiment: bool) -> Dict[str, Any]:
+        """
+        Perform standard backtesting with a single train/test split.
+        
+        Args:
+            symbol: The stock symbol
+            price_data: Processed price data
+            sentiment_data: Sentiment data dictionary
+            include_sentiment: Whether to include sentiment
+            
+        Returns:
+            Dict with backtesting results
+        """
+        start_time = time.time()
+        
+        # Prepare training and testing data
+        train_size = self.default_train_size
+        split_idx = int(len(price_data) * train_size)
+        
+        train_price_data = price_data[:split_idx]
+        test_price_data = price_data[split_idx:]
+        
+        # Prepare sentiment data if available
+        train_sentiment_data = None
+        test_sentiment_data = None
+        if sentiment_data:
+            # Match sentiment data to price data dates
+            price_dates = [self._get_date_str(pd.get("t")) for pd in price_data]
+            aligned_sentiment = {}
+            
+            for date, sentiment in sentiment_data.items():
+                if date in price_dates:
+                    aligned_sentiment[date] = sentiment
+            
+            # Split sentiment data
+            train_date_strs = [self._get_date_str(pd.get("t")) for pd in train_price_data]
+            test_date_strs = [self._get_date_str(pd.get("t")) for pd in test_price_data]
+            
+            train_sentiment_data = {k: v for k, v in aligned_sentiment.items() if k in train_date_strs}
+            test_sentiment_data = {k: v for k, v in aligned_sentiment.items() if k in test_date_strs}
+        
+        # Prepare training data
+        X_train, y_train = self._prepare_training_data(train_price_data, train_sentiment_data, include_sentiment)
+        
+        if len(X_train) < 30:
+            return {"error": f"Insufficient training data after preprocessing"}
+        
+        # Train a model specifically for this backtest
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        params = self.xgboost_params.copy()
+        backtest_model = xgb.train(params, dtrain, num_boost_round=self.num_boost_round)
+        
+        # Prepare test data
+        X_test, y_test = self._prepare_training_data(test_price_data, test_sentiment_data, include_sentiment)
+        
+        if len(X_test) < 10:
+            return {"error": f"Insufficient test data after preprocessing"}
+        
+        # Make predictions
+        dtest = xgb.DMatrix(X_test)
+        y_pred_proba = backtest_model.predict(dtest)
+        y_pred = (y_pred_proba > self.prediction_threshold).astype(int)
+        
+        # Calculate metrics
+        metrics = {}
+        if "accuracy" in self.evaluation_metrics:
+            metrics["accuracy"] = float(accuracy_score(y_test, y_pred))
+        if "precision" in self.evaluation_metrics:
+            metrics["precision"] = float(precision_score(y_test, y_pred))
+        if "recall" in self.evaluation_metrics:
+            metrics["recall"] = float(recall_score(y_test, y_pred))
+        if "f1" in self.evaluation_metrics:
+            metrics["f1_score"] = float(f1_score(y_test, y_pred))
+        
+        # Calculate returns for trading simulation
+        test_returns, cumulative_returns = self._calculate_trading_returns(
+            symbol, test_price_data, y_test, y_pred
+        )
+        
+        # Calculate trading performance metrics
+        win_rate = sum(r > 0 for r in test_returns) / len(test_returns) if test_returns else 0
+        
+        # Calculate profit factor if in evaluation metrics
+        profit_factor = 0
+        if "profit_factor" in self.evaluation_metrics and test_returns:
+            gains = sum(r for r in test_returns if r > 0)
+            losses = abs(sum(r for r in test_returns if r < 0))
+            profit_factor = gains / losses if losses > 0 else float('inf')
+            metrics["profit_factor"] = profit_factor
+        
+        # Create result
+        result = {
+            "symbol": symbol,
+            "period": {
+                "start_date": train_price_data[0].get("t") if train_price_data else None,
+                "end_date": test_price_data[-1].get("t") if test_price_data else None,
+                "train_samples": len(X_train),
+                "test_samples": len(X_test)
+            },
+            "metrics": metrics,
+            "trading_performance": {
+                "win_rate": win_rate,
+                "cumulative_return": cumulative_returns[-1] if cumulative_returns else 0,
+                "average_return": sum(test_returns) / len(test_returns) if test_returns else 0
+            },
+            "includes_sentiment": include_sentiment,
+            "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+        
+        # Generate performance visualization if possible
+        try:
+            chart_path = self._generate_backtest_chart(symbol, y_test, y_pred, test_returns, cumulative_returns)
+            if chart_path:
+                result["chart_path"] = chart_path
+        except Exception as chart_e:
+            self.logger.warning(f"Failed to generate backtest chart: {chart_e}")
+        
+        return result
+    
+    def _sliding_window_backtest(self, symbol: str, price_data: List[Dict[str, Any]], 
+                                sentiment_data: Optional[Dict[str, float]], 
+                                include_sentiment: bool) -> Dict[str, Any]:
+        """
+        Perform sliding window backtesting for more robust results.
+        
+        Args:
+            symbol: The stock symbol
+            price_data: Processed price data
+            sentiment_data: Sentiment data dictionary
+            include_sentiment: Whether to include sentiment
+            
+        Returns:
+            Dict with backtesting results
+        """
+        start_time = time.time()
+        
+        # Get sliding window parameters from config
+        window_size_days = self.config.get("backtesting", {}).get("sliding_window", {}).get("window_size_days", 90)
+        step_size_days = self.config.get("backtesting", {}).get("sliding_window", {}).get("step_size_days", 30)
+        
+        # Convert days to data points (assuming daily data)
+        window_size = window_size_days
+        step_size = step_size_days
+        
+        # Initialize result containers
+        all_metrics = []
+        all_returns = []
+        
+        # Calculate number of windows
+        num_windows = max(1, (len(price_data) - window_size) // step_size)
+        
+        self.logger.info(f"Performing sliding window backtest with {num_windows} windows")
+        
+        # Process each window
+        for i in range(num_windows):
+            start_idx = i * step_size
+            end_idx = start_idx + window_size
+            
+            # Get window data
+            window_data = price_data[start_idx:end_idx]
+            
+            # Skip windows with insufficient data
+            if len(window_data) < 60:
+                continue
+                
+            # Split window data
+            train_size = self.default_train_size
+            split_idx = int(len(window_data) * train_size)
+            
+            train_price_data = window_data[:split_idx]
+            test_price_data = window_data[split_idx:]
+            
+            # Prepare sentiment data if available
+            train_sentiment_data = None
+            test_sentiment_data = None
+            if sentiment_data:
+                # Match sentiment data to window price data dates
+                train_date_strs = [self._get_date_str(pd.get("t")) for pd in train_price_data]
+                test_date_strs = [self._get_date_str(pd.get("t")) for pd in test_price_data]
+                
+                train_sentiment_data = {k: v for k, v in sentiment_data.items() if k in train_date_strs}
+                test_sentiment_data = {k: v for k, v in sentiment_data.items() if k in test_date_strs}
+            
+            # Prepare training data
+            X_train, y_train = self._prepare_training_data(train_price_data, train_sentiment_data, include_sentiment)
+            
+            if len(X_train) < 20:
+                continue
+            
+            # Train a model for this window
+            dtrain = xgb.DMatrix(X_train, label=y_train)
+            params = self.xgboost_params.copy()
+            window_model = xgb.train(params, dtrain, num_boost_round=self.num_boost_round)
+            
+            # Prepare test data
+            X_test, y_test = self._prepare_training_data(test_price_data, test_sentiment_data, include_sentiment)
+            
+            if len(X_test) < 5:
+                continue
+            
+            # Make predictions
+            dtest = xgb.DMatrix(X_test)
+            y_pred_proba = window_model.predict(dtest)
+            y_pred = (y_pred_proba > self.prediction_threshold).astype(int)
+            
+            # Calculate metrics
+            window_metrics = {}
+            if "accuracy" in self.evaluation_metrics:
+                window_metrics["accuracy"] = float(accuracy_score(y_test, y_pred))
+            if "precision" in self.evaluation_metrics:
+                window_metrics["precision"] = float(precision_score(y_test, y_pred))
+            if "recall" in self.evaluation_metrics:
+                window_metrics["recall"] = float(recall_score(y_test, y_pred))
+            if "f1" in self.evaluation_metrics:
+                window_metrics["f1_score"] = float(f1_score(y_test, y_pred))
+            
+            # Calculate window returns
+            window_returns, _ = self._calculate_trading_returns(
+                symbol, test_price_data, y_test, y_pred
+            )
+            
+            # Store window results
+            all_metrics.append(window_metrics)
+            all_returns.extend(window_returns)
+        
+        # Calculate average metrics across all windows
+        avg_metrics = {}
+        for metric in self.evaluation_metrics:
+            if metric in all_metrics[0]:
+                values = [m.get(metric, 0) for m in all_metrics]
+                avg_metrics[metric] = sum(values) / len(values)
+        
+        # Calculate cumulative returns
+        cumulative_returns = []
+        cumulative = 0
+        for r in all_returns:
+            cumulative += r
+            cumulative_returns.append(cumulative)
+        
+        # Calculate trading performance metrics
+        win_rate = sum(r > 0 for r in all_returns) / len(all_returns) if all_returns else 0
+        
+        # Calculate profit factor if in evaluation metrics
+        if "profit_factor" in self.evaluation_metrics and all_returns:
+            gains = sum(r for r in all_returns if r > 0)
+            losses = abs(sum(r for r in all_returns if r < 0))
+            profit_factor = gains / losses if losses > 0 else float('inf')
+            avg_metrics["profit_factor"] = profit_factor
+        
+        # Create result
+        result = {
+            "symbol": symbol,
+            "period": {
+                "start_date": price_data[0].get("t") if price_data else None,
+                "end_date": price_data[-1].get("t") if price_data else None,
+                "windows": num_windows,
+                "window_size_days": window_size_days,
+                "step_size_days": step_size_days
+            },
+            "metrics": avg_metrics,
+            "trading_performance": {
+                "win_rate": win_rate,
+                "cumulative_return": cumulative_returns[-1] if cumulative_returns else 0,
+                "average_return": sum(all_returns) / len(all_returns) if all_returns else 0
+            },
+            "includes_sentiment": include_sentiment,
+            "method": "sliding_window",
+            "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+        
+        # Generate performance visualization if possible
+        try:
+            # Use last window predictions for visualization
+            if len(y_test) > 0 and len(y_pred) > 0:
+                chart_path = self._generate_backtest_chart(symbol, y_test, y_pred, all_returns, cumulative_returns)
+                if chart_path:
+                    result["chart_path"] = chart_path
+        except Exception as chart_e:
+            self.logger.warning(f"Failed to generate backtest chart: {chart_e}")
+        
+        return result
+    
+    def _calculate_trading_returns(self, symbol: str, price_data: List[Dict[str, Any]], 
+                                y_actual: List[int], y_pred: List[int]) -> Tuple[List[float], List[float]]:
+        """
+        Calculate returns based on trading simulation.
+        
+        Args:
+            symbol: The stock symbol
+            price_data: Price data for the test period
+            y_actual: Actual price movements
+            y_pred: Predicted price movements
+            
+        Returns:
+            Tuple of (returns, cumulative_returns)
+        """
+        # Check lengths
+        if len(y_pred) > len(price_data) - 1:
+            y_pred = y_pred[:(len(price_data) - 1)]
+        if len(y_actual) > len(price_data) - 1:
+            y_actual = y_actual[:(len(price_data) - 1)]
+            
+        # Get trading simulation parameters
+        position_size = self.position_size_pct
+        include_costs = self.config.get("trading_simulation", {}).get("include_transaction_costs", True)
+        commission_rate = self.config.get("trading_simulation", {}).get("commission_per_trade", 0.001)
+        
+        # Calculate returns
+        returns = []
+        
+        for i in range(len(y_pred)):
+            # Get prices
+            current_price = price_data[i].get("c", 0)
+            next_price = price_data[i+1].get("c", 0)
+            
+            if current_price <= 0 or next_price <= 0:
+                continue
+                
+            # Calculate actual return
+            actual_return = (next_price - current_price) / current_price
+            
+            # Determine position
+            position = 1 if y_pred[i] == 1 else -1  # Long or short
+            
+            # Calculate strategy return based on position
+            strategy_return = position * actual_return
+            
+            # Apply position sizing
+            strategy_return *= position_size
+            
+            # Apply transaction costs if enabled
+            if include_costs:
+                strategy_return -= commission_rate
+            
+            returns.append(strategy_return)
+        
+        # Calculate cumulative returns
+        cumulative_returns = []
+        cumulative = 0
+        for r in returns:
+            cumulative += r
+            cumulative_returns.append(cumulative)
+        
+        return returns, cumulative_returns
+    
+    def get_model_performance(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get performance metrics for a prediction model.
+        
+        Args:
+            symbol: The stock symbol
+            
+        Returns:
+            Dict with model performance metrics
+        """
+        start_time = time.time()
+        
+        # Check if model exists
+        with self.model_lock:
+            if symbol not in self.xgboost_models:
+                return {"error": f"No model found for {symbol}"}
+            
+            model = self.xgboost_models[symbol]
+            last_updated = self.model_last_updated.get(symbol, "unknown")
+        
+        # Get feature importance
+        feature_importance = {f"feature_{i}": float(importance) 
+                             for i, importance in enumerate(model.get_score(importance_type='gain').values())}
+        
+        # Sort by importance
+        feature_importance = dict(sorted(feature_importance.items(), 
+                                        key=lambda item: item[1], reverse=True))
+        
+        # Get recent prediction accuracy
+        # This would require storing past predictions and outcomes
+        # Here we'll simulate this with a simple 30-day backtest
+        
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        backtest_result = self.backtest_model(symbol, start_date, end_date)
+        
+        recent_metrics = {}
+        if "error" not in backtest_result:
+            recent_metrics = backtest_result.get("metrics", {})
+            
+            # Check for model degradation
+            if hasattr(self, "baseline_metrics") and symbol in self.baseline_metrics:
+                baseline = self.baseline_metrics[symbol]
+                
+                # Calculate degradation as percentage decrease in accuracy
+                if "accuracy" in recent_metrics and "accuracy" in baseline:
+                    degradation = (baseline["accuracy"] - recent_metrics["accuracy"]) / baseline["accuracy"]
+                    recent_metrics["degradation"] = degradation
+        
+        # Create result
+        result = {
+            "symbol": symbol,
+            "last_updated": last_updated,
+            "feature_importance": feature_importance,
+            "recent_metrics": recent_metrics,
+            "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+        
+        return result
+    
+    def get_system_health(self) -> Dict[str, Any]:
+        """
+        Get system health metrics.
+        
+        Returns:
+            Dict with system health information
+        """
+        start_time = time.time()
+        
+        # Get data MCP health
+        data_mcp_health = self.data_mcp.get_health_status() if hasattr(self.data_mcp, "get_health_status") else {"status": "unknown"}
+        
+        # Get text MCP health
+        text_mcp_health = self.text_mcp.get_health_status() if hasattr(self.text_mcp, "get_health_status") else {"status": "unknown"}
+        
+        # Get model information
+        model_info = {}
+        symbol_metrics = {}
+        with self.model_lock:
+            model_count = len(self.xgboost_models)
+            model_symbols = list(self.xgboost_models.keys())
+            
+            # Get last update time for each model
+            model_ages = {}
+            for symbol, update_time in self.model_last_updated.items():
+                if update_time != "never":
+                    try:
+                        last_update = datetime.fromisoformat(update_time)
+                        age_days = (datetime.now() - last_update).days
+                        model_ages[symbol] = age_days
+                        
+                        # Check model performance if we have baseline metrics
+                        if hasattr(self, "baseline_metrics") and symbol in self.baseline_metrics:
+                            # Get latest performance
+                            end_date = datetime.now().strftime("%Y-%m-%d")
+                            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                            
+                            try:
+                                backtest_result = self.backtest_model(symbol, start_date, end_date)
+                                
+                                if "error" not in backtest_result:
+                                    recent_metrics = backtest_result.get("metrics", {})
+                                    baseline = self.baseline_metrics[symbol]
+                                    
+                                    # Calculate degradation
+                                    if "accuracy" in recent_metrics and "accuracy" in baseline:
+                                        degradation = (baseline["accuracy"] - recent_metrics["accuracy"]) / baseline["accuracy"]
+                                        
+                                        # Add to symbol metrics
+                                        symbol_metrics[symbol] = {
+                                            "recent_accuracy": recent_metrics["accuracy"],
+                                            "baseline_accuracy": baseline["accuracy"],
+                                            "degradation": degradation,
+                                            "age_days": age_days
+                                        }
+                            except Exception as e:
+                                self.logger.warning(f"Failed to check model performance for {symbol}: {e}")
+                    except ValueError:
+                        model_ages[symbol] = "unknown"
+                else:
+                    model_ages[symbol] = "never"
+            
+            model_info = {
+                "model_count": model_count,
+                "symbols_with_models": model_symbols,
+                "model_ages_days": model_ages,
+                "symbol_metrics": symbol_metrics
+            }
+        
+        # Get cache stats
+        # Get cache stats
+        cache_stats = {}
+        with self.cache_lock:
+            cache_stats = {
+                "size": len(self.cache),
+                "enabled": self.enable_cache,
+                "ttl_seconds": self.cache_ttl,
+                "keys_by_type": {}
+            }
+            
+            # Count keys by type
+            for key in self.cache.keys():
+                key_type = key.split(":")[0] if ":" in key else "unknown"
+                if key_type not in cache_stats["keys_by_type"]:
+                    cache_stats["keys_by_type"][key_type] = 0
+                cache_stats["keys_by_type"][key_type] += 1
+        
+        # Get rate limiting stats
+        rate_limit_stats = {}
+        with self.rate_limit_lock:
+            current_time = time.time()
+            recent_requests = [t for t in self.request_timestamps if current_time - t < 60]
+            rate_limit_stats = {
+                "max_requests_per_minute": self.max_requests_per_minute,
+                "current_usage": len(recent_requests),
+                "available": self.max_requests_per_minute - len(recent_requests)
+            }
+        
+        # Get system metrics from the metrics collector
+        system_metrics = {}
+        if hasattr(self, "metrics_collector"):
+            system_metrics = {
+                "cpu_usage": self.metrics_collector.get_cpu_usage(),
+                "memory_usage": self.metrics_collector.get_memory_usage(),
+                "disk_usage": self.metrics_collector.get_disk_usage()
+            }
+        
+        # Create result
+        result = {
+            "overall_status": "healthy",  # Default to healthy
+            "components": {
+                "data_mcp": data_mcp_health,
+                "text_mcp": text_mcp_health,
+                "models": model_info,
+                "cache": cache_stats,
+                "rate_limiting": rate_limit_stats
+            },
+            "system_metrics": system_metrics,
+            "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+        
+        # Determine overall status based on component statuses
+        if data_mcp_health.get("status") == "critical" or text_mcp_health.get("status") == "critical":
+            result["overall_status"] = "critical"
+        elif data_mcp_health.get("status") == "degraded" or text_mcp_health.get("status") == "degraded":
+            result["overall_status"] = "degraded"
+        elif data_mcp_health.get("status") == "warning" or text_mcp_health.get("status") == "warning":
+            result["overall_status"] = "warning"
+        
+        return result
+    
+    def clear_cache(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Clear the cache for a specific symbol or all symbols.
+        
+        Args:
+            symbol: The stock symbol to clear cache for. If None, clear all.
+            
+        Returns:
+            Dict with operation result
+        """
+        start_time = time.time()
+        
+        with self.cache_lock:
+            if symbol:
+                # Clear cache for specific symbol
+                keys_to_delete = [k for k in self.cache.keys() if f":{symbol}:" in k]
+                for key in keys_to_delete:
+                    del self.cache[key]
+                    if key in self.cache_timestamps:
+                        del self.cache_timestamps[key]
+                
+                return {
+                    "status": "success",
+                    "symbol": symbol,
+                    "keys_deleted": len(keys_to_delete),
+                    "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+                }
+            else:
+                # Clear all cache
+                key_count = len(self.cache)
+                self.cache.clear()
+                self.cache_timestamps.clear()
+                
+                return {
+                    "status": "success",
+                    "keys_deleted": key_count,
+                    "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+                }
+    
+    def get_current_config(self) -> Dict[str, Any]:
+        """
+        Get the current configuration settings.
+        
+        Returns:
+            Dict with current configuration
+        """
+        # Create a sanitized version of the config (removing API keys)
+        safe_config = {}
+        
+        # Copy all non-sensitive config
+        if hasattr(self, "config"):
+            safe_config = self.config.copy()
+            
+            # Remove API keys
+            if "api_keys" in safe_config:
+                safe_config["api_keys"] = {k: "***" for k in safe_config["api_keys"]}
+        
+        # Add runtime configuration
+        runtime_config = {
+            "finbert": {
+                "model_loaded": self.finbert_model is not None,
+                "using_gpu": self.use_gpu and torch.cuda.is_available(),
+                "sentiment_weight": self.sentiment_weight
+            },
+            "xgboost": {
+                "models_loaded": len(self.xgboost_models),
+                "params": self.xgboost_params,
+                "prediction_threshold": self.prediction_threshold
             },
             "cache": {
                 "enabled": self.enable_cache,
                 "ttl_seconds": self.cache_ttl,
-                "hits": self.cache_hits,
-                "misses": self.cache_misses,
-                "expirations": self.cache_expirations,
-                "hit_rate": f"{(self.cache_hits / max(1, self.cache_hits + self.cache_misses) * 100):.2f}%"
+                "size": len(self.cache) if hasattr(self, "cache") else 0
             },
-            "charts": charts,
-            "health_status": {
-                "overall_status": health_report["overall_status"],
-                "health_score": health_report["health_score"]
+            "feature_engineering": {
+                "lookback_periods": self.lookback_periods,
+                "include_ta_features": self.include_ta_features,
+                "include_volatility": self.include_volatility,
+                "include_sentiment": self.include_sentiment
             }
         }
         
-        # Add top queried symbols if available
-        if self.symbol_query_counts:
-            # Get top 10 most queried symbols
-            top_symbols = dict(sorted(
-                self.symbol_query_counts.items(), 
-                key=lambda x: x[1], 
-                reverse=True
-            )[:10])
-            
-            report["symbols"] = {
-                "top_queried": top_symbols,
-                "total_unique": len(self.symbol_query_counts)
-            }
+        # Combine the configs
+        result = {
+            "file_config": safe_config,
+            "runtime_config": runtime_config
+        }
         
-        # Calculate report generation time
-        generation_time = (time.time() - start_time) * 1000
-        report["generation_time_ms"] = round(generation_time, 2)
-        
-        # Log report generation
-        self.logger.info("Generated financial performance report", 
-                       total_requests=total_requests,
-                       error_rate=f"{error_rate:.2f}%",
-                       charts_generated=len(charts),
-                       generation_time_ms=generation_time)
-        
-        return report
-        
-    def get_source_usage_stats(self) -> Dict[str, Any]:
-        """
-        Get detailed usage statistics for all financial data sources.
-        
-        Returns:
-            Dictionary with usage statistics by source
-        """
-        start_time = time.time()
-        
-        with self.monitoring_lock:
-            # Calculate total usage across all sources
-            total_usage = sum(self.source_usage_counts.values())
-            
-            # Calculate percentage usage for each source
-            source_percentages = {}
-            for source_name, count in self.source_usage_counts.items():
-                if total_usage > 0:
-                    percentage = (count / total_usage) * 100
-                    source_percentages[source_name] = f"{percentage:.2f}%"
-            
-            # Calculate error rates for each source
-            error_rates = {}
-            for source_name in self.source_usage_counts:
-                usage = self.source_usage_counts.get(source_name, 0)
-                errors = self.source_error_counts.get(source_name, 0)
-                if usage > 0:
-                    error_rate = (errors / usage) * 100
-                    error_rates[source_name] = f"{error_rate:.2f}%"
-            
-            # Calculate average response times
-            avg_response_times = {}
-            for source_name in self.source_usage_counts:
-                usage = self.source_usage_counts.get(source_name, 0)
-                total_time = self.source_latencies.get(source_name, 0)
-                if usage > 0:
-                    avg_response_times[source_name] = round(total_time / usage, 2)
-            
-            # Get rate limit information where available
-            rate_limits = {}
-            for source_name in self.api_rate_limits:
-                remaining = self.api_rate_limits.get(source_name, 0)
-                reset_time = self.api_rate_limit_resets.get(source_name, 0)
-                
-                # Calculate time until reset if we have a reset timestamp
-                time_until_reset = None
-                if reset_time > 0:
-                    current_time = time.time()
-                    if reset_time > current_time:
-                        time_until_reset = f"{int(reset_time - current_time)} seconds"
-                
-                rate_limits[source_name] = {
-                    "remaining": remaining,
-                    "reset_time": datetime.fromtimestamp(reset_time).isoformat() if reset_time > 0 else "unknown",
-                    "time_until_reset": time_until_reset
-                }
-            
-            # Compile the report
-            report = {
-                "timestamp": datetime.now().isoformat(),
-                "total_usage": total_usage,
-                "source_counts": self.source_usage_counts,
-                "source_percentages": source_percentages,
-                "error_counts": self.source_error_counts,
-                "error_rates": error_rates,
-                "avg_response_times_ms": avg_response_times
-            }
-            
-            # Add rate limit information if available
-            if rate_limits:
-                report["rate_limits"] = rate_limits
-            
-            # Calculate report generation time
-            generation_time = (time.time() - start_time) * 1000
-            report["generation_time_ms"] = round(generation_time, 2)
-            
-            # Log report generation
-            self.logger.info("Generated source usage statistics", 
-                           total_usage=total_usage,
-                           source_count=len(self.source_usage_counts),
-                           generation_time_ms=generation_time)
-            
-            return report
+        return result
     
-    def get_symbol_stats(self) -> Dict[str, Any]:
+    def update_config(self, config_updates: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Get statistics about most frequently queried financial symbols.
-        
-        Returns:
-            Dictionary with statistics by symbol
-        """
-        start_time = time.time()
-        
-        with self.monitoring_lock:
-            # Check if we have any symbol data
-            if not self.symbol_query_counts:
-                return {
-                    "status": "no_data",
-                    "message": "No symbol query data available yet"
-                }
-            
-            # Get total query count
-            total_queries = sum(self.symbol_query_counts.values())
-            
-            # Get top 20 most queried symbols
-            top_symbols = dict(sorted(
-                self.symbol_query_counts.items(), 
-                key=lambda x: x[1], 
-                reverse=True
-            )[:20])
-            
-            # Calculate percentage for each symbol
-            symbol_percentages = {}
-            for symbol, count in top_symbols.items():
-                percentage = (count / total_queries) * 100
-                symbol_percentages[symbol] = f"{percentage:.2f}%"
-            
-            # Create the report
-            report = {
-                "timestamp": datetime.now().isoformat(),
-                "total_symbol_queries": total_queries,
-                "unique_symbols": len(self.symbol_query_counts),
-                "top_symbols": top_symbols,
-                "symbol_percentages": symbol_percentages
-            }
-            
-            # Calculate report generation time
-            generation_time = (time.time() - start_time) * 1000
-            report["generation_time_ms"] = round(generation_time, 2)
-            
-            # Log report generation
-            self.logger.info("Generated symbol statistics", 
-                           total_queries=total_queries,
-                           unique_symbols=len(self.symbol_query_counts),
-                           generation_time_ms=generation_time)
-            
-            return report
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get detailed statistics about cache performance for financial data.
-        
-        Returns:
-            Dictionary with cache performance statistics
-        """
-        start_time = time.time()
-        
-        with self.monitoring_lock:
-            # Calculate hit rate
-            total_cache_attempts = self.cache_hits + self.cache_misses
-            hit_rate = (self.cache_hits / total_cache_attempts * 100) if total_cache_attempts > 0 else 0
-            
-            # Create the report
-            report = {
-                "timestamp": datetime.now().isoformat(),
-                "enabled": self.enable_cache,
-                "ttl_seconds": self.cache_ttl,
-                "hits": self.cache_hits,
-                "misses": self.cache_misses,
-                "expirations": self.cache_expirations,
-                "total_attempts": total_cache_attempts,
-                "hit_rate": f"{hit_rate:.2f}%",
-                "efficiency": {
-                    "score": round(hit_rate, 1),  # Score is just the hit rate for now
-                    "status": "good" if hit_rate > 80 else "fair" if hit_rate > 50 else "poor"
-                }
-            }
-            
-            # Calculate report generation time
-            generation_time = (time.time() - start_time) * 1000
-            report["generation_time_ms"] = round(generation_time, 2)
-            
-            # Log report generation
-            self.logger.info("Generated cache statistics", 
-                           hit_rate=f"{hit_rate:.2f}%",
-                           total_attempts=total_cache_attempts,
-                           generation_time_ms=generation_time)
-            
-            return report
-
-    # --- Unified Tool Implementations ---
-
-    def get_market_data(self, symbols: List[str], timeframe: str = '1d', start_date: Optional[str] = None, end_date: Optional[str] = None, limit: Optional[int] = None, stream: bool = False, data_type: str = 'bars') -> Dict[str, Any]:
-        """Unified method to get market data (bars, trades, quotes)."""
-        start_time = time.time()
-        
-        # Record metrics about the request
-        with self.monitoring_lock:
-            self.market_data_count += 1
-            
-            # Track symbols queried for analytics
-            for symbol in symbols:
-                if symbol not in self.symbol_query_counts:
-                    self.symbol_query_counts[symbol] = 0
-                self.symbol_query_counts[symbol] += 1
-        
-        # Check cache if enabled for historical data
-        cache_key = None
-        cache_hit = False
-        
-        if self.enable_cache and not stream:
-            # Create a unique cache key based on the request parameters
-            cache_params = f"{','.join(symbols)}|{timeframe}|{start_date}|{end_date}|{limit}|{data_type}"
-            cache_key = f"market_data:{cache_params}"
-            
-            # Check if we have this data in cache
-            if hasattr(self, 'cache') and hasattr(self, 'cache_timestamps'):
-                if not hasattr(self, 'cache'):
-                    self.cache = {}
-                    self.cache_timestamps = {}
-                    
-                if cache_key in self.cache:
-                    # Check if cache entry is still valid
-                    cache_time = self.cache_timestamps.get(cache_key, 0)
-                    if (time.time() - cache_time) < self.cache_ttl:
-                        # Cache hit - return cached data
-                        with self.monitoring_lock:
-                            self.cache_hits += 1
-                        self.logger.info("Cache hit for market data", 
-                                       symbols=symbols, 
-                                       data_type=data_type,
-                                       cache_age=round(time.time() - cache_time, 2))
-                        
-                        # Record response time for cache hit
-                        response_time = (time.time() - start_time) * 1000
-                        # Include data_type in the metric name instead of as a parameter
-                        metric_name = f"get_market_data_{data_type}_cache_hit_time_ms"
-                        self.logger.timing(metric_name, response_time,
-                                          source="cache")
-                        
-                        # Return cached data with cache metadata
-                        cached_response = self.cache[cache_key]
-                        cached_response["cache"] = {
-                            "hit": True,
-                            "age_seconds": round(time.time() - cache_time, 2),
-                            "source": "memory"
-                        }
-                        return cached_response
-                    else:
-                        # Cache expired
-                        with self.monitoring_lock:
-                            self.cache_expirations += 1
-                        self.logger.debug("Cache expired for market data",
-                                        symbols=symbols,
-                                        data_type=data_type,
-                                        age=round(time.time() - cache_time, 2))
-                else:
-                    # Cache miss
-                    with self.monitoring_lock:
-                        self.cache_misses += 1
-        
-        # Log the request
-        self.logger.info("Getting market data", 
-                       symbols=symbols, 
-                       timeframe=timeframe, 
-                       stream=stream, 
-                       data_type=data_type,
-                       cached=cache_hit)
-        
-        # Create metrics label for the specific type of request
-        request_metric_name = f"market_data_{data_type}"
-        self.logger.counter(request_metric_name)
-
-        # Streaming data request
-        if stream:
-            client = self._get_client("market_data_stream")
-            client_name = client.name if client else "none"
-            
-            # Record source selection for metrics
-            with self.monitoring_lock:
-                if client_name in self.source_usage_counts:
-                    self.source_usage_counts[client_name] += 1
-                
-            # Track streaming subscription metrics
-            self.logger.counter("market_data_stream_subscriptions")
-            
-            if client:
-                try:
-                    # Implement basic streaming functionality
-                    if data_type == 'bars':
-                        if hasattr(client, "subscribe_bars"):
-                            # Start a subscription and return a subscription ID
-                            subscription_id = client.subscribe_bars(
-                                symbols=symbols,
-                                timeframe=timeframe,
-                                callback=None  # We'll use the client's default callback handler
-                            )
-                            
-                            # Record successful subscription
-                            self.logger.counter("market_data_stream_success")
-                            
-                            # Calculate and record response time
-                            response_time = (time.time() - start_time) * 1000
-                            self.logger.timing("market_data_stream_setup_time_ms", response_time, 
-                                             source=client_name, data_type="bars")
-                            
-                            return {
-                                "status": "subscribed",
-                                "subscription_id": subscription_id,
-                                "message": "Streaming bars subscription started. Data will be processed by the configured callback.",
-                                "source": client_name,
-                                "response_time_ms": round(response_time, 2)
-                            }
-                        else:
-                            # Record client capability error
-                            with self.monitoring_lock:
-                                if client_name in self.source_error_counts:
-                                    self.source_error_counts[client_name] += 1
-                            self.logger.counter("market_data_stream_capability_error")
-                            
-                            return {"error": f"Client {client_name} does not support streaming bars.", "source": client_name}
-                    
-                    elif data_type == 'trades':
-                        if hasattr(client, "subscribe_trades"):
-                            subscription_id = client.subscribe_trades(
-                                symbols=symbols,
-                                callback=None  # We'll use the client's default callback handler
-                            )
-                            
-                            # Record successful subscription
-                            self.logger.counter("market_data_stream_success")
-                            
-                            # Calculate and record response time
-                            response_time = (time.time() - start_time) * 1000
-                            self.logger.timing("market_data_stream_setup_time_ms", response_time, 
-                                             source=client_name, data_type="trades")
-                            
-                            return {
-                                "status": "subscribed",
-                                "subscription_id": subscription_id,
-                                "message": "Streaming trades subscription started. Data will be processed by the configured callback.",
-                                "source": client_name,
-                                "response_time_ms": round(response_time, 2)
-                            }
-                        else:
-                            # Record client capability error
-                            with self.monitoring_lock:
-                                if client_name in self.source_error_counts:
-                                    self.source_error_counts[client_name] += 1
-                            self.logger.counter("market_data_stream_capability_error")
-                            
-                            return {"error": f"Client {client_name} does not support streaming trades.", "source": client_name}
-                    
-                    elif data_type == 'quotes':
-                        if hasattr(client, "subscribe_quotes"):
-                            subscription_id = client.subscribe_quotes(
-                                symbols=symbols,
-                                callback=None  # We'll use the client's default callback handler
-                            )
-                            
-                            # Record successful subscription
-                            self.logger.counter("market_data_stream_success")
-                            
-                            # Calculate and record response time
-                            response_time = (time.time() - start_time) * 1000
-                            self.logger.timing("market_data_stream_setup_time_ms", response_time, 
-                                             source=client_name, data_type="quotes")
-                            
-                            return {
-                                "status": "subscribed",
-                                "subscription_id": subscription_id,
-                                "message": "Streaming quotes subscription started. Data will be processed by the configured callback.",
-                                "source": client_name,
-                                "response_time_ms": round(response_time, 2)
-                            }
-                        else:
-                            # Record client capability error
-                            with self.monitoring_lock:
-                                if client_name in self.source_error_counts:
-                                    self.source_error_counts[client_name] += 1
-                            self.logger.counter("market_data_stream_capability_error")
-                            
-                            return {"error": f"Client {client_name} does not support streaming quotes.", "source": client_name}
-                    
-                    else:
-                        # Invalid data type error
-                        self.logger.counter("market_data_invalid_type_error")
-                        return {"error": f"Invalid streaming data type: {data_type}. Use 'bars', 'trades', or 'quotes'.", "source": client_name}
-                
-                except Exception as e:
-                    # Record streaming setup error
-                    with self.monitoring_lock:
-                        if client_name in self.source_error_counts:
-                            self.source_error_counts[client_name] += 1
-                    self.logger.counter("market_data_stream_setup_error")
-                    self.logger.error(f"Error setting up streaming for {data_type} from {client_name}: {e}", exc_info=True)
-                    
-                    # Calculate and record error response time
-                    error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_stream_error_time_ms", error_time, 
-                                     source=client_name, data_type=data_type)
-                    
-                    return {
-                        "error": f"Streaming setup failed: {str(e)}", 
-                        "source": client_name,
-                        "response_time_ms": round(error_time, 2)
-                    }
-            else:
-                # No streaming client available error
-                self.logger.counter("market_data_stream_no_client_error")
-                
-                # Calculate and record error response time
-                error_time = (time.time() - start_time) * 1000
-                # Include data_type in the metric name instead of as a parameter
-                metric_name = f"market_data_no_client_{data_type}_error_time_ms"
-                self.logger.timing(metric_name, error_time)
-                
-                return {
-                    "error": "No streaming client available.",
-                    "response_time_ms": round(error_time, 2)
-                }
-        
-        # Historical data request
-        else:
-            # Handle different types of historical data
-            if data_type == 'bars':
-                client = self._get_client("market_data_hist")
-                client_name = client.name if client else "none"
-                
-                # Record source selection for metrics
-                with self.monitoring_lock:
-                    if client_name in self.source_usage_counts:
-                        self.source_usage_counts[client_name] += 1
-                
-                if client:
-                    try:
-                        all_data = {}
-                        success_count = 0
-                        error_count = 0
-                        
-                        # Process each symbol
-                        for symbol in symbols:
-                            symbol_start_time = time.time()
-                            
-                            # Assuming client has a method like get_aggregates or get_historical_prices
-                            if hasattr(client, "get_aggregates"): # Polygon style
-                                data = client.get_aggregates(
-                                    ticker=symbol,
-                                    multiplier=1, # Assuming multiplier based on timeframe
-                                    timespan=timeframe, # Assuming direct mapping
-                                    from_=start_date,
-                                    to=end_date,
-                                    limit=limit
-                                )
-                                
-                                # Record per-symbol timing
-                                symbol_time = (time.time() - symbol_start_time) * 1000
-                                # Include symbol in metric name instead of as parameter
-                                symbol_safe = symbol.replace('.', '_').replace('-', '_')
-                                self.logger.timing(f"market_data_symbol_{symbol_safe}_time_ms", symbol_time,
-                                                  source=client_name)
-                                
-                                if data and not data.get("error"):
-                                    all_data[symbol] = data.get("results", [])
-                                    success_count += 1
-                                else:
-                                    all_data[symbol] = {"error": f"Failed to fetch data for {symbol} from {client_name}"}
-                                    error_count += 1
-                                    
-                                    # Track error
-                                    with self.monitoring_lock:
-                                        if client_name in self.source_error_counts:
-                                            self.source_error_counts[client_name] += 1
-                            
-                            elif hasattr(client, "get_historical_data"): # Yahoo style
-                                data = client.get_historical_data(
-                                    symbol=symbol,
-                                    start_date=start_date,
-                                    end_date=end_date,
-                                    interval=timeframe # Assuming direct mapping
-                                )
-                                
-                                # Record per-symbol timing
-                                symbol_time = (time.time() - symbol_start_time) * 1000
-                                # Include symbol in metric name instead of as parameter
-                                symbol_safe = symbol.replace('.', '_').replace('-', '_')
-                                self.logger.timing(f"market_data_symbol_{symbol_safe}_time_ms", symbol_time,
-                                                  source=client_name)
-                                
-                                if data and not data.get("error"):
-                                    all_data[symbol] = data.get("prices", []) # Assuming key name
-                                    success_count += 1
-                                else:
-                                    all_data[symbol] = {"error": f"Failed to fetch data for {symbol} from {client_name}"}
-                                    error_count += 1
-                                    
-                                    # Track error
-                                    with self.monitoring_lock:
-                                        if client_name in self.source_error_counts:
-                                            self.source_error_counts[client_name] += 1
-                            else:
-                                all_data[symbol] = {"error": f"Client {client_name} does not support getting historical bars."}
-                                error_count += 1
-                                
-                                # Track error
-                                with self.monitoring_lock:
-                                    if client_name in self.source_error_counts:
-                                        self.source_error_counts[client_name] += 1
-
-                        # Calculate and record overall processing time
-                        processing_time = time.time() - start_time
-                        
-                        # Check if the response time is slower than threshold
-                        if processing_time * 1000 > self.slow_market_data_threshold_ms:
-                            self.logger.warning("Slow market data request detected", 
-                                             symbols=symbols, 
-                                             data_type=data_type,
-                                             response_time_ms=round(processing_time * 1000, 2),
-                                             threshold_ms=self.slow_market_data_threshold_ms)
-                        
-                        # Record metrics
-                        # Only pass name, value, and source to timing method
-                        self.logger.timing("get_market_data_bars_time_ms", processing_time * 1000,
-                                          source=client_name)
-                        
-                        # Log additional details using info method which accepts kwargs
-                        self.logger.info("Market data bars metrics", 
-                                       symbol_count=len(symbols),
-                                       success_count=success_count,
-                                       error_count=error_count,
-                                       response_time_ms=round(processing_time * 1000, 2))
-                        
-                        # Update source latency metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_latencies:
-                                self.source_latencies[client_name] += processing_time * 1000
-                        
-                        # Create response
-                        response = {
-                            "data": all_data, 
-                            "source": client_name, 
-                            "processing_time_ms": round(processing_time * 1000, 2),
-                            "success_rate": f"{(success_count / max(1, len(symbols)) * 100):.1f}%",
-                            "symbol_count": len(symbols),
-                            "success_count": success_count,
-                            "error_count": error_count
-                        }
-                        
-                        # Cache the response if caching is enabled
-                        if self.enable_cache and cache_key and error_count == 0:
-                            if not hasattr(self, 'cache'):
-                                self.cache = {}
-                            if not hasattr(self, 'cache_timestamps'):
-                                self.cache_timestamps = {}
-                            
-                            self.cache[cache_key] = response
-                            self.cache_timestamps[cache_key] = time.time()
-                            self.logger.debug("Cached market data", 
-                                            symbols=symbols, 
-                                            data_type=data_type,
-                                            cache_key=cache_key)
-                        
-                        return response
-
-                    except Exception as e:
-                        # Record error metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_error_counts:
-                                self.source_error_counts[client_name] += 1
-                        
-                        # Calculate error response time
-                        error_time = (time.time() - start_time) * 1000
-                        # Include data_type in the metric name instead of as a parameter
-                        metric_name = f"market_data_{data_type}_error_time_ms"
-                        self.logger.timing(metric_name, error_time, 
-                                         source=client_name)
-                        
-                        self.logger.error(f"Error getting historical market data from {client_name}: {e}", exc_info=True)
-                        return {
-                            "error": str(e), 
-                            "source": client_name,
-                            "response_time_ms": round(error_time, 2)
-                        }
-                else:
-                    # No suitable client available error
-                    self.logger.counter("market_data_no_client_error")
-                    
-                    # Calculate error response time
-                    error_time = (time.time() - start_time) * 1000
-                    # Include data_type in the metric name instead of as a parameter
-                    metric_name = f"market_data_no_client_{data_type}_error_time_ms"
-                    self.logger.timing(metric_name, error_time,
-                                       source="no_client")
-                    
-                    return {
-                        "error": "No suitable historical market data client available.",
-                        "response_time_ms": round(error_time, 2)
-                    }
-
-            elif data_type == 'trades':
-                client = self._get_client("market_data_hist") # Trades might be available via REST
-                client_name = client.name if client else "none"
-                
-                # Record source selection for metrics
-                with self.monitoring_lock:
-                    if client_name in self.source_usage_counts:
-                        self.source_usage_counts[client_name] += 1
-                
-                if client and hasattr(client, "get_trades"): # Assuming method name
-                    try:
-                        all_trades = {}
-                        success_count = 0
-                        error_count = 0
-                        
-                        for symbol in symbols:
-                            symbol_start_time = time.time()
-                            
-                            # Parameters might need adaptation
-                            trades = client.get_trades(ticker=symbol, limit=limit, timestamp_gte=start_date, timestamp_lte=end_date) # Example params
-                            
-                            # Record per-symbol timing
-                            symbol_time = (time.time() - symbol_start_time) * 1000
-                            # Include symbol in metric name instead of as parameter
-                            symbol_safe = symbol.replace('.', '_').replace('-', '_')
-                            self.logger.timing(f"market_data_trades_symbol_{symbol_safe}_time_ms", symbol_time,
-                                              source=client_name)
-                            
-                            if trades and not trades.get("error"):
-                                all_trades[symbol] = trades.get("results", [])
-                                success_count += 1
-                            else:
-                                all_trades[symbol] = {"error": f"Failed to fetch trades for {symbol} from {client_name}"}
-                                error_count += 1
-                                
-                                # Track error
-                                with self.monitoring_lock:
-                                    if client_name in self.source_error_counts:
-                                        self.source_error_counts[client_name] += 1
-
-                        # Calculate and record overall processing time
-                        processing_time = time.time() - start_time
-                        
-                        # Check if the response time is slower than threshold
-                        if processing_time * 1000 > self.slow_market_data_threshold_ms:
-                            self.logger.warning("Slow trades request detected", 
-                                             symbols=symbols, 
-                                             response_time_ms=round(processing_time * 1000, 2),
-                                             threshold_ms=self.slow_market_data_threshold_ms)
-                        
-                        # Record metrics
-                        # Only pass name, value, and source to timing method
-                        self.logger.timing("get_market_data_trades_time_ms", processing_time * 1000,
-                                          source=client_name)
-                        
-                        # Log additional details using info method which accepts kwargs
-                        self.logger.info("Market data trades metrics", 
-                                       symbol_count=len(symbols),
-                                       success_count=success_count,
-                                       error_count=error_count,
-                                       response_time_ms=round(processing_time * 1000, 2))
-                        
-                        # Update source latency metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_latencies:
-                                self.source_latencies[client_name] += processing_time * 1000
-                        
-                        # Create response
-                        response = {
-                            "data": all_trades, 
-                            "source": client_name, 
-                            "processing_time_ms": round(processing_time * 1000, 2),
-                            "success_rate": f"{(success_count / max(1, len(symbols)) * 100):.1f}%",
-                            "symbol_count": len(symbols),
-                            "success_count": success_count,
-                            "error_count": error_count
-                        }
-                        
-                        # Cache the response if caching is enabled
-                        if self.enable_cache and cache_key and error_count == 0:
-                            if not hasattr(self, 'cache'):
-                                self.cache = {}
-                            if not hasattr(self, 'cache_timestamps'):
-                                self.cache_timestamps = {}
-                            
-                            self.cache[cache_key] = response
-                            self.cache_timestamps[cache_key] = time.time()
-                            self.logger.debug("Cached trades data", 
-                                            symbols=symbols, 
-                                            cache_key=cache_key)
-                        
-                        return response
-                    
-                    except Exception as e:
-                        # Record error metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_error_counts:
-                                self.source_error_counts[client_name] += 1
-                        
-                        # Calculate error response time
-                        error_time = (time.time() - start_time) * 1000
-                        self.logger.timing("market_data_trades_error_time_ms", error_time, 
-                                         source=client_name)
-                        
-                        self.logger.error(f"Error getting trades from {client_name}: {e}", exc_info=True)
-                        return {
-                            "error": str(e), 
-                            "source": client_name,
-                            "response_time_ms": round(error_time, 2)
-                        }
-                else:
-                    # No suitable client available error
-                    self.logger.counter("market_data_trades_no_client_error")
-                    
-                    # Calculate error response time
-                    error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_no_client_trades_error_time_ms", error_time,
-                                       source="no_client")
-                    
-                    return {
-                        "error": "No suitable trades client available.",
-                        "response_time_ms": round(error_time, 2)
-                    }
-
-            elif data_type == 'quotes':
-                client = self._get_client("market_data_hist") # Quotes might be available via REST
-                client_name = client.name if client else "none"
-                
-                # Record source selection for metrics
-                with self.monitoring_lock:
-                    if client_name in self.source_usage_counts:
-                        self.source_usage_counts[client_name] += 1
-                
-                if client and hasattr(client, "get_quotes"): # Assuming method name
-                    try:
-                        all_quotes = {}
-                        success_count = 0
-                        error_count = 0
-                        
-                        for symbol in symbols:
-                            symbol_start_time = time.time()
-                            
-                            # Parameters might need adaptation
-                            quotes = client.get_quotes(ticker=symbol, limit=limit, timestamp_gte=start_date, timestamp_lte=end_date) # Example params
-                            
-                            # Record per-symbol timing
-                            symbol_time = (time.time() - symbol_start_time) * 1000
-                            # Include symbol in metric name instead of as parameter
-                            symbol_safe = symbol.replace('.', '_').replace('-', '_')
-                            self.logger.timing(f"market_data_quotes_symbol_{symbol_safe}_time_ms", symbol_time,
-                                              source=client_name)
-                            
-                            if quotes and not quotes.get("error"):
-                                all_quotes[symbol] = quotes.get("results", [])
-                                success_count += 1
-                            else:
-                                all_quotes[symbol] = {"error": f"Failed to fetch quotes for {symbol} from {client_name}"}
-                                error_count += 1
-                                
-                                # Track error
-                                with self.monitoring_lock:
-                                    if client_name in self.source_error_counts:
-                                        self.source_error_counts[client_name] += 1
-
-                        # Calculate and record overall processing time
-                        processing_time = time.time() - start_time
-                        
-                        # Check if the response time is slower than threshold
-                        if processing_time * 1000 > self.slow_market_data_threshold_ms:
-                            self.logger.warning("Slow quotes request detected", 
-                                             symbols=symbols, 
-                                             response_time_ms=round(processing_time * 1000, 2),
-                                             threshold_ms=self.slow_market_data_threshold_ms)
-                        
-                        # Record metrics
-                        # Only pass name, value, and source to timing method
-                        self.logger.timing("get_market_data_quotes_time_ms", processing_time * 1000,
-                                          source=client_name)
-                        
-                        # Log additional details using info method which accepts kwargs
-                        self.logger.info("Market data quotes metrics", 
-                                       symbol_count=len(symbols),
-                                       success_count=success_count,
-                                       error_count=error_count,
-                                       response_time_ms=round(processing_time * 1000, 2))
-                        
-                        # Update source latency metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_latencies:
-                                self.source_latencies[client_name] += processing_time * 1000
-                        
-                        # Create response
-                        response = {
-                            "data": all_quotes, 
-                            "source": client_name, 
-                            "processing_time_ms": round(processing_time * 1000, 2),
-                            "success_rate": f"{(success_count / max(1, len(symbols)) * 100):.1f}%",
-                            "symbol_count": len(symbols),
-                            "success_count": success_count,
-                            "error_count": error_count
-                        }
-                        
-                        # Cache the response if caching is enabled
-                        if self.enable_cache and cache_key and error_count == 0:
-                            if not hasattr(self, 'cache'):
-                                self.cache = {}
-                            if not hasattr(self, 'cache_timestamps'):
-                                self.cache_timestamps = {}
-                            
-                            self.cache[cache_key] = response
-                            self.cache_timestamps[cache_key] = time.time()
-                            self.logger.debug("Cached quotes data", 
-                                            symbols=symbols, 
-                                            cache_key=cache_key)
-                        
-                        return response
-                    
-                    except Exception as e:
-                        # Record error metrics
-                        with self.monitoring_lock:
-                            if client_name in self.source_error_counts:
-                                self.source_error_counts[client_name] += 1
-                        
-                        # Calculate error response time
-                        error_time = (time.time() - start_time) * 1000
-                        self.logger.timing("market_data_quotes_error_time_ms", error_time, 
-                                         source=client_name)
-                        
-                        self.logger.error(f"Error getting quotes from {client_name}: {e}", exc_info=True)
-                        return {
-                            "error": str(e), 
-                            "source": client_name,
-                            "response_time_ms": round(error_time, 2)
-                        }
-                else:
-                    # No suitable client available error
-                    self.logger.counter("market_data_quotes_no_client_error")
-                    
-                    # Calculate error response time
-                    error_time = (time.time() - start_time) * 1000
-                    self.logger.timing("market_data_no_client_quotes_error_time_ms", error_time,
-                                       source="no_client")
-                    
-                    return {
-                        "error": "No suitable quotes client available.",
-                        "response_time_ms": round(error_time, 2)
-                    }
-
-            else:
-                # Invalid data type error
-                self.logger.counter("market_data_invalid_type_error")
-                
-                # Calculate error response time
-                error_time = (time.time() - start_time) * 1000
-                self.logger.timing("market_data_invalid_type_time_ms", error_time,
-                                   source="invalid_type")
-                
-                return {
-                    "error": f"Invalid market data type requested: {data_type}. Use 'bars', 'trades', or 'quotes'.",
-                    "response_time_ms": round(error_time, 2)
-                }
-
-
-    def get_news(self, symbols: Optional[List[str]] = None, query: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
-        """Unified method to get financial news."""
-        start_time = time.time()
-        self.logger.info("Getting news", symbols=symbols, query=query, limit=limit)
-        client = self._get_client("news")
-
-        if client:
-            try:
-                news_items = []
-                # Prioritize symbol-specific news if symbols are provided
-                if symbols:
-                    if hasattr(client, "get_ticker_news"): # Polygon style
-                        for symbol in symbols:
-                             result = client.get_ticker_news(ticker=symbol, limit=limit // len(symbols) if symbols else limit)
-                             if result and not result.get("error"):
-                                 news_items.extend(result.get("results", []))
-                    elif hasattr(client, "get_company_news"): # Yahoo style
-                         for symbol in symbols:
-                              result = client.get_company_news(symbol=symbol, limit=limit // len(symbols) if symbols else limit)
-                              if result and not result.get("error"):
-                                  news_items.extend(result.get("items", []))
-                elif query:
-                     if hasattr(client, "search_news"): # Yahoo News style
-                          result = client.search_news(query=query, limit=limit)
-                          if result and not result.get("error"):
-                               news_items.extend(result.get("results", []) or result.get("items", []))
-                     # Add other news search methods if available in other clients
-                else:
-                     # Attempt a general fetch if possible (e.g., Polygon market news)
-                     if hasattr(client, "get_market_news"): # Polygon style
-                          result = client.get_market_news(limit=limit)
-                          if result and not result.get("error"):
-                               news_items.extend(result.get("results", []))
-
-
-                # Simple deduplication based on title or URL if available
-                seen = set()
-                unique_news = []
-                for item in news_items:
-                    identifier = item.get('article_url') or item.get('link') or item.get('title')
-                    if identifier and identifier not in seen:
-                        unique_news.append(item)
-                        seen.add(identifier)
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_news_time_ms", processing_time * 1000,
-                                   source=client.name, news_count=len(unique_news))
-                return {"news": unique_news[:limit], "source": client.name, "processing_time": processing_time}
-
-            except Exception as e:
-                 self.logger.error(f"Error getting news from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable news client available."}
-
-
-    def get_social_sentiment(self, symbols: Optional[List[str]] = None, query: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-        """Unified method to get social media sentiment."""
-        start_time = time.time()
-        self.logger.info("Getting social sentiment", symbols=symbols, query=query, limit=limit)
-        client = self._get_client("social")
-
-        if client and hasattr(client, "search_posts"): # Assuming RedditMCP style
-            try:
-                search_term = query
-                if symbols:
-                    # Combine symbols into a search query if needed, or search one by one
-                    search_term = " OR ".join(symbols) if not query else f"({query}) AND ({' OR '.join(symbols)})"
-
-                if not search_term:
-                    return {"error": "Please provide symbols or a query for social sentiment."}
-
-                result = client.search_posts(query=search_term, limit=limit, sort='relevance') # Example params
-                posts = result.get("posts", []) if result and not result.get("error") else []
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_social_sentiment_time_ms", processing_time * 1000,
-                                   source=client.name, post_count=len(posts))
-                return {"posts": posts, "source": client.name, "processing_time": processing_time}
-
-            except Exception as e:
-                 self.logger.error(f"Error getting social sentiment from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable social sentiment client available."}
-
-
-    def get_options_data(self, symbol: str, date: Optional[str] = None, type: str = 'chain') -> Dict[str, Any]:
-        """Unified method to get options data (chain or flow)."""
-        start_time = time.time()
-        self.logger.info("Getting options data", symbol=symbol, date=date, type=type)
-
-        if type == 'chain':
-            client = self._get_client("options_chain")
-            if client:
-                try:
-                    data = {}
-                    if hasattr(client, "get_options_chain"): # Polygon style
-                        # Need expiration date logic - assuming 'date' is expiration date
-                        result = client.get_options_chain(underlying_ticker=symbol, expiration_date=date) # Example params
-                        data = result.get("results", []) if result and not result.get("error") else []
-                    elif hasattr(client, "get_options"): # Yahoo style
-                         result = client.get_options(symbol=symbol, date=date) # Assuming 'date' is expiration date
-                         data = result if result and not result.get("error") else {}
-                    else:
-                         return {"error": f"Client {client.name} does not support getting options chain."}
-
-                    processing_time = time.time() - start_time
-                    self.logger.timing("get_options_chain_time_ms", processing_time * 1000,
-                                       source=client.name, symbol=symbol)
-                    return {"options_chain": data, "source": client.name, "processing_time": processing_time}
-
-                except Exception as e:
-                     self.logger.error(f"Error getting options chain from {client.name}: {e}", exc_info=True)
-                     return {"error": str(e), "source": client.name}
-            else:
-                 return {"error": "No suitable options chain client available."}
-
-        elif type == 'flow':
-            client = self._get_client("options_flow")
-            if client and hasattr(client, "get_option_activity"): # Assuming UnusualWhales style
-                try:
-                    # Need date/timeframe logic - assuming 'date' is start date
-                    result = client.get_option_activity(ticker=symbol, start_date=date) # Example params
-                    flow_data = result.get("data", []) if result and not result.get("error") else []
-                    processing_time = time.time() - start_time
-                    self.logger.timing("get_options_flow_time_ms", processing_time * 1000,
-                                       source=client.name, symbol=symbol)
-                    return {"options_flow": flow_data, "source": client.name, "processing_time": processing_time}
-                except Exception as e:
-                     self.logger.error(f"Error getting options flow from {client.name}: {e}", exc_info=True)
-                     return {"error": str(e), "source": client.name}
-            else:
-                 return {"error": "No suitable options flow client available."}
-        else:
-            return {"error": f"Invalid options data type requested: {type}. Use 'chain' or 'flow'."}
-
-
-    def get_fundamentals(self, symbol: str, type: str = 'financials', limit: int = 5) -> Dict[str, Any]:
-        """Unified method to get fundamental company data (financials, earnings, metrics)."""
-        start_time = time.time()
-        self.logger.info("Getting fundamentals", symbol=symbol, type=type, limit=limit)
-        client = self._get_client("fundamentals")
-
-        if client:
-            try:
-                data = {}
-                if type == 'financials':
-                    if hasattr(client, "get_financials_vx"): # Polygon style
-                         result = client.get_financials_vx(ticker=symbol, limit=limit) # Example: get last 'limit' reports
-                         data = result.get("results", []) if result and not result.get("error") else []
-                    elif hasattr(client, "get_financials"): # Yahoo style (assuming a unified method)
-                         # Yahoo finance client might have separate methods for income, balance, cashflow
-                         # Assuming get_financials method exists and takes type and limit
-                         result = client.get_financials(symbol=symbol, type='quarterly', limit=limit) # Example params
-                         data = result if result and not result.get("error") else {}
-                    else:
-                         return {"error": f"Client {client.name} does not support getting financials."}
-
-                elif type == 'earnings':
-                     if hasattr(client, "get_earnings_calendar"): # Yahoo style
-                          result = client.get_earnings_calendar(symbol=symbol)
-                          data = result if result and not result.get("error") else {}
-                     # Add other earnings methods if available
-                     else:
-                         return {"error": f"Client {client.name} does not support getting earnings data."}
-
-                elif type == 'metrics':
-                     if hasattr(client, "get_company_metrics"): # Polygon style (example method name)
-                          result = client.get_company_metrics(ticker=symbol)
-                          data = result.get("results", {}) if result and not result.get("error") else {}
-                     elif hasattr(client, "get_key_statistics"): # Yahoo style (example method name)
-                          result = client.get_key_statistics(symbol=symbol)
-                          data = result if result and not result.get("error") else {}
-                     else:
-                         return {"error": f"Client {client.name} does not support getting company metrics."}
-
-                # Add other fundamental types as needed (e.g., analyst ratings)
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_fundamentals_time_ms", processing_time * 1000,
-                                   source=client.name, symbol=symbol, type=type)
-                return {"fundamentals": data, "source": client.name, "processing_time": processing_time}
-
-            except Exception as e:
-                 self.logger.error(f"Error getting fundamentals from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable fundamentals client available."}
-
-    def get_market_status(self) -> Dict[str, Any]:
-        """Unified method to get current market status and related info."""
-        start_time = time.time()
-        self.logger.info("Getting market status")
-        client = self._get_client("market_info")
-
-        if client:
-            try:
-                status_data = {}
-                if hasattr(client, "get_market_status"): # Polygon style
-                    result = client.get_market_status()
-                    if result and not result.get("error"):
-                        status_data.update(result)
-                
-                # Get VIX, SPY and other market indicators
-                market_indicators = ["VIX", "SPY", "DIA", "QQQ", "IWM"]
-                indicators_data = {}
-                
-                # Try to get last trade for each indicator
-                if hasattr(client, "get_last_trade"):
-                    for ticker in market_indicators:
-                        try:
-                            trade = client.get_last_trade(ticker=ticker)
-                            if trade and not trade.get("error"):
-                                price = trade.get("price") or trade.get("p")  # Different APIs might use different keys
-                                if price:
-                                    indicators_data[f"{ticker.lower()}_price"] = price
-                                    
-                                    # Get additional data if available
-                                    if trade.get("size") or trade.get("s"):
-                                        indicators_data[f"{ticker.lower()}_size"] = trade.get("size") or trade.get("s")
-                                    if trade.get("timestamp") or trade.get("t"):
-                                        indicators_data[f"{ticker.lower()}_timestamp"] = trade.get("timestamp") or trade.get("t")
-                        except Exception as e:
-                            self.logger.warning(f"Failed to get {ticker} data: {e}")
-                
-                # Alternative: try to get snapshot if last_trade is not available
-                elif hasattr(client, "get_snapshot"):
-                    for ticker in market_indicators:
-                        try:
-                            snapshot = client.get_snapshot(ticker=ticker)
-                            if snapshot and not snapshot.get("error"):
-                                last_quote = snapshot.get("last_quote") or snapshot.get("quote")
-                                last_trade = snapshot.get("last_trade") or snapshot.get("trade")
-                                
-                                if last_trade and (last_trade.get("price") or last_trade.get("p")):
-                                    indicators_data[f"{ticker.lower()}_price"] = last_trade.get("price") or last_trade.get("p")
-                                elif last_quote and (last_quote.get("midpoint") or last_quote.get("mp")):
-                                    # Use midpoint if trade price not available
-                                    indicators_data[f"{ticker.lower()}_price"] = last_quote.get("midpoint") or last_quote.get("mp")
-                        except Exception as e:
-                            self.logger.warning(f"Failed to get {ticker} snapshot: {e}")
-                
-                # Add the indicators data to the status data
-                if indicators_data:
-                    status_data["market_indicators"] = indicators_data
-
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_market_status_time_ms", processing_time * 1000,
-                                   source=client.name)
-                return {"data": status_data, "source": client.name, "processing_time": processing_time}
-
-            except Exception as e:
-                 self.logger.error(f"Error getting market status from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable market info client available."}
-
-    def get_ticker_list(self, market: str = 'stocks', active: bool = True, limit: int = 100) -> Dict[str, Any]:
-        """Unified method to get a list of tickers."""
-        start_time = time.time()
-        self.logger.info("Getting ticker list", market=market, active=active, limit=limit)
-        client = self._get_client("reference")
-
-        if client and hasattr(client, "get_ticker_list"): # Assuming method name
-            try:
-                # Parameters might need adaptation
-                result = client.get_ticker_list(market=market, active=active, limit=limit)
-                tickers = result.get("results", []) if result and not result.get("error") else []
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_ticker_list_time_ms", processing_time * 1000,
-                                   source=client.name, ticker_count=len(tickers))
-                return {"tickers": tickers, "source": client.name, "processing_time": processing_time}
-            except Exception as e:
-                 self.logger.error(f"Error getting ticker list from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable reference data client available for ticker lists."}
-
-    def get_market_movers(self, category: str = 'gainers', limit: int = 10) -> Dict[str, Any]:
-        """Unified method to get top market movers (gainers or losers)."""
-        start_time = time.time()
-        self.logger.info("Getting market movers", category=category, limit=limit)
-        client = self._get_client("market_info") # Market info client might provide movers
-
-        if client and hasattr(client, "get_market_movers"): # Assuming method name
-            try:
-                # Parameters might need adaptation
-                result = client.get_market_movers(category=category, limit=limit)
-                movers = result.get("results", []) if result and not result.get("error") else []
-
-                processing_time = time.time() - start_time
-                self.logger.timing("get_market_movers_time_ms", processing_time * 1000,
-                                   source=client.name, mover_count=len(movers))
-                return {"movers": movers, "source": client.name, "processing_time": processing_time}
-            except Exception as e:
-                 self.logger.error(f"Error getting market movers from {client.name}: {e}", exc_info=True)
-                 return {"error": str(e), "source": client.name}
-        else:
-            return {"error": "No suitable market info client available for market movers."}
-
-
-    def shutdown(self):
-        """
-        Shutdown the MCP server and its clients.
-        Performs proper cleanup of resources and generates final metrics.
-        """
-        start_time = time.time()
-        self.logger.info(f"Shutting down {self.name} MCP server")
-        
-        # First, generate a final performance report for record-keeping
-        try:
-            performance_report = self.generate_financial_performance_report()
-            self.logger.info("Generated final performance report", 
-                           total_requests=performance_report["operations"]["total_requests"],
-                           error_rate=performance_report["operations"]["error_rate"])
-        except Exception as e:
-            self.logger.error(f"Error generating final performance report: {e}", exc_info=True)
-        
-        # Get all active client names for metrics
-        active_clients = list(self.clients.keys())
-        
-        # Gracefully shut down all clients
-        successful_shutdowns = 0
-        failed_shutdowns = 0
-        
-        for client_name, client in self.clients.items():
-            try:
-                # Record client shutdown start time for metrics
-                client_shutdown_start = time.time()
-                
-                # Check if client has active subscriptions that need to be closed
-                if hasattr(client, "close_all_subscriptions"):
-                    client.close_all_subscriptions()
-                    self.logger.info(f"Closed all subscriptions for client '{client_name}'.")
-                
-                # Shut down the client
-                if hasattr(client, "shutdown"):
-                    client.shutdown()
-                    
-                    # Calculate and record shutdown time
-                    client_shutdown_time = (time.time() - client_shutdown_start) * 1000
-                    self.logger.timing("client_shutdown_time_ms", client_shutdown_time,
-                                       source=client_name)
-                    
-                    self.logger.info(f"Client '{client_name}' shut down successfully.", 
-                                   shutdown_time_ms=client_shutdown_time)
-                    
-                    successful_shutdowns += 1
-                else:
-                    self.logger.warning(f"Client '{client_name}' has no shutdown method.")
-            except Exception as e:
-                self.logger.error(f"Error shutting down client '{client_name}': {e}", exc_info=True)
-                failed_shutdowns += 1
-        
-        # Stop the financial health check thread if it exists
-        if hasattr(self, 'financial_health_thread') and self.financial_health_thread.is_alive():
-            try:
-                # Set shutdown flag (should already be set by BaseMCPServer)
-                self.shutdown_requested = True
-                
-                # Give thread a chance to terminate
-                self.financial_health_thread.join(timeout=1.0)
-                if self.financial_health_thread.is_alive():
-                    self.logger.warning("Financial health check thread did not terminate gracefully")
-                else:
-                    self.logger.info("Financial health check thread terminated successfully")
-            except Exception as e:
-                self.logger.error(f"Error terminating financial health check thread: {e}", exc_info=True)
-        
-        # Clear cache to free memory
-        if hasattr(self, 'cache'):
-            try:
-                cache_size = len(self.cache)
-                self.cache.clear()
-                if hasattr(self, 'cache_timestamps'):
-                    self.cache_timestamps.clear()
-                self.logger.info(f"Cleared data cache with {cache_size} entries")
-            except Exception as e:
-                self.logger.error(f"Error clearing cache: {e}", exc_info=True)
-        
-        # Log final statistics before super().shutdown()
-        shutdown_duration = (time.time() - start_time) * 1000
-        
-        self.logger.info("Financial data MCP shutdown statistics", 
-                       total_clients=len(active_clients),
-                       successful_shutdowns=successful_shutdowns,
-                       failed_shutdowns=failed_shutdowns,
-                       total_market_data_requests=self.market_data_count,
-                       total_news_requests=self.news_request_count,
-                       total_social_sentiment_requests=self.social_sentiment_count,
-                       total_options_data_requests=self.options_data_count,
-                       shutdown_time_ms=shutdown_duration)
-        
-        # Call parent class shutdown to complete the shutdown process
-        super().shutdown()
-        
-    def unsubscribe(self, subscription_id: str) -> Dict[str, Any]:
-        """
-        Unsubscribe from a streaming data subscription.
+        Update configuration settings at runtime.
         
         Args:
-            subscription_id: The ID of the subscription to cancel
+            config_updates: Dictionary of configuration updates
             
         Returns:
-            Dictionary with status of the unsubscribe operation
+            Dict with update status
         """
-        self.logger.info(f"Unsubscribing from subscription {subscription_id}")
+        start_time = time.time()
+        updated_params = []
+        failed_updates = []
         
-        # Find which client has this subscription
-        for client_name, client in self.clients.items():
-            if hasattr(client, "unsubscribe"):
+        try:
+            # Update XGBoost parameters if specified
+            if "xgboost_params" in config_updates:
                 try:
-                    result = client.unsubscribe(subscription_id)
-                    if result and result.get("status") == "unsubscribed":
-                        self.logger.info(f"Successfully unsubscribed from {subscription_id} on client {client_name}")
-                        return {
-                            "status": "unsubscribed",
-                            "subscription_id": subscription_id,
-                            "source": client_name
-                        }
+                    new_params = config_updates["xgboost_params"]
+                    # Validate params (basic check)
+                    if isinstance(new_params, dict):
+                        with self.model_lock:
+                            self.xgboost_params.update(new_params)
+                        updated_params.append("xgboost_params")
+                    else:
+                        failed_updates.append("xgboost_params")
                 except Exception as e:
-                    self.logger.error(f"Error unsubscribing from {subscription_id} on client {client_name}: {e}")
+                    self.logger.error(f"Failed to update xgboost_params: {e}")
+                    failed_updates.append("xgboost_params")
+            
+            # Update prediction threshold if specified
+            if "prediction_threshold" in config_updates:
+                try:
+                    new_threshold = float(config_updates["prediction_threshold"])
+                    if 0.0 <= new_threshold <= 1.0:
+                        with self.model_lock:
+                            self.prediction_threshold = new_threshold
+                        updated_params.append("prediction_threshold")
+                    else:
+                        failed_updates.append("prediction_threshold")
+                except Exception as e:
+                    self.logger.error(f"Failed to update prediction_threshold: {e}")
+                    failed_updates.append("prediction_threshold")
+            
+            # Update sentiment weight if specified
+            if "sentiment_weight" in config_updates:
+                try:
+                    new_weight = float(config_updates["sentiment_weight"])
+                    if 0.0 <= new_weight <= 1.0:
+                        self.sentiment_weight = new_weight
+                        updated_params.append("sentiment_weight")
+                    else:
+                        failed_updates.append("sentiment_weight")
+                except Exception as e:
+                    self.logger.error(f"Failed to update sentiment_weight: {e}")
+                    failed_updates.append("sentiment_weight")
+            
+            # Update cache settings if specified
+            if "cache_enabled" in config_updates:
+                try:
+                    self.enable_cache = bool(config_updates["cache_enabled"])
+                    updated_params.append("cache_enabled")
+                except Exception as e:
+                    self.logger.error(f"Failed to update cache_enabled: {e}")
+                    failed_updates.append("cache_enabled")
+            
+            if "cache_ttl" in config_updates:
+                try:
+                    new_ttl = int(config_updates["cache_ttl"])
+                    if new_ttl > 0:
+                        with self.cache_lock:
+                            self.cache_ttl = new_ttl
+                        updated_params.append("cache_ttl")
+                    else:
+                        failed_updates.append("cache_ttl")
+                except Exception as e:
+                    self.logger.error(f"Failed to update cache_ttl: {e}")
+                    failed_updates.append("cache_ttl")
+            
+            # Update feature engineering settings if specified
+            if "include_ta_features" in config_updates:
+                try:
+                    self.include_ta_features = bool(config_updates["include_ta_features"])
+                    updated_params.append("include_ta_features")
+                except Exception as e:
+                    self.logger.error(f"Failed to update include_ta_features: {e}")
+                    failed_updates.append("include_ta_features")
+            
+            if "include_volatility" in config_updates:
+                try:
+                    self.include_volatility = bool(config_updates["include_volatility"])
+                    updated_params.append("include_volatility")
+                except Exception as e:
+                    self.logger.error(f"Failed to update include_volatility: {e}")
+                    failed_updates.append("include_volatility")
+            
+            if "include_sentiment" in config_updates:
+                try:
+                    self.include_sentiment = bool(config_updates["include_sentiment"])
+                    updated_params.append("include_sentiment")
+                except Exception as e:
+                    self.logger.error(f"Failed to update include_sentiment: {e}")
+                    failed_updates.append("include_sentiment")
+            
+            # Create result
+            result = {
+                "status": "success" if not failed_updates else "partial",
+                "updated_params": updated_params,
+                "failed_updates": failed_updates,
+                "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+            }
+            
+            # Log updates
+            self.logger.info(f"Configuration updated", 
+                           updated=updated_params, 
+                           failed=failed_updates)
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error updating configuration: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "updated_params": updated_params,
+                "failed_updates": failed_updates,
+                "processing_time_ms": round((time.time() - start_time) * 1000, 2)
+            }
+    
+    def _ensure_model_is_current(self, symbol: str) -> None:
+        """
+        Check if model needs to be trained/updated and do so if needed.
         
-        # If we get here, no client successfully unsubscribed
-        return {
-            "error": f"Failed to unsubscribe from {subscription_id}. Subscription not found or error occurred."
-        }
+        Args:
+            symbol: The stock symbol
+        """
+        with self.model_lock:
+            current_time = time.time()
+            
+            # Check if model exists
+            if symbol not in self.xgboost_models:
+                self.logger.info(f"No model found for {symbol}, training new model")
+                # Train model outside the lock to avoid blocking
+                self.model_lock.release()
+                try:
+                    self.train_prediction_model(symbol)
+                finally:
+                    self.model_lock.acquire()
+                return
+            
+            # Check if model needs update
+            if symbol in self.model_last_updated:
+                # Parse the timestamp
+                try:
+                    last_updated = datetime.fromisoformat(self.model_last_updated[symbol])
+                    last_updated_time = last_updated.timestamp()
+                    
+                    if current_time - last_updated_time > self.model_update_interval:
+                        self.logger.info(f"Model for {symbol} is outdated, updating")
+                        # Update model outside the lock
+                        self.model_lock.release()
+                        try:
+                            self.train_prediction_model(symbol)
+                        finally:
+                            self.model_lock.acquire()
+                except ValueError:
+                    # Invalid timestamp format
+                    self.logger.warning(f"Invalid timestamp format for {symbol}: {self.model_last_updated[symbol]}")
+    
+    def _process_price_data(self, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Process raw price data into a standard format.
+        
+        Args:
+            raw_data: Raw price data from the data MCP
+            
+        Returns:
+            List of standardized price data dicts
+        """
+        if not raw_data:
+            return []
+            
+        # Check if we have standard Polygon-style data
+        if isinstance(raw_data, list) and len(raw_data) > 0 and "c" in raw_data[0]:
+            # Data is already in standard format
+            # Sort by timestamp to ensure chronological order
+            return sorted(raw_data, key=lambda x: x.get("t", 0))
+        
+        # Handle other data formats
+        processed_data = []
+        
+        for item in raw_data:
+            # Check if this is a Yahoo-style format
+            if "timestamp" in item and "close" in item:
+                processed_item = {
+                    "t": item["timestamp"],
+                    "o": item["open"],
+                    "h": item["high"],
+                    "l": item["low"],
+                    "c": item["close"],
+                    "v": item["volume"] if "volume" in item else 0
+                }
+                processed_data.append(processed_item)
+            elif "date" in item and "close" in item:
+                # Another common format
+                try:
+                    # Convert date string to timestamp if needed
+                    if isinstance(item["date"], str):
+                        timestamp = int(datetime.strptime(item["date"], "%Y-%m-%d").timestamp() * 1000)
+                    else:
+                        timestamp = item["date"]
+                        
+                    processed_item = {
+                        "t": timestamp,
+                        "o": item["open"],
+                        "h": item["high"],
+                        "l": item["low"],
+                        "c": item["close"],
+                        "v": item["volume"] if "volume" in item else 0
+                    }
+                    processed_data.append(processed_item)
+                except Exception as e:
+                    self.logger.warning(f"Error processing price data item: {e}")
+                    continue
+            else:
+                # Unknown format, try to adapt by guessing fields
+                try:
+                    # Look for keys containing common field names
+                    open_key = next((k for k in item.keys() if "open" in k.lower()), None)
+                    high_key = next((k for k in item.keys() if "high" in k.lower()), None)
+                    low_key = next((k for k in item.keys() if "low" in k.lower()), None)
+                    close_key = next((k for k in item.keys() if "close" in k.lower()), None)
+                    volume_key = next((k for k in item.keys() if "volume" in k.lower()), None)
+                    time_key = next((k for k in item.keys() if any(x in k.lower() for x in ["time", "date", "timestamp"])), None)
+                    
+                    if close_key and time_key:
+                        processed_item = {
+                            "t": item[time_key],
+                            "o": item.get(open_key, item[close_key]),
+                            "h": item.get(high_key, item[close_key]),
+                            "l": item.get(low_key, item[close_key]),
+                            "c": item[close_key],
+                            "v": item.get(volume_key, 0)
+                        }
+                        processed_data.append(processed_item)
+                except Exception as e:
+                    self.logger.warning(f"Failed to process unknown price data format: {e}")
+                    continue
+        
+        # Sort by timestamp to ensure chronological order
+        return sorted(processed_data, key=lambda x: x.get("t", 0))
+    
+    def _get_date_str(self, timestamp) -> str:
+        """
+        Convert timestamp to YYYY-MM-DD date string.
+        
+        Args:
+            timestamp: Unix timestamp in milliseconds or seconds
+            
+        Returns:
+            Date string in YYYY-MM-DD format
+        """
+        if not timestamp:
+            return ""
+            
+        try:
+            # Check if timestamp is in milliseconds (13 digits) or seconds (10 digits)
+            if timestamp > 1000000000000:  # milliseconds
+                dt = datetime.fromtimestamp(timestamp / 1000)
+            else:  # seconds
+                dt = datetime.fromtimestamp(timestamp)
+                
+            return dt.strftime("%Y-%m-%d")
+        except Exception as e:
+            self.logger.warning(f"Error converting timestamp {timestamp} to date string: {e}")
+            return ""
+    
+    def _get_historical_sentiment(self, symbol: str, start_date: str, end_date: str) -> Dict[str, float]:
+        """
+        Get historical sentiment data for a symbol.
+        
+        Args:
+            symbol: The stock symbol
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+            
+        Returns:
+            Dict mapping dates to sentiment scores
+        """
+        try:
+            # Get news for the symbol
+            news_result = self.data_mcp.get_news(symbols=[symbol], limit=100)
+            
+            if "error" in news_result:
+                self.logger.warning(f"Failed to get news for {symbol}: {news_result['error']}")
+                return {}
+                
+            news_articles = news_result.get("news", [])
+            
+            # Filter articles by date
+            start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp())
+            end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp()) + 86400  # Add one day to include end date
+            
+            filtered_articles = []
+            for article in news_articles:
+                # Check if published date is available
+                published = article.get("published_utc")
+                if not published:
+                    continue
+                    
+                # Convert to timestamp if it's a string
+                if isinstance(published, str):
+                    try:
+                        published_timestamp = int(datetime.fromisoformat(published).timestamp())
+                    except ValueError:
+                        # Try other date formats
+                        try:
+                            published_timestamp = int(datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ").timestamp())
+                        except ValueError:
+                            continue
+                else:
+                    published_timestamp = published
+                
+                # Check if within date range
+                if start_timestamp <= published_timestamp <= end_timestamp:
+                    filtered_articles.append(article)
+            
+            # Analyze sentiment for each article
+            daily_sentiments = {}
+            for article in filtered_articles:
+                title = article.get("title", "")
+                content = article.get("summary", "")
+                
+                if not title and not content:
+                    continue
+                
+                # Get date string in YYYY-MM-DD format
+                published = article.get("published_utc")
+                if isinstance(published, str):
+                    try:
+                        date_str = datetime.fromisoformat(published).strftime("%Y-%m-%d")
+                    except ValueError:
+                        try:
+                            date_str = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d")
+                        except ValueError:
+                            continue
+                else:
+                    date_str = datetime.fromtimestamp(published).strftime("%Y-%m-%d")
+                
+                # Apply title multiplier if configured
+                if self.title_multiplier > 1.0:
+                    combined_text = f"{title} " * int(self.title_multiplier) + content
+                else:
+                    combined_text = f"{title} {content}"
+                
+                # Analyze sentiment
+                sentiment_result = self.text_mcp.analyze_sentiment(combined_text)
+                
+                if "error" not in sentiment_result:
+                    # Calculate sentiment score (-1 to 1 scale)
+                    sentiment = sentiment_result.get("sentiment")
+                    score = sentiment_result.get("score", 0.5)
+                    
+                    value = score
+                    if sentiment == "negative":
+                        value = -score
+                    elif sentiment == "neutral":
+                        value = 0
+                    
+                    # Add to daily sentiments
+                    if date_str not in daily_sentiments:
+                        daily_sentiments[date_str] = []
+                    
+                    daily_sentiments[date_str].append(value)
+            
+            # Calculate average sentiment per day
+            result = {}
+            for date_str, values in daily_sentiments.items():
+                result[date_str] = sum(values) / len(values) if values else 0
+                
+            return result
+                
+        except Exception as e:
+            self.logger.error(f"Error getting historical sentiment for {symbol}: {e}", exc_info=True)
+            return {}
+    
+    def _extract_features(self, price_data: List[Dict[str, Any]], 
+                          sentiment_score: float = 0.0,
+                          include_sentiment: bool = True) -> Optional[List[float]]:
+        """
+        Extract features from price data for prediction.
+        
+        Args:
+            price_data: Processed price data
+            sentiment_score: Sentiment score to include
+            include_sentiment: Whether to include sentiment
+            
+        Returns:
+            List of feature values or None if feature extraction fails
+        """
+        if not price_data or len(price_data) < max(self.lookback_periods) + 1:
+            return None
+            
+        try:
+            # Get latest price data point
+            current = price_data[-1]
+            
+            # Basic price features
+            features = []
+            
+            # Price changes over different periods
+            for period in self.lookback_periods:
+                if len(price_data) > period:
+                    past = price_data[-(period+1)]
+                    
+                    # Percent change in close price
+                    if past["c"] > 0:
+                        pct_change = (current["c"] - past["c"]) / past["c"]
+                        features.append(pct_change)
+                    else:
+                        features.append(0)
+                    
+                    # Volume change
+                    if past["v"] > 0:
+                        vol_change = (current["v"] - past["v"]) / past["v"]
+                        features.append(vol_change)
+                    else:
+                        features.append(0)
+                        
+                    # Range as percent of close
+                    current_range = (current["h"] - current["l"]) / current["c"] if current["c"] > 0 else 0
+                    features.append(current_range)
+                    
+                    # Open-close relation
+                    open_close = (current["c"] - current["o"]) / current["o"] if current["o"] > 0 else 0
+                    features.append(open_close)
+            
+            # Add technical indicators if enabled
+            if self.include_ta_features:
+                # Moving averages
+                for period in [5, 10, 20, 50]:
+                    if len(price_data) >= period:
+                        ma = sum(item["c"] for item in price_data[-period:]) / period
+                        # Relation to current price
+                        if ma > 0:
+                            ma_diff = (current["c"] - ma) / ma
+                            features.append(ma_diff)
+                        else:
+                            features.append(0)
+                
+                # RSI (simplified 14-period)
+                if len(price_data) >= 15 and self.advanced_features.get("use_rsi", True):  # Need 14 periods + 1 for calculation
+                    gains = []
+                    losses = []
+                    
+                    for i in range(-14, 0):
+                        change = price_data[i]["c"] - price_data[i-1]["c"]
+                        if change >= 0:
+                            gains.append(change)
+                            losses.append(0)
+                        else:
+                            gains.append(0)
+                            losses.append(abs(change))
+                    
+                    avg_gain = sum(gains) / 14 if gains else 0
+                    avg_loss = sum(losses) / 14 if losses else 0
+                    
+                    if avg_loss > 0:
+                        rs = avg_gain / avg_loss
+                        rsi = 100 - (100 / (1 + rs))
+                    else:
+                        rsi = 100
+                    
+                    # Normalize to 0-1
+                    features.append(rsi / 100)
+                
+                # Add MACD if enabled
+                if self.advanced_features.get("use_macd", True) and len(price_data) >= 26:
+                    # Calculate EMA-12
+                    ema12 = self._calculate_ema([p["c"] for p in price_data[-26:]], 12)
+                    
+                    # Calculate EMA-26
+                    ema26 = self._calculate_ema([p["c"] for p in price_data[-26:]], 26)
+                    
+                    # MACD Line
+                    macd_line = ema12 - ema26
+                    
+                    # Add to features
+                    features.append(macd_line / current["c"] if current["c"] > 0 else 0)
+                
+                # Add Bollinger Bands if enabled
+                if self.advanced_features.get("use_bollinger_bands", True) and len(price_data) >= 20:
+                    # Calculate 20-day SMA
+                    sma20 = sum(item["c"] for item in price_data[-20:]) / 20
+                    
+                    # Calculate standard deviation
+                    std_dev = np.std([item["c"] for item in price_data[-20:]])
+                    
+                    # Calculate upper and lower bands
+                    upper_band = sma20 + (2 * std_dev)
+                    lower_band = sma20 - (2 * std_dev)
+                    
+                    # Calculate %B (current price relative to bands)
+                    if upper_band > lower_band:
+                        percent_b = (current["c"] - lower_band) / (upper_band - lower_band)
+                        features.append(percent_b)
+                    else:
+                        features.append(0.5)  # Default to middle
+                
+                # Add Stochastic Oscillator if enabled
+                if self.advanced_features.get("use_stochastic", False) and len(price_data) >= 14:
+                    # Get highest high and lowest low of last 14 periods
+                    highest_high = max(item["h"] for item in price_data[-14:])
+                    lowest_low = min(item["l"] for item in price_data[-14:])
+                    
+                    # Calculate %K
+                    if highest_high > lowest_low:
+                        percent_k = 100 * (current["c"] - lowest_low) / (highest_high - lowest_low)
+                        features.append(percent_k / 100)  # Normalize to 0-1
+                    else:
+                        features.append(0.5)  # Default to middle
+            
+            # Add volatility features if enabled
+            if self.include_volatility:
+                # Historical volatility
+                for period in [5, 10, 20]:
+                    if len(price_data) >= period:
+                        returns = []
+                        for i in range(-period, 0):
+                            if price_data[i-1]["c"] > 0:
+                                daily_return = (price_data[i]["c"] - price_data[i-1]["c"]) / price_data[i-1]["c"]
+                                returns.append(daily_return)
+                        
+                        if returns:
+                            volatility = np.std(returns) if returns else 0
+                            features.append(volatility)
+                        else:
+                            features.append(0)
+            
+            # Add sentiment feature if enabled
+            if include_sentiment:
+                # Sentiment score (-1 to 1)
+                features.append(sentiment_score * self.sentiment_weight)
+            
+            return features
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting features: {e}", exc_info=True)
+            return None
+    
+    def _calculate_ema(self, prices: List[float], period: int) -> float:
+        """
+        Calculate Exponential Moving Average for a list of prices.
+        
+        Args:
+            prices: List of price values
+            period: EMA period
+            
+        Returns:
+            EMA value
+        """
+        if not prices or len(prices) < period:
+            return 0
+            
+        # Calculate multiplier
+        multiplier = 2 / (period + 1)
+        
+        # Calculate initial SMA
+        sma = sum(prices[:period]) / period
+        
+        # Calculate EMA
+        ema = sma
+        for price in prices[period:]:
+            ema = (price - ema) * multiplier + ema
+            
+        return ema
+    
+    def _prepare_training_data(self, price_data: List[Dict[str, Any]], 
+                              sentiment_data: Optional[Dict[str, float]] = None,
+                              include_sentiment: bool = True) -> Tuple[List[List[float]], List[int]]:
+        """
+        Prepare training data from price and sentiment data.
+        
+        Args:
+            price_data: Processed price data
+            sentiment_data: Dict mapping dates to sentiment scores
+            include_sentiment: Whether to include sentiment features
+            
+        Returns:
+            Tuple of (features, labels) for training
+        """
+        X = []
+        y = []
+        
+        if not price_data or len(price_data) < max(self.lookback_periods) + 2:
+            return [], []
+            
+        # Need at least one day for the target label
+        for i in range(max(self.lookback_periods), len(price_data) - 1):
+            # Data up to current day for features
+            current_slice = price_data[:i+1]
+            current = current_slice[-1]
+            
+            # Next day for label
+            next_day = price_data[i+1]
+            
+            # Extract features
+            sentiment_score = 0
+            if include_sentiment and sentiment_data:
+                # Get sentiment for the current day
+                date_str = self._get_date_str(current["t"])
+                
+                if date_str in sentiment_data:
+                    sentiment_score = sentiment_data[date_str]
+            
+            features = self._extract_features(current_slice, sentiment_score, include_sentiment)
+            
+            if features:
+                # Create binary target: 1 if price went up, 0 if it went down
+                target = 1 if next_day["c"] > current["c"] else 0
+                
+                X.append(features)
+                y.append(target)
+        
+        return X, y
+    
+    def _generate_backtest_chart(self, symbol: str, y_test: List[int], y_pred: List[int], 
+                                returns: List[float], cumulative_returns: List[float]) -> Optional[str]:
+        """
+        Generate a chart for backtest results.
+        
+        Args:
+            symbol: The stock symbol
+            y_test: Actual price movements
+            y_pred: Predicted price movements
+            returns: Strategy returns
+            cumulative_returns: Cumulative strategy returns
+            
+        Returns:
+            Path to the generated chart file or None if generation fails
+        """
+        if not hasattr(self, "chart_generator"):
+            return None
+            
+        try:
+            # Create data for the chart
+            chart_data = {
+                "Cumulative Return": cumulative_returns,
+                "Accuracy": [sum(1 for a, p in zip(y_test[:i+1], y_pred[:i+1]) if a == p) / (i+1) 
+                            if i > 0 else 0 for i in range(len(y_test))]
+            }
+            
+            # Generate the chart
+            chart_path = self.chart_generator.create_backtest_chart(
+                chart_data,
+                title=f"{symbol} Backtest Results",
+                include_timestamps=True
+            )
+            
+            return chart_path
+            
+        except Exception as e:
+            self.logger.error(f"Error generating backtest chart: {e}", exc_info=True)
+            return None
+    
+    def _get_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        """Get item from cache if available and not expired."""
+        if not self.enable_cache:
+            return None
+            
+        with self.cache_lock:
+            if key in self.cache and key in self.cache_timestamps:
+                timestamp = self.cache_timestamps[key]
+                if time.time() - timestamp <= self.cache_ttl:
+                    return self.cache[key]
+                else:
+                    # Expired
+                    del self.cache[key]
+                    del self.cache_timestamps[key]
+            
+            return None
+    
+    def _add_to_cache(self, key: str, value: Dict[str, Any]) -> None:
+        """Add item to cache."""
+        if not self.enable_cache:
+            return
+            
+        with self.cache_lock:
+            self.cache[key] = value
+            self.cache_timestamps[key] = time.time()
+            
+            # Clean cache if too large
+            if len(self.cache) > self.max_cache_items:
+                # Remove oldest items
+                cleanup_count = int(len(self.cache) * self.cache_cleanup_threshold)
+                
+                # Sort by timestamp (oldest first)
+                sorted_keys = sorted(
+                    [(k, t) for k, t in self.cache_timestamps.items()],
+                    key=lambda x: x[1]
+                )
+                
+                # Remove oldest items
+                for k, _ in sorted_keys[:cleanup_count]:
+                    if k in self.cache:
+                        del self.cache[k]
+                    if k in self.cache_timestamps:
+                        del self.cache_timestamps[k]
+                        
+                self.logger.info(f"Cache cleanup: removed {cleanup_count} oldest items")
 
-# Example usage (for testing purposes) - Removed to keep file clean
-# if __name__ == "__main__":
-#     pass
+# If running directly as a script, initialize and test the system
+if __name__ == "__main__":
+    # Create the integrated system
+    config_path = "/home/ubuntu/nextgen/config/financial_data_mcp/financial_data_mcp_config.json"
+    integration = FinBERTXGBoostIntegration(config_path)
+    
+    # Test the system with a sample prediction
+    test_symbol = "AAPL"
+    print(f"Testing price movement prediction for {test_symbol}")
+    result = integration.predict_price_movement(test_symbol)
+    print(json.dumps(result, indent=2))
+    
+    # Test system health
+    print("\nSystem health:")
+    health = integration.get_system_health()
+    print(json.dumps(health, indent=2))

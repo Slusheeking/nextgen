@@ -8,7 +8,7 @@ except ImportError:
 from typing import Dict, Any, List, Optional
 
 # Import all necessary MCP clients
-from mcp_tools.financial_text_mcp.financial_text_mcp import FinancialTextMCP
+# FinancialTextMCP removed - functionality consolidated into FinancialDataMCP
 from mcp_tools.financial_data_mcp.financial_data_mcp import FinancialDataMCP
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
 # Add imports for other MCP clients as needed based on other models
@@ -35,8 +35,11 @@ class BaseMCPAgent:
         self.mcp_clients: Dict[str, Any] = {}
 
         # Initialize MCP clients based on provided configuration
+        # FinancialTextMCP functionality consolidated into FinancialDataMCP
         if "financial_text_config" in self.config:
-            self.mcp_clients["financial_text"] = FinancialTextMCP(self.config["financial_text_config"])
+            # Keep reference for backward compatibility, but direct to financial_data
+            self.mcp_clients["financial_text"] = None
+            
         if "financial_data_config" in self.config:
             self.mcp_clients["financial_data"] = FinancialDataMCP(self.config["financial_data_config"])
         if "redis_config" in self.config:

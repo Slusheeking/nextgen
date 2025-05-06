@@ -24,7 +24,6 @@ graph TD
         TS1[time_series_mcp.py]
         TR1[trading_mcp.py]
         VS1[vector_store_mcp.py]
-        FT1[financial_text_mcp.py]
     end
     
     %% Core Models
@@ -72,7 +71,6 @@ graph TD
     SS1 --> TS1
     
     AC1 --> DR1
-    AC1 --> FT1
     
     AC2 --> DR1
     AC2 --> TS1
@@ -83,7 +81,6 @@ graph TD
     AC3 --> IN2
     
     AC4 --> DR1
-    AC4 --> FT1
     
     AC5 --> RA1
     AC5 --> TS1
@@ -176,7 +173,7 @@ The system operates through the following event flow sequence:
    - Selected candidates are stored in Redis for other components
 
 3. **Multi-faceted Analysis**
-   - `nextgen_sentiment_analysis` processes news and social media using Financial Text MCP
+   - `nextgen_sentiment_analysis` processes news and social media using Financial Data MCP
    - `nextgen_market_analysis` generates price predictions using Time Series MCP
    - `nextgen_context_model` retrieves relevant historical context using Vector Store MCP (ChromaDB)
    - `nextgen_fundamental_analysis` evaluates company financials
@@ -221,13 +218,12 @@ Redis streams are used for persistent event publishing and subscription, allowin
 
 Model Context Protocol (MCP) consolidates tools into logical groups for improved organization:
 
-- **Financial Data MCP**: Consolidates all market data access (Polygon, Yahoo Finance, Reddit, Unusual Whales)
+- **Financial Data MCP**: Consolidates all market data access (Polygon, Yahoo Finance, Reddit, Unusual Whales) and financial text analysis capabilities
 - **Document Analysis MCP**: Consolidates document processing, embeddings, query reformulation, and relevance feedback
 - **Risk Analysis MCP**: Consolidates portfolio optimization, risk attribution, and confidence scoring
 - **Time Series MCP**: Consolidates technical indicators, peak detection, and pattern analysis
 - **Trading MCP**: Consolidates order execution and position management
 - **Vector Store MCP**: Provides ChromaDB integration for vector storage and similarity search
-- **Financial Text MCP**: Consolidates financial text analysis capabilities
 
 This consolidated architecture improves maintainability and reduces code duplication while maintaining a consistent interface for models to access external capabilities.
 

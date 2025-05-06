@@ -27,7 +27,6 @@ from mcp_tools.base_mcp_server import BaseMCPServer
 
 from . import document_analysis_mcp
 from . import financial_data_mcp
-from . import financial_text_mcp
 from . import risk_analysis_mcp
 from . import time_series_mcp
 from . import trading_mcp
@@ -38,7 +37,6 @@ __all__ = [
     "__version__",
     "document_analysis_mcp",
     "financial_data_mcp",
-    "financial_text_mcp",
     "risk_analysis_mcp",
     "time_series_mcp",
     "trading_mcp",

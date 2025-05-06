@@ -187,7 +187,6 @@ start_mcp_servers() {
     "db_mcp.redis_mcp"
     "document_analysis_mcp.document_analysis_mcp"
     "financial_data_mcp.financial_data_mcp"
-    "financial_text_mcp.financial_text_mcp"
     "risk_analysis_mcp.risk_analysis_mcp"
     "time_series_mcp.time_series_mcp"
     "trading_mcp.trading_mcp"

@@ -95,9 +95,9 @@ class RedditMCP(BaseDataMCP):
         """
         try:
             # Prioritize environment variables for credentials
-            client_id = os.environ.get("REDDIT_CLIENT_ID") or self.config.get("client_id")
-            client_secret = os.environ.get("REDDIT_CLIENT_SECRET") or self.config.get("client_secret")
-            user_agent = os.environ.get("REDDIT_USER_AGENT") or self.config.get("user_agent", "fingpt-mcp-reddit")
+            client_id = os.environ.get("REDDIT_CLIENT_ID") or os.environ.get("CLIENT_ID") or self.config.get("client_id")
+            client_secret = os.environ.get("REDDIT_CLIENT_SECRET") or os.environ.get("CLIENT_SECRET") or self.config.get("client_secret")
+            user_agent = os.environ.get("REDDIT_USER_AGENT") or os.environ.get("USER_AGENT") or self.config.get("user_agent", "fingpt-mcp-reddit")
 
             if not client_id or not client_secret:
                 self.logger.error("Missing Reddit API credentials - API calls will fail")

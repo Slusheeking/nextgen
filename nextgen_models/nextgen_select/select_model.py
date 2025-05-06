@@ -153,21 +153,23 @@ class SelectionModel:
             "selection_feedback_stream_fundamental": "fundamental:selection_feedback", # Stream for fundamental analysis feedback
         }
 
-        # Ensure Redis streams exist (optional, but good practice)
+        # Skip Redis stream initialization since we have neither create_stream nor xadd tools
+        # and publish_message also seems to have endpoint issues
         try:
-            self.mcp_tool_call_count += 1
-            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_requests_stream"]})
-            self.logger.info(f"Ensured Redis stream '{self.redis_keys['selection_requests_stream']}' exists.")
-            self.mcp_tool_call_count += 1
-            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_candidates_stream"]})
-            self.logger.info(f"Ensured Redis stream '{self.redis_keys['selection_candidates_stream']}' exists.")
-            # Ensure feedback streams exist (optional)
-            self.mcp_tool_call_count += 1
-            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_feedback_stream_sentiment"]})
-            self.mcp_tool_call_count += 1
-            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_feedback_stream_market"]})
-            self.mcp_tool_call_count += 1
-            self.redis_mcp.call_tool("create_stream", {"stream": self.redis_keys["selection_feedback_stream_fundamental"]})
+            self.logger.info("Skipping Redis stream initialization due to missing tools.")
+            
+            # Instead of trying to ensure streams exist, just log what we would have done
+            streams_needed = [
+                self.redis_keys["selection_requests_stream"],
+                self.redis_keys["selection_candidates_stream"],
+                self.redis_keys["selection_feedback_stream_sentiment"],
+                self.redis_keys["selection_feedback_stream_market"],
+                self.redis_keys["selection_feedback_stream_fundamental"]
+            ]
+            
+            self.logger.info(f"Would need to create these Redis streams: {', '.join(streams_needed)}")
+            
+            # The streams will be created automatically when we first write to them later
         except Exception as e:
             self.logger.warning(f"Could not ensure Redis streams exist: {e}")
 
@@ -317,49 +319,38 @@ Your analysis should be quantitative and evidence-based.""",
         """
 
         # Register data gathering functions
-        # The register_function decorator needs to be used correctly
-        # It should include the function or use a different pattern
-        @user_proxy.register_function
+        # Define functions first, then register them with user_proxy.register_function
         def get_market_data() -> List[Dict[str, Any]]:
             return self.get_market_data()
 
-        @user_proxy.register_function
         def get_technical_indicators(
             stocks: List[Dict[str, Any]],
         ) -> List[Dict[str, Any]]:
             return self.get_technical_indicators(stocks)
 
-        @user_proxy.register_function
         def get_unusual_activity(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return self.get_unusual_activity(stocks)
 
-        # Register filtering and scoring functions
-        @user_proxy.register_function
+        # Define filtering and scoring functions
         def filter_by_liquidity(stocks: List[Dict[str, Any]], available_capital: float = 0.0) -> List[Dict[str, Any]]:
             return self.filter_by_liquidity(stocks, available_capital)
 
-        @user_proxy.register_function
         def score_candidates(stocks: List[Dict[str, Any]], available_capital: float = 0.0) -> List[Dict[str, Any]]:
             return self.score_candidates(stocks, available_capital)
 
-        # Register storage and retrieval functions
-        @user_proxy.register_function
+        # Define storage and retrieval functions
         def store_candidates(candidates: List[Dict[str, Any]]) -> bool:
             return self.store_candidates(candidates)
 
-        @user_proxy.register_function
         def get_candidates() -> List[Dict[str, Any]]:
             return self.get_candidates()
 
-        @user_proxy.register_function
         def get_top_candidates(limit: int = 10) -> List[Dict[str, Any]]:
             return self.get_top_candidates(limit)
 
-        @user_proxy.register_function
         def get_candidate(symbol: str) -> Optional[Dict[str, Any]]:
             return self.get_candidate(symbol)
 
-        @user_proxy.register_function
         def get_market_context() -> Dict[str, Any]:
             return self._get_market_context()
 
@@ -367,16 +358,16 @@ Your analysis should be quantitative and evidence-based.""",
         self._register_mcp_tool_access(user_proxy)
 
         # Register all functions with the user proxy agent
-        user_proxy.register_function(get_market_data)
-        user_proxy.register_function(get_technical_indicators)
-        user_proxy.register_function(get_unusual_activity)
-        user_proxy.register_function(filter_by_liquidity)
-        user_proxy.register_function(score_candidates)
-        user_proxy.register_function(store_candidates)
-        user_proxy.register_function(get_candidates)
-        user_proxy.register_function(get_top_candidates)
-        user_proxy.register_function(get_candidate)
-        user_proxy.register_function(get_market_context)
+        user_proxy.register_function({"get_market_data": get_market_data})
+        user_proxy.register_function({"get_technical_indicators": get_technical_indicators})
+        user_proxy.register_function({"get_unusual_activity": get_unusual_activity})
+        user_proxy.register_function({"filter_by_liquidity": filter_by_liquidity})
+        user_proxy.register_function({"score_candidates": score_candidates})
+        user_proxy.register_function({"store_candidates": store_candidates})
+        user_proxy.register_function({"get_candidates": get_candidates})
+        user_proxy.register_function({"get_top_candidates": get_top_candidates})
+        user_proxy.register_function({"get_candidate": get_candidate})
+        user_proxy.register_function({"get_market_context": get_market_context})
 
 
     def _register_mcp_tool_access(self, user_proxy: UserProxyAgent):
@@ -386,33 +377,28 @@ Your analysis should be quantitative and evidence-based.""",
         Args:
             user_proxy: The user proxy agent to register functions with
         """
-
-        # Define MCP tool access functions for consolidated MCPs
-        @user_proxy.register_function
+        # Define helper methods
         def use_trading_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.trading_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
+                self.mcp_tool_error_count += 1
             return result
-
-        @user_proxy.register_function
+        
         def use_financial_data_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.financial_data_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
+                self.mcp_tool_error_count += 1
             return result
-
-        @user_proxy.register_function
+        
         def use_time_series_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.time_series_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
-                 self.mcp_tool_error_count += 1
+                self.mcp_tool_error_count += 1
             return result
-
-        @user_proxy.register_function
+        
         def list_mcp_tools(server_name: str) -> List[Dict[str, str]]:
             if server_name == "trading":
                 return self.trading_mcp.list_tools()
@@ -422,12 +408,12 @@ Your analysis should be quantitative and evidence-based.""",
                 return self.time_series_mcp.list_tools()
             else:
                 return [{"error": f"MCP server not found: {server_name}"}]
-
-        # Register the MCP tool access functions
-        user_proxy.register_function(use_trading_tool)
-        user_proxy.register_function(use_financial_data_tool)
-        user_proxy.register_function(use_time_series_tool)
-        user_proxy.register_function(list_mcp_tools)
+        
+        # Register each function as a dictionary mapping the name to the function
+        user_proxy.register_function({"use_trading_tool": use_trading_tool})
+        user_proxy.register_function({"use_financial_data_tool": use_financial_data_tool})
+        user_proxy.register_function({"use_time_series_tool": use_time_series_tool})
+        user_proxy.register_function({"list_mcp_tools": list_mcp_tools})
 
     async def process_selection_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """

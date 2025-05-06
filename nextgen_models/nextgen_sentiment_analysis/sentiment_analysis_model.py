@@ -21,8 +21,7 @@ import threading
 from monitoring.netdata_logger import NetdataLogger
 from monitoring.stock_charts import StockChartGenerator
 
-# MCP tools (Consolidated)
-from mcp_tools.financial_text_mcp.financial_text_mcp import FinancialTextMCP
+# MCP tools
 from mcp_tools.financial_data_mcp.financial_data_mcp import FinancialDataMCP
 from mcp_tools.db_mcp.redis_mcp import RedisMCP
 
@@ -34,7 +33,7 @@ class SentimentAnalysisModel:
     """
     Analyzes text data (e.g., news, social media) to extract relevant financial entities
     and calculate sentiment scores associated with them.
-    This model interacts with FinancialTextMCP and FinancialDataMCP.
+    This model interacts with FinancialDataMCP.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, user_proxy_agent: Optional[UserProxyAgent] = None):
@@ -43,7 +42,7 @@ class SentimentAnalysisModel:
 
         Args:
             config: Configuration dictionary, expected to contain:
-                - financial_text_config: Config for FinancialTextMCP.
+                # - financial_text_config: Config for FinancialTextMCP. (Removed, merged into financial_data_config)
                 - financial_data_config: Config for FinancialDataMCP.
                 - symbol_entity_mapping: Optional mapping of entities to symbols.
                 - batch_size: Size of batches for processing (default: 10).
@@ -53,7 +52,7 @@ class SentimentAnalysisModel:
 
         Args:
             config: Configuration dictionary, expected to contain:
-                - financial_text_config: Config for FinancialTextMCP.
+                # - financial_text_config: Config for FinancialTextMCP. (Removed, merged into financial_data_config)
                 - financial_data_config: Config for FinancialDataMCP.
                 - symbol_entity_mapping: Optional mapping of entities to symbols.
                 - batch_size: Size of batches for processing (default: 10).
@@ -169,24 +168,19 @@ class SentimentAnalysisModel:
         else:
             self.config = config
 
-        # Initialize Consolidated MCP clients
-        # FinancialTextMCP handles both entity extraction and sentiment scoring
-        self.financial_text_mcp = FinancialTextMCP(
-            self.config.get("financial_text_config")
-        )
-        # FinancialDataMCP handles various data sources like news, reddit etc.
+        # Initialize FinancialDataMCP client (handles data sources, entity extraction, and sentiment scoring)
         self.financial_data_mcp = FinancialDataMCP(
-            self.config.get("financial_data_config")
+            self.config.get("financial_data_config") # Use financial_data_config key
         )
 
-        # For backward compatibility or clarity
-        self.entity_client = self.financial_text_mcp
-        self.sentiment_client = self.financial_text_mcp
+        # For backward compatibility or clarity, point aliases to the consolidated client
+        self.entity_client = self.financial_data_mcp
+        self.sentiment_client = self.financial_data_mcp
         self.news_client = self.financial_data_mcp
         self.social_client = self.financial_data_mcp
 
         # Initialize Redis MCP client
-        self.redis_mcp = RedisMCP(self.config.get("redis_config"))
+        self.redis_mcp = RedisMCP(self.config.get("redis_mcp"))
         self.redis_client = self.redis_mcp # Alias for backward compatibility if needed
 
 
@@ -248,8 +242,8 @@ class SentimentAnalysisModel:
                 Sentiment analysis result
             """
             try:
-                # Use the financial text MCP to score sentiment
-                result = self.financial_text_mcp.call_tool(
+                # Use the financial data MCP to score sentiment
+                result = self.financial_data_mcp.call_tool(
                     "score_sentiment", {"text": text}
                 )
                 
@@ -366,26 +360,6 @@ class SentimentAnalysisModel:
         """
         try:
             with self.monitoring_lock:
-                # Check Financial Text MCP health
-                if self.financial_text_mcp is not None:
-                    try:
-                        # Try a simple ping operation to check if it's responsive
-                        if hasattr(self.financial_text_mcp, "health_check"):
-                            mcp_health = self.financial_text_mcp.health_check()
-                            self.health_data["component_health"]["financial_text_mcp"] = mcp_health.get("status", "unknown")
-                        else:
-                            # Fallback to checking if it responds to a method call
-                            method_exists = hasattr(self.financial_text_mcp, "call_tool")
-                            self.health_data["component_health"]["financial_text_mcp"] = "healthy" if method_exists else "degraded"
-                    except Exception as e:
-                        self.health_data["component_health"]["financial_text_mcp"] = "error"
-                        self.health_data["recent_issues"].append({
-                            "timestamp": datetime.now().isoformat(),
-                            "component": "financial_text_mcp",
-                            "error": str(e)
-                        })
-                        self.logger.error(f"Error checking Financial Text MCP health: {e}")
-                
                 # Check Financial Data MCP health
                 if self.financial_data_mcp is not None:
                     try:
@@ -963,29 +937,38 @@ class SentimentAnalysisModel:
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """
-        Get LLM configuration for AutoGen.
+        Get LLM configuration for AutoGen from the main configuration.
         """
+        # Get LLM configuration from model settings in the main config
+        model_settings = self.config.get("model_settings", {})
         llm_config = self.config.get("llm_config", {})
 
-        # Default configuration if not provided
+        # Default configuration if not provided in model_settings
         if not llm_config:
-            llm_config = {
-                "temperature": 0.1,
-                "config_list": [
-                    {
-                        "model": "anthropic/claude-3-opus-20240229",
-                        "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
-                        "base_url": "https://openrouter.ai/api/v1",
-                        "api_type": "openai",
-                        "api_version": None,
-                    }
-                ],
-            }
+            config_list = [
+                {
+                    "model": model_settings.get("default_model", "anthropic/claude-3-opus-20240229"),
+                    "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_type": "openai",
+                    "api_version": None,
+                }
+            ]
+        else:
+            config_list = llm_config.get("config_list", [])
+
+        # Use model settings parameters with fallbacks
+        temperature = model_settings.get("temperature", 0.1)
+        max_tokens = model_settings.get("max_tokens", 2000)
+        top_p = model_settings.get("top_p", 0.9)
+        timeout = llm_config.get("timeout", 600)
 
         return {
-            "config_list": llm_config.get("config_list", []),
-            "temperature": llm_config.get("temperature", 0.1),
-            "timeout": llm_config.get("timeout", 600),
+            "config_list": config_list,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+            "timeout": timeout,
             "seed": 42,  # Adding seed for reproducibility
         }
 
@@ -1095,16 +1078,6 @@ class SentimentAnalysisModel:
     def _tool_send_feedback_to_selection(self, sentiment_data: Dict[str, Any]) -> bool:
         """Internal method for sending feedback to selection model."""
         return self.send_feedback_to_selection(sentiment_data)
-
-    def _tool_use_financial_text_tool(
-        self, tool_name: str, arguments: Dict[str, Any]
-    ) -> Any:
-        """Internal method for using FinancialTextMCP tools."""
-        self.mcp_tool_call_count += 1
-        result = self.financial_text_mcp.call_tool(tool_name, arguments)
-        if result and result.get("error"):
-             self.mcp_tool_error_count += 1
-        return result
 
     def _tool_use_financial_data_tool(
         self, tool_name: str, arguments: Dict[str, Any]
@@ -1246,17 +1219,9 @@ class SentimentAnalysisModel:
 
         # Define MCP tool access functions for consolidated MCPs
         register_function(
-            self._tool_use_financial_text_tool, # Pass the method reference
-            name="use_financial_text_tool",
-            description="Use a tool provided by the Financial Text MCP server (for entity extraction and sentiment scoring)",
-            caller=sentiment_assistant,
-            executor=user_proxy,
-        )
-
-        register_function(
             self._tool_use_financial_data_tool, # Pass the method reference
             name="use_financial_data_tool",
-            description="Use a tool provided by the Financial Data MCP server (for news, social, etc.)",
+            description="Use a tool provided by the Financial Data MCP server (for news, social, entity extraction, sentiment scoring, etc.)",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
@@ -1269,7 +1234,7 @@ class SentimentAnalysisModel:
             # Use the financial_text_mcp to extract entities
             # Assuming the tool name for entity extraction is 'extract_entities'
             self.mcp_tool_call_count += 1
-            result = self.financial_text_mcp.call_tool("extract_entities", {"text": text})
+            result = self.financial_data_mcp.call_tool("extract_entities", {"text": text})
 
             if result and not result.get("error"):
                 return result
@@ -1294,7 +1259,7 @@ class SentimentAnalysisModel:
             # Use the financial_text_mcp to analyze sentiment
             # Assuming the tool name for sentiment analysis is 'analyze_sentiment'
             self.mcp_tool_call_count += 1
-            result = self.financial_text_mcp.call_tool(
+            result = self.financial_data_mcp.call_tool(
                 "analyze_sentiment", {"text": text, "entities": entities}
             )
 
@@ -1819,7 +1784,6 @@ class SentimentAnalysisModel:
         
         # Shutdown MCP clients if they support shutdown
         for mcp_name, mcp in [
-            ("financial_text_mcp", self.financial_text_mcp), 
             ("financial_data_mcp", self.financial_data_mcp),
             ("redis_mcp", self.redis_mcp)
         ]:

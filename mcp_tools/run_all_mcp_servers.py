@@ -20,7 +20,7 @@ from mcp_tools.db_mcp.redis_mcp import RedisMCP
 
 from mcp_tools.document_analysis_mcp.document_analysis_mcp import DocumentAnalysisMCP
 from mcp_tools.financial_data_mcp.financial_data_mcp import FinancialDataMCP
-from mcp_tools.financial_text_mcp.financial_text_mcp import FinancialTextMCP
+# FinancialTextMCP removed - functionality consolidated into FinancialDataMCP
 from mcp_tools.risk_analysis_mcp.risk_analysis_mcp import RiskAnalysisMCP
 from mcp_tools.time_series_mcp.time_series_mcp import TimeSeriesMCP
 from mcp_tools.trading_mcp.trading_mcp import TradingMCP
@@ -39,7 +39,7 @@ def main():
         RedisMCP(),
         DocumentAnalysisMCP(),
         FinancialDataMCP(),
-        FinancialTextMCP(),
+        # FinancialTextMCP removed - functionality consolidated into FinancialDataMCP
         RiskAnalysisMCP(),
         TimeSeriesMCP(),
         TradingMCP(),

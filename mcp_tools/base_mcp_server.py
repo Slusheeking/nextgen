@@ -1,6 +1,5 @@
 """
 Base MCP Server Implementation
-
 This module provides the base class for MCP (Model Context Protocol) servers
 in the Nextgen trading system. It includes comprehensive monitoring, metrics
 collection, and diagnostic capabilities.
@@ -8,8 +7,10 @@ collection, and diagnostic capabilities.
 
 import os
 import time
+import json
+import requests
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Union
 
 # Direct imports instead of dynamic loading
 from dotenv import load_dotenv
@@ -371,3 +372,237 @@ class BaseMCPServer:
         # import threading
         # self.health_check_thread = threading.Thread(target=self._health_check_worker, daemon=True)
         # self.health_check_thread.start()
+
+
+class BaseMCPClient:
+    """
+    Base client for interacting with MCP servers.
+    
+    This client provides methods to call tools and access resources on MCP servers.
+    It handles communication with the server, error handling, and retries.
+    """
+    
+    def __init__(self, server_name: str, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the MCP client.
+        
+        Args:
+            server_name: Name of the MCP server to connect to
+            config: Optional configuration dictionary
+        """
+        self.server_name = server_name
+        self.config = config or {}
+        
+        # Initialize logger
+        self.logger = NetdataLogger(component_name=f"{self.server_name}-client")
+        
+        # Initialize metrics collector
+        self.metrics_collector = SystemMetricsCollector(self.logger)
+        self.metrics_collector.start()
+        
+        # Connection settings
+        self.base_url = self.config.get("base_url", "http://localhost:8000")
+        self.timeout = self.config.get("timeout", 30)  # seconds
+        self.max_retries = self.config.get("max_retries", 3)
+        self.retry_delay = self.config.get("retry_delay", 1)  # seconds
+        
+        # Performance tracking
+        self.request_count = 0
+        self.error_count = 0
+        self.total_response_time = 0
+        
+        self.logger.info(f"Initialized MCP client for {self.server_name}")
+    
+    def call_tool(self, tool_name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Call a tool on the MCP server.
+        
+        Args:
+            tool_name: Name of the tool to call
+            args: Arguments to pass to the tool
+            
+        Returns:
+            Result of the tool execution
+        """
+        args = args or {}
+        self.request_count += 1
+        
+        # For direct server access (when server is imported in the same process)
+        # Try to import the server module dynamically
+        module_name = f"mcp_tools.{self.server_name.replace('-', '_')}.{self.server_name.replace('-', '_')}"
+        server_class_name = ''.join(word.capitalize() for word in self.server_name.split('_'))
+        
+        try:
+            module = __import__(module_name, fromlist=[server_class_name])
+            server_class = getattr(module, server_class_name)
+            server_instance = server_class()
+            
+            # Call the tool directly
+            start_time = time.time()
+            result = server_instance.call_tool(tool_name, args)
+            response_time = (time.time() - start_time) * 1000  # ms
+            
+            self.total_response_time += response_time
+            self.logger.timing("mcp_client.response_time_ms", response_time)
+            
+            return result
+        except (ImportError, AttributeError) as e:
+            self.logger.warning(f"Could not import server module: {e}, falling back to HTTP")
+        
+        # Fall back to HTTP API if direct access fails
+        endpoint = f"{self.base_url}/tools/{tool_name}"
+        
+        for attempt in range(self.max_retries):
+            try:
+                start_time = time.time()
+                response = requests.post(
+                    endpoint,
+                    json={"args": args},
+                    timeout=self.timeout
+                )
+                response_time = (time.time() - start_time) * 1000  # ms
+                
+                self.total_response_time += response_time
+                self.logger.timing("mcp_client.response_time_ms", response_time)
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    error_msg = f"Error calling tool {tool_name}: HTTP {response.status_code}"
+                    self.logger.error(error_msg)
+                    self.error_count += 1
+                    
+                    # If this is the last attempt, return error
+                    if attempt == self.max_retries - 1:
+                        return {"error": error_msg, "tool": tool_name}
+                    
+                    # Otherwise retry after delay
+                    time.sleep(self.retry_delay)
+            except requests.RequestException as e:
+                error_msg = f"Request error calling tool {tool_name}: {e}"
+                self.logger.error(error_msg)
+                self.error_count += 1
+                
+                # If this is the last attempt, return error
+                if attempt == self.max_retries - 1:
+                    return {"error": error_msg, "tool": tool_name}
+                
+                # Otherwise retry after delay
+                time.sleep(self.retry_delay)
+        
+        # This should never be reached due to the return in the last attempt
+        return {"error": "Maximum retries exceeded", "tool": tool_name}
+    
+    def access_resource(self, resource_uri: str) -> Dict[str, Any]:
+        """
+        Access a resource on the MCP server.
+        
+        Args:
+            resource_uri: URI of the resource to access
+            
+        Returns:
+            Resource data
+        """
+        self.request_count += 1
+        
+        # For direct server access (when server is imported in the same process)
+        # Try to import the server module dynamically
+        module_name = f"mcp_tools.{self.server_name.replace('-', '_')}.{self.server_name.replace('-', '_')}"
+        server_class_name = ''.join(word.capitalize() for word in self.server_name.split('_'))
+        
+        try:
+            module = __import__(module_name, fromlist=[server_class_name])
+            server_class = getattr(module, server_class_name)
+            server_instance = server_class()
+            
+            # Extract resource name from URI
+            resource_name = resource_uri.split('/')[-1]
+            
+            # Access the resource directly
+            start_time = time.time()
+            result = server_instance.access_resource(resource_name)
+            response_time = (time.time() - start_time) * 1000  # ms
+            
+            self.total_response_time += response_time
+            self.logger.timing("mcp_client.resource_access_time_ms", response_time)
+            
+            return {"resource": result, "uri": resource_uri}
+        except (ImportError, AttributeError) as e:
+            self.logger.warning(f"Could not import server module: {e}, falling back to HTTP")
+        
+        # Fall back to HTTP API if direct access fails
+        endpoint = f"{self.base_url}/resources/{resource_uri}"
+        
+        for attempt in range(self.max_retries):
+            try:
+                start_time = time.time()
+                response = requests.get(
+                    endpoint,
+                    timeout=self.timeout
+                )
+                response_time = (time.time() - start_time) * 1000  # ms
+                
+                self.total_response_time += response_time
+                self.logger.timing("mcp_client.resource_access_time_ms", response_time)
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    error_msg = f"Error accessing resource {resource_uri}: HTTP {response.status_code}"
+                    self.logger.error(error_msg)
+                    self.error_count += 1
+                    
+                    # If this is the last attempt, return error
+                    if attempt == self.max_retries - 1:
+                        return {"error": error_msg, "uri": resource_uri}
+                    
+                    # Otherwise retry after delay
+                    time.sleep(self.retry_delay)
+            except requests.RequestException as e:
+                error_msg = f"Request error accessing resource {resource_uri}: {e}"
+                self.logger.error(error_msg)
+                self.error_count += 1
+                
+                # If this is the last attempt, return error
+                if attempt == self.max_retries - 1:
+                    return {"error": error_msg, "uri": resource_uri}
+                
+                # Otherwise retry after delay
+                time.sleep(self.retry_delay)
+        
+        # This should never be reached due to the return in the last attempt
+        return {"error": "Maximum retries exceeded", "uri": resource_uri}
+    
+    def list_tools(self) -> Dict[str, Any]:
+        """
+        List all available tools on the MCP server.
+        
+        Returns:
+            Dictionary containing the list of tools
+        """
+        return self.call_tool("list_tools", {})
+    
+    def list_resources(self) -> Dict[str, Any]:
+        """
+        List all available resources on the MCP server.
+        
+        Returns:
+            Dictionary containing the list of resources
+        """
+        return self.call_tool("list_resources", {})
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get the health status of the MCP server.
+        
+        Returns:
+            Dictionary containing health status information
+        """
+        return self.call_tool("get_health_status", {})
+    
+    def shutdown(self):
+        """
+        Shutdown the MCP client and stop metrics collection.
+        """
+        self.logger.info(f"Shutting down MCP client for {self.server_name}")
+        self.metrics_collector.stop()
