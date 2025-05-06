@@ -167,9 +167,9 @@ class MarketAnalysisModel:
             # TimeSeriesMCP
             start_time = time.time()
             self.logger.info("Initializing TimeSeriesMCP")
-            time_series_config = self.config.get("time_series_config")
+            time_series_config = self.config.get("time_series_mcp_config") # Look for the correct key
             if not time_series_config:
-                raise ValueError("Missing time_series_config in configuration")
+                raise ValueError("Missing time_series_mcp_config in configuration") # Update error message
             self.time_series_mcp = TimeSeriesMCP(time_series_config)
             time_series_init_time = (time.time() - start_time) * 1000
             self.logger.timing("time_series_mcp_init_time_ms", time_series_init_time)
@@ -178,9 +178,9 @@ class MarketAnalysisModel:
             # RedisMCP
             start_time = time.time()
             self.logger.info("Initializing RedisMCP")
-            redis_config = self.config.get("redis_config")
+            redis_config = self.config.get("redis_mcp_config") # Look for the correct key
             if not redis_config:
-                raise ValueError("Missing redis_config in configuration")
+                raise ValueError("Missing redis_mcp_config in configuration") # Update error message
             self.redis_mcp = RedisMCP(redis_config)
             redis_init_time = (time.time() - start_time) * 1000
             self.logger.timing("redis_mcp_init_time_ms", redis_init_time)
@@ -1892,8 +1892,9 @@ class MarketAnalysisModel:
         try:
             # 1. Test basic connectivity with a simple API call
             start_time = time.time()
+            tool_to_call = "get_health" # Ensure we are calling the correct health tool
             test_result = self.financial_data_mcp.call_tool(
-                "get_health",  # Assuming there's a health endpoint
+                tool_to_call,
                 {}
             )
             response_time = (time.time() - start_time) * 1000

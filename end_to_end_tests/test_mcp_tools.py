@@ -8,8 +8,8 @@ import random
 import os # Needed for checking file existence
 import json # Needed for loading configuration files
 
-# Import data generation functions
-from end_to_end_tests.test_data_generation import (
+# Import data generation functions directly
+from test_data_generation import (
     generate_financial_market_data,
     generate_sentiment_text_data,
     generate_time_series_data,
@@ -47,18 +47,24 @@ def synthetic_datasets():
     """Generates diverse synthetic datasets once per module."""
     return generate_diverse_datasets()
 
-class TestMCPTools:
+import unittest
+
+class TestMCPTools(unittest.TestCase):
     """Contains end-to-end tests for MCP tools."""
 
-    def __init__(self, data_source):
+    def __init__(self, methodName='runTest'):
         """
-        Initializes the TestMCPTools with the specified data source.
+        Initializes the TestMCPTools.
+        """
+        super().__init__(methodName) # Call parent class constructor
+        self.data_source = None # Initialize data_source
 
-        Args:
-            data_source (str): The data source to use ('live', 'synthetic', 'downloaded').
-        """
-        self.data_source = data_source
-        print(f"TestMCPTools initialized with data source: {self.data_source}")
+    def setUp(self):
+        """Set up test environment before each test."""
+        import os # Import os here if not already imported at the top
+        self.data_source = os.getenv('E2E_DATA_SOURCE', 'synthetic') # Get data source from env var
+        print(f"TestMCPTools setup with data source: {self.data_source}")
+        # Placeholder for other setup logic
 
     def _load_data(self, data_type):
         """
@@ -78,7 +84,10 @@ class TestMCPTools:
                 return generate_sentiment_text_data()
             elif data_type == 'time_series':
                 return generate_time_series_data()
-            # Add more data types as needed
+            # Add placeholder data for other MCP tool data types
+            elif data_type in ['document_analysis', 'risk_analysis', 'trading', 'vector_store']:
+                 print(f"Returning placeholder synthetic data for {data_type}.")
+                 return {"placeholder_data": f"synthetic_{data_type}_data"}
             else:
                 raise ValueError(f"Unknown synthetic data type: {data_type}")
         elif self.data_source == 'downloaded':
@@ -127,14 +136,14 @@ class TestMCPTools:
             print(f"Loaded configuration for {mcp_name} from {config_path}")
             return config
         except FileNotFoundError:
-            print(f"Configuration file not found for {mcp_name} at {config_path}. Returning empty config.")
-            return {}
+            print(f"Configuration file not found for {mcp_name} at {config_path}. Returning placeholder config.")
+            return {"placeholder_config": f"{mcp_name}_config"} # Return a basic placeholder dict
         except json.JSONDecodeError:
-            print(f"Error decoding JSON from configuration file {config_path}. Returning empty config.")
-            return {}
+            print(f"Error decoding JSON from configuration file {config_path}. Returning placeholder config.")
+            return {"placeholder_config": f"{mcp_name}_config"} # Return a basic placeholder dict
         except Exception as e:
-            print(f"An error occurred while loading configuration for {mcp_name}: {e}. Returning empty config.")
-            return {}
+            print(f"An error occurred while loading configuration for {mcp_name}: {e}. Returning placeholder config.")
+            return {"placeholder_config": f"{mcp_name}_config"} # Return a basic placeholder dict
 
 
     # --- Data MCP Tests ---

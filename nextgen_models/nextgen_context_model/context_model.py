@@ -245,23 +245,19 @@ class ContextModel:
         context_assistant = self.agents["context_assistant"]
 
         # Register data retrieval functions
-        @register_function(
+        async def fetch_data_func(source_name: str, query: Dict[str, Any]) -> Dict[str, Any]:
+            return await self.fetch_data(source_name, query)
+            
+        register_function(
+            fetch_data_func,
             name="fetch_data",
             description="Fetch data from a specified data source",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def fetch_data(source_name: str, query: Dict[str, Any]) -> Dict[str, Any]:
-            return await self.fetch_data(source_name, query)
 
         # Register document processing functions (using DocumentAnalysisMCP)
-        @register_function(
-            name="process_document",
-            description="Process a document (clean, extract metadata, and chunk)",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        async def process_document(
+        async def process_document_func(
             document: str,
             document_id: Optional[str] = None,
             document_type: Optional[str] = None,
@@ -285,14 +281,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Document processing failed"}
-
-        @register_function(
-            name="deduplicate_chunks",
-            description="Remove duplicate or near-duplicate chunks",
+            
+        register_function(
+            process_document_func,
+            name="process_document",
+            description="Process a document (clean, extract metadata, and chunk)",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def deduplicate_chunks(
+
+        async def deduplicate_chunks_func(
             chunks: List[str],
             similarity_threshold: float = 0.9,
             method: str = "jaccard",
@@ -306,15 +304,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Chunk deduplication failed"}
-
-        # Register embeddings functions (using DocumentAnalysisMCP)
-        @register_function(
-            name="generate_embeddings",
-            description="Generate embeddings for text chunks",
+            
+        register_function(
+            deduplicate_chunks_func,
+            name="deduplicate_chunks",
+            description="Remove duplicate or near-duplicate chunks",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def generate_embeddings(
+
+        async def generate_embeddings_func(
             chunks: List[str], model: Optional[str] = None
         ) -> Dict[str, Any]:
             # Call the consolidated tool
@@ -326,15 +325,17 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Embedding generation failed"}
-
-        # Register vector database functions (using VectorStoreMCP)
-        @register_function(
-            name="add_documents_to_vector_db",
-            description="Add documents (chunks, embeddings, metadata) to the vector database",
+            
+        register_function(
+            generate_embeddings_func,
+            name="generate_embeddings",
+            description="Generate embeddings for text chunks",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def add_documents_to_vector_db(
+
+        # Register vector database functions (using VectorStoreMCP)
+        async def add_documents_to_vector_db_func(
             documents: List[str],
             embeddings: List[List[float]],
             metadatas: Optional[List[Dict[str, Any]]] = None,
@@ -355,15 +356,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Adding documents to vector DB failed"}
-
-
-        @register_function(
-            name="search_vector_db",
-            description="Search the vector database using query embeddings",
+            
+        register_function(
+            add_documents_to_vector_db_func,
+            name="add_documents_to_vector_db",
+            description="Add documents (chunks, embeddings, metadata) to the vector database",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def search_vector_db(
+
+        async def search_vector_db_func(
             query_embeddings: List[List[float]],
             collection_name: Optional[str] = None,
             top_k: int = 10,
@@ -384,16 +386,17 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Vector DB search failed"}
-
-
-        # Register query reformulation functions (using DocumentAnalysisMCP)
-        @register_function(
-            name="expand_query",
-            description="Expand a query with related terms to improve retrieval",
+            
+        register_function(
+            search_vector_db_func,
+            name="search_vector_db",
+            description="Search the vector database using query embeddings",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def expand_query(
+
+        # Register query reformulation functions (using DocumentAnalysisMCP)
+        async def expand_query_func(
             query: str,
             domain: Optional[str] = None,
             strategies: Optional[List[str]] = None,
@@ -408,14 +411,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Query expansion failed"}
-
-        @register_function(
-            name="decompose_query",
-            description="Break down a complex query into simpler sub-queries",
+            
+        register_function(
+            expand_query_func,
+            name="expand_query",
+            description="Expand a query with related terms to improve retrieval",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def decompose_query(
+
+        async def decompose_query_func(
             query: str, max_sub_queries: Optional[int] = None
         ) -> Dict[str, Any]:
             # Call the consolidated tool
@@ -427,15 +432,17 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Query decomposition failed"}
-
-        # Register relevance feedback functions (using DocumentAnalysisMCP)
-        @register_function(
-            name="record_explicit_feedback",
-            description="Record explicit user feedback on document relevance",
+            
+        register_function(
+            decompose_query_func,
+            name="decompose_query",
+            description="Break down a complex query into simpler sub-queries",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def record_explicit_feedback(
+
+        # Register relevance feedback functions (using DocumentAnalysisMCP)
+        async def record_explicit_feedback_func(
             query_id: str,
             document_id: str,
             rating: float,
@@ -459,14 +466,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Recording explicit feedback failed"}
-
-        @register_function(
-            name="record_implicit_feedback",
-            description="Record implicit user feedback based on interactions",
+            
+        register_function(
+            record_explicit_feedback_func,
+            name="record_explicit_feedback",
+            description="Record explicit user feedback on document relevance",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def record_implicit_feedback(
+
+        async def record_implicit_feedback_func(
             query_id: str,
             document_id: str,
             interaction_type: str,
@@ -492,14 +501,16 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Recording implicit feedback failed"}
-
-        @register_function(
-            name="rerank_results",
-            description="Rerank search results based on feedback",
+            
+        register_function(
+            record_implicit_feedback_func,
+            name="record_implicit_feedback",
+            description="Record implicit user feedback based on interactions",
             caller=context_assistant,
             executor=user_proxy,
         )
-        async def rerank_results(
+
+        async def rerank_results_func(
             query_id: str,
             results: List[Dict[str, Any]],
             use_explicit_feedback: bool = True,
@@ -521,6 +532,14 @@ class ContextModel:
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result or {"error": "Reranking results failed"}
+            
+        register_function(
+            rerank_results_func,
+            name="rerank_results",
+            description="Rerank search results based on feedback",
+            caller=context_assistant,
+            executor=user_proxy,
+        )
 
         # Register data storage and retrieval functions (Commented out - requires Redis)
         # ...
@@ -537,51 +556,59 @@ class ContextModel:
 
         # Define MCP tool access functions for data sources
         for source_name, data_source_mcp in self.data_sources.items():
-
-            @register_function(
+            # Create a function with a closure over data_source_mcp
+            def create_data_source_tool_func(mcp_client):
+                def use_data_source_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
+                    self.mcp_tool_call_count += 1
+                    result = mcp_client.call_tool(tool_name, arguments)
+                    if result and result.get("error"):
+                        self.mcp_tool_error_count += 1
+                    return result
+                return use_data_source_tool_func
+            
+            # Create the function with the closure
+            data_source_tool_func = create_data_source_tool_func(data_source_mcp)
+            
+            # Register the function
+            register_function(
+                data_source_tool_func,
                 name=f"use_{source_name}_tool",
                 description=f"Use a tool provided by the {source_name} MCP server",
                 caller=context_assistant,
                 executor=user_proxy,
             )
-            def use_data_source_tool(
-                tool_name: str, arguments: Dict[str, Any], mcp_client=data_source_mcp
-            ) -> Any:
-                self.mcp_tool_call_count += 1
-                result = mcp_client.call_tool(tool_name, arguments)
-                if result and result.get("error"):
-                    self.mcp_tool_error_count += 1
-                return result
 
         # Define MCP tool access functions for analysis tools
-        @register_function(
-            name="use_document_analysis_tool",
-            description="Use a tool provided by the Document Analysis MCP server",
-            caller=context_assistant,
-            executor=user_proxy,
-        )
-        def use_document_analysis_tool(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> Any:
+        def use_document_analysis_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.document_analysis_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result
-
-        # Define MCP tool access function for Vector Store
-        @register_function(
-            name="use_vector_store_tool",
-            description="Use a tool provided by the Vector Store MCP server (ChromaDB)",
+            
+        register_function(
+            use_document_analysis_tool_func,
+            name="use_document_analysis_tool",
+            description="Use a tool provided by the Document Analysis MCP server",
             caller=context_assistant,
             executor=user_proxy,
         )
-        def use_vector_store_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+
+        # Define MCP tool access function for Vector Store
+        def use_vector_store_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.vector_store_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result
+            
+        register_function(
+            use_vector_store_tool_func,
+            name="use_vector_store_tool",
+            description="Use a tool provided by the Vector Store MCP server (ChromaDB)",
+            caller=context_assistant,
+            executor=user_proxy,
+        )
 
 
     async def fetch_data(
@@ -1063,6 +1090,36 @@ class ContextModel:
                              exc_info=True)
             self.logger.gauge("context_model.retrieval_failure", 1)
             return {"error": str(e)}
+            
+    def retrieve_context_sync(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Synchronous wrapper for retrieve_context that handles the async coroutine.
+        
+        Args:
+            query: The user query
+            **kwargs: Additional keyword arguments to pass to retrieve_context
+            
+        Returns:
+            Dictionary with retrieved context or error information
+        """
+        import asyncio
+        try:
+            # Create a new event loop if needed
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            except RuntimeError:
+                # No event loop in this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+            # Run the async method in the event loop
+            return loop.run_until_complete(self.retrieve_context(query, **kwargs))
+        except Exception as e:
+            self.logger.error(f"Error in synchronous wrapper for retrieve_context: {e}")
+            return {"error": f"Synchronous wrapper error: {str(e)}"}
 
     async def store_context_data(self, key: str, data: Any) -> Dict[str, Any]:
         """

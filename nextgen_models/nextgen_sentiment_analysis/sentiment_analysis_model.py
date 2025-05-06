@@ -1139,10 +1139,12 @@ class SentimentAnalysisModel:
             caller=sentiment_assistant,
             executor=user_proxy,
         )
-
         # Register symbol sentiment retrieval
+        async def get_symbol_sentiment_func(symbol: str, lookback_hours: int = 24) -> Dict[str, Any]:
+            return await self._tool_get_symbol_sentiment(symbol, lookback_hours)
+            
         register_function(
-            lambda symbol, lookback_hours=24: self._tool_get_symbol_sentiment(symbol, lookback_hours),
+            get_symbol_sentiment_func,
             name="get_symbol_sentiment",
             description="Get aggregated sentiment for a symbol from Redis",
             caller=sentiment_assistant,
@@ -1150,8 +1152,11 @@ class SentimentAnalysisModel:
         )
 
         # Register all symbols sentiment retrieval
+        async def get_all_symbols_sentiment_func(lookback_hours: int = 24) -> Dict[str, Dict[str, Any]]:
+            return await self._tool_get_all_symbols_sentiment(lookback_hours)
+            
         register_function(
-            lambda lookback_hours=24: self._tool_get_all_symbols_sentiment(lookback_hours),
+            get_all_symbols_sentiment_func,
             name="get_all_symbols_sentiment",
             description="Get sentiment for all symbols from Redis",
             caller=sentiment_assistant,
@@ -1159,8 +1164,11 @@ class SentimentAnalysisModel:
         )
 
         # Register sentiment history retrieval
+        async def get_sentiment_history_func(symbol: str, days: int = 7) -> Dict[str, Any]:
+            return await self._tool_get_sentiment_history(symbol, days)
+            
         register_function(
-            lambda symbol, days=7: self._tool_get_sentiment_history(symbol, days),
+            get_sentiment_history_func,
             name="get_sentiment_history",
             description="Get historical sentiment for a symbol from Redis",
             caller=sentiment_assistant,
@@ -1168,8 +1176,11 @@ class SentimentAnalysisModel:
         )
 
         # Register symbol-entity mapping update
+        async def update_symbol_entity_mapping_func(mapping: Dict[str, str]) -> Dict[str, Any]:
+            return await self._tool_update_symbol_entity_mapping(mapping)
+            
         register_function(
-            lambda mapping: self._tool_update_symbol_entity_mapping(mapping),
+            update_symbol_entity_mapping_func,
             name="update_symbol_entity_mapping",
             description="Update the mapping between entities and symbols and store in Redis",
             caller=sentiment_assistant,
@@ -1177,8 +1188,11 @@ class SentimentAnalysisModel:
         )
 
         # Register direct news fetching functions
+        async def fetch_latest_news_func(symbol: Optional[str] = None, topic: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+            return await self._tool_fetch_latest_news(symbol, topic, limit)
+            
         register_function(
-            lambda symbol=None, topic=None, limit=10: self._tool_fetch_latest_news(symbol, topic, limit),
+            fetch_latest_news_func,
             name="fetch_latest_news",
             description="Fetch latest news for a symbol or topic using FinancialDataMCP",
             caller=sentiment_assistant,
@@ -1186,16 +1200,22 @@ class SentimentAnalysisModel:
         )
 
         # Register selection model integration functions
+        def get_selection_data_func() -> Dict[str, Any]:
+            return self._tool_get_selection_data()
+            
         register_function(
-            lambda: self._tool_get_selection_data(),
+            get_selection_data_func,
             name="get_selection_data",
             description="Get data from the Selection Model from Redis",
             caller=sentiment_assistant,
             executor=user_proxy,
         )
 
+        def send_feedback_to_selection_func(sentiment_data: Dict[str, Any]) -> bool:
+            return self._tool_send_feedback_to_selection(sentiment_data)
+            
         register_function(
-            lambda sentiment_data: self._tool_send_feedback_to_selection(sentiment_data),
+            send_feedback_to_selection_func,
             name="send_feedback_to_selection",
             description="Send sentiment feedback to the Selection Model via Redis Stream",
             caller=sentiment_assistant,
@@ -1208,18 +1228,22 @@ class SentimentAnalysisModel:
     def _register_mcp_tool_access(self, user_proxy_agent: Optional[UserProxyAgent] = None):
         """
         Register MCP tool access functions with the user proxy agent.
-        
+
         Args:
             user_proxy_agent: Optional UserProxyAgent instance to register functions with.
-                              If None, uses the default user_proxy agent created internally.
+
+                               If None, uses the default user_proxy agent created internally.
         """
         # Use the provided user_proxy_agent if available, otherwise use the internal one
         user_proxy = user_proxy_agent if user_proxy_agent is not None else self.agents["user_proxy"]
         sentiment_assistant = self.agents["sentiment_assistant"]
 
         # Define MCP tool access functions for consolidated MCPs
+        def use_financial_data_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
+            return self._tool_use_financial_data_tool(tool_name, arguments)
+            
         register_function(
-            self._tool_use_financial_data_tool, # Pass the method reference
+            use_financial_data_tool_func,
             name="use_financial_data_tool",
             description="Use a tool provided by the Financial Data MCP server (for news, social, entity extraction, sentiment scoring, etc.)",
             caller=sentiment_assistant,
@@ -2804,3 +2828,15 @@ class SentimentAnalysisModel:
 # Note: The example usage block (main function and __main__ guard)
 # has been removed to ensure this file contains only production code.
 # Testing should be done via separate test scripts or integration tests.
+
+    def analyze_sentiment_sync(self, text_data: Union[str, List[str]]) -> List[Dict[str, Any]]:
+        """
+        Synchronous wrapper for analyze_sentiment for use in non-async contexts.
+        
+        Args:
+            text_data: A single string or a list of strings containing the text to analyze.
+            
+        Returns:
+            A list of dictionaries, each containing the analysis results for one input text.
+        """
+        return asyncio.run(self.analyze_sentiment(text_data))

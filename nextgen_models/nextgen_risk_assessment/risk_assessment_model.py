@@ -529,8 +529,8 @@ class RiskAssessmentModel:
                 # Check system resources
                 try:
                     # Get last collected CPU and memory usage
-                    cpu_percent = self.system_metrics.get_last_cpu_usage()
-                    memory_percent = self.system_metrics.get_last_memory_usage()
+                    cpu_percent = self.system_metrics.get_cpu_usage()
+                    memory_percent = self.system_metrics.get_memory_usage()
                     
                     # Update maximum memory usage
                     self.performance_metrics["peak_memory_usage"] = max(

@@ -2179,7 +2179,7 @@ Your analysis should be quantitative and evidence-based.""",
             self.execution_errors += 1
             self.logger.counter("selection_model.execution_errors")
             duration = (time.time() - start_time) * 1000
-            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration, tags={"status": "failed", "reason": "agents_not_initialized"})
+            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration)
             return {"error": "AutoGen agents not initialized"}
 
         try:
@@ -2202,17 +2202,17 @@ Your analysis should be quantitative and evidence-based.""",
                     result_str = content[json_start:json_end]
                     result = json.loads(result_str)
                     duration = (time.time() - start_time) * 1000
-                    self.logger.timing("selection_model.run_selection_agent_duration_ms", duration, tags={"status": "success"})
+                    self.logger.timing("selection_model.run_selection_agent_duration_ms", duration)
                     return result
             except json.JSONDecodeError:
                 # Return the raw content if JSON parsing fails
                 self.logger.warning("Could not parse JSON analysis from agent response")
                 duration = (time.time() - start_time) * 1000
-                self.logger.timing("selection_model.run_selection_agent_duration_ms", duration, tags={"status": "success_non_json"})
+                self.logger.timing("selection_model.run_selection_agent_duration_ms", duration)
                 pass
 
             duration = (time.time() - start_time) * 1000
-            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration, tags={"status": "success_non_json"})
+            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration)
             return {"analysis": content}
 
         except Exception as e:
@@ -2220,7 +2220,7 @@ Your analysis should be quantitative and evidence-based.""",
             self.execution_errors += 1
             self.logger.counter("selection_model.execution_errors")
             duration = (time.time() - start_time) * 1000
-            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration, tags={"status": "failed", "reason": "autogen_chat_error"})
+            self.logger.timing("selection_model.run_selection_agent_duration_ms", duration)
             return {"error": str(e)}
 
 

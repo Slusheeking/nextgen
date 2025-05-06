@@ -730,19 +730,6 @@ class DecisionModel:
         self.logger.info("Initialized ContextModel for RAG")
 
 
-        # Initialize helper component classes, passing self for MCP/config access
-        self.portfolio_analyzer = PortfolioAnalyzer(self)
-        self.risk_manager = RiskManager(self)
-        self.market_state_analyzer = MarketStateAnalyzer(self)
-
-
-        # Initialize AutoGen integration
-        self.llm_config = self._get_llm_config()
-        self.agents = self._setup_agents()
-
-        # Register functions with the agents
-        self._register_functions()
-
         # Redis keys for data access and storage - Production stream and key names
         self.redis_keys = {
             # Keys and streams for accessing model reports (using Redis for inter-model communication)
@@ -794,11 +781,23 @@ class DecisionModel:
         except Exception as e:
             self.logger.warning(f"Could not ensure Redis stream exists: {e}")
 
-
         # Decision thresholds
         self.confidence_threshold = self.config.get("confidence_threshold", 0.7)
         self.max_position_size_pct = self.config.get("max_position_size_pct", 5.0)
         self.risk_per_trade_pct = self.config.get("risk_per_trade_pct", 1.0)
+
+        # Initialize helper component classes, passing self for MCP/config access
+        self.portfolio_analyzer = PortfolioAnalyzer(self)
+        self.risk_manager = RiskManager(self)
+        self.market_state_analyzer = MarketStateAnalyzer(self)
+
+
+        # Initialize AutoGen integration
+        self.llm_config = self._get_llm_config()
+        self.agents = self._setup_agents()
+
+        # Register functions with the agents
+        self._register_functions()
 
         self.logger.info("Decision Model initialized")
         init_duration = (time.time() - init_start_time) * 1000
@@ -896,55 +895,56 @@ class DecisionModel:
         decision_assistant = self.agents["decision_assistant"]
 
         # Define data access functions (Implemented using Redis)
-        @register_function(
-            name="get_selection_data",
-            description="Get data from the Selection Model via Redis",
-            caller=decision_assistant,
-            executor=user_proxy,
-        )
-        def get_selection_data() -> Dict[str, Any]:
+        # Define data access functions (Implemented using Redis)
+        def get_selection_data_func() -> Dict[str, Any]:
             start_time = time.time()
             result = self.get_selection_data() # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_selection_data"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_selection_data"})
             return result
-
-        @register_function(
-            name="get_finnlp_data",
-            description="Get data from the FinNLP Model via Redis",
+            
+        register_function(
+            get_selection_data_func,
+            name="get_selection_data",
+            description="Get data from the Selection Model via Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def get_finnlp_data(symbol: Optional[str] = None) -> Dict[str, Any]:
+
+        def get_finnlp_data_func(symbol: Optional[str] = None) -> Dict[str, Any]:
             start_time = time.time()
             result = self.get_finnlp_data(symbol) # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_finnlp_data"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_finnlp_data"})
             return result
-
-        @register_function(
-            name="get_forecaster_data",
-            description="Get data from the Forecaster Model via Redis",
+            
+        register_function(
+            get_finnlp_data_func,
+            name="get_finnlp_data",
+            description="Get data from the FinNLP Model via Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def get_forecaster_data(symbol: Optional[str] = None) -> Dict[str, Any]:
+
+        def get_forecaster_data_func(symbol: Optional[str] = None) -> Dict[str, Any]:
             start_time = time.time()
             result = self.get_forecaster_data(symbol) # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_forecaster_data"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_forecaster_data"})
             return result
-
-        @register_function(
-            name="get_rag_context", # Renamed for clarity
-            description="Retrieve relevant contextual documents for a symbol using RAG.",
+            
+        register_function(
+            get_forecaster_data_func,
+            name="get_forecaster_data",
+            description="Get data from the Forecaster Model via Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        async def get_rag_context( # Made async as retrieve_context is async
+
+        async def get_rag_context_func( # Made async as retrieve_context is async
             symbol: str,
             collection_name: Optional[str] = None,
             top_k: int = 5 # Default to fewer results for context
@@ -961,44 +961,49 @@ class DecisionModel:
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_rag_context"})
             # Return the retrieved context directly or format as needed
             return result.get("retrieved_context", []) if result and "error" not in result else {"error": result.get("error", "Failed to retrieve RAG context")}
-
-
-        @register_function(
-            name="get_fundamental_data",
-            description="Get data from the Fundamental Analysis Model via Redis",
+            
+        register_function(
+            get_rag_context_func,
+            name="get_rag_context", # Renamed for clarity
+            description="Retrieve relevant contextual documents for a symbol using RAG.",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def get_fundamental_data(symbol: Optional[str] = None) -> Dict[str, Any]:
+
+        def get_fundamental_data_func(symbol: Optional[str] = None) -> Dict[str, Any]:
             start_time = time.time()
             result = self.get_fundamental_data(symbol) # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_fundamental_data"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_fundamental_data"})
             return result
-
-        @register_function(
-            name="get_portfolio_data",
-            description="Get current portfolio data via Redis",
+            
+        register_function(
+            get_fundamental_data_func,
+            name="get_fundamental_data",
+            description="Get data from the Fundamental Analysis Model via Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def get_portfolio_data() -> Dict[str, Any]:
+
+        def get_portfolio_data_func() -> Dict[str, Any]:
             start_time = time.time()
             result = self.portfolio_analyzer.get_portfolio_data() # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_portfolio_data"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_portfolio_data"})
             return result
-
-        # Define decision-making functions (using RiskAnalysisMCP)
-        @register_function(
-            name="calculate_confidence_score",
-            description="Calculate confidence score from multiple signals",
+            
+        register_function(
+            get_portfolio_data_func,
+            name="get_portfolio_data",
+            description="Get current portfolio data via Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def calculate_confidence_score(
+
+        # Define decision-making functions (using RiskAnalysisMCP)
+        def calculate_confidence_score_func(
             signals: Dict[str, Any], weights: Optional[Dict[str, float]] = None
         ) -> Dict[str, Any]:
             start_time = time.time()
@@ -1014,14 +1019,16 @@ class DecisionModel:
             self.logger.timing("decision_model.calculate_confidence_score_duration_ms", duration, tags={"function": "calculate_confidence_score"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "calculate_confidence_score"})
             return result
-
-        @register_function(
-            name="calculate_optimal_position_size",
-            description="Calculate optimal position size based on confidence and portfolio constraints",
+            
+        register_function(
+            calculate_confidence_score_func,
+            name="calculate_confidence_score",
+            description="Calculate confidence score from multiple signals",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def calculate_optimal_position_size(
+
+        def calculate_optimal_position_size_func(
             symbol: str, confidence: float
         ) -> Dict[str, Any]:
             start_time = time.time()
@@ -1047,15 +1054,16 @@ class DecisionModel:
                 duration = (time.time() - start_time) * 1000
                 self.logger.timing("decision_model.calculate_optimal_position_size_duration_ms", duration, tags={"status": "failed"})
                 return {"error": str(e)}
-
-
-        @register_function(
-            name="calculate_portfolio_impact",
-            description="Calculate the impact of a new position on the portfolio",
+                
+        register_function(
+            calculate_optimal_position_size_func,
+            name="calculate_optimal_position_size",
+            description="Calculate optimal position size based on confidence and portfolio constraints",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def calculate_portfolio_impact(
+
+        def calculate_portfolio_impact_func(
             symbol: str, position_size: float
         ) -> Dict[str, Any]:
             start_time = time.time()
@@ -1081,35 +1089,46 @@ class DecisionModel:
                 duration = (time.time() - start_time) * 1000
                 self.logger.timing("decision_model.calculate_portfolio_impact_duration_ms", duration, tags={"status": "failed"})
                 return {"error": str(e)}
-
-
-        @register_function(
-            name="store_decision",
-            description="Store a trading decision in Redis",
+                
+        register_function(
+            calculate_portfolio_impact_func,
+            name="calculate_portfolio_impact",
+            description="Calculate the impact of a new position on the portfolio",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def store_decision(decision: Dict[str, Any]) -> bool:
+
+        def store_decision_func(decision: Dict[str, Any]) -> bool:
             start_time = time.time()
             result = self.store_decision(decision) # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "store_decision"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "store_decision"})
             return result
-
-        @register_function(
-            name="get_recent_decisions",
-            description="Get recent trading decisions from Redis",
+            
+        register_function(
+            store_decision_func,
+            name="store_decision",
+            description="Store a trading decision in Redis",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def get_recent_decisions(limit: int = 10) -> List[Dict[str, Any]]:
+
+        def get_recent_decisions_func(limit: int = 10) -> List[Dict[str, Any]]:
             start_time = time.time()
             result = self.get_recent_decisions(limit) # Calls the implemented method
             duration = (time.time() - start_time) * 1000
             self.logger.timing("decision_model.function_call_duration_ms", duration, tags={"function": "get_recent_decisions"})
             self.logger.counter("decision_model.function_call_count", tags={"function": "get_recent_decisions"})
             return result
+            
+        register_function(
+            get_recent_decisions_func,
+            name="get_recent_decisions",
+            description="Get recent trading decisions from Redis",
+            caller=decision_assistant,
+            executor=user_proxy,
+        )
 
         # Register MCP tool access functions
         self._register_mcp_tool_access()
@@ -1122,31 +1141,35 @@ class DecisionModel:
         decision_assistant = self.agents["decision_assistant"]
 
         # Define MCP tool access functions for consolidated MCPs
-        @register_function(
-            name="use_risk_analysis_tool",
-            description="Use a tool provided by the Risk Analysis MCP server (for decision analytics, optimization, drift, etc.)",
-            caller=decision_assistant,
-            executor=user_proxy,
-        )
-        def use_risk_analysis_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+        def use_risk_analysis_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.risk_analysis_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result
-
-        @register_function(
-            name="use_financial_data_tool",
-            description="Use a tool provided by the Financial Data MCP server (for market data)",
+            
+        register_function(
+            use_risk_analysis_tool_func,
+            name="use_risk_analysis_tool",
+            description="Use a tool provided by the Risk Analysis MCP server (for decision analytics, optimization, drift, etc.)",
             caller=decision_assistant,
             executor=user_proxy,
         )
-        def use_financial_data_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+
+        def use_financial_data_tool_func(tool_name: str, arguments: Dict[str, Any]) -> Any:
             self.mcp_tool_call_count += 1
             result = self.financial_data_mcp.call_tool(tool_name, arguments)
             if result and result.get("error"):
                  self.mcp_tool_error_count += 1
             return result
+            
+        register_function(
+            use_financial_data_tool_func,
+            name="use_financial_data_tool",
+            description="Use a tool provided by the Financial Data MCP server (for market data)",
+            caller=decision_assistant,
+            executor=user_proxy,
+        )
 
         # Old MCP tool access functions removed
 

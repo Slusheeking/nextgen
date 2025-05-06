@@ -66,6 +66,22 @@ class RedisMCP(BaseMCPServer):
 
         self.config_path = os.path.join("config", "redis_mcp", "redis_mcp_config.json")
         self.config = self._load_config()
+        
+        # Extract and prepare Redis server configuration to pass to the server
+        self.redis_server_config = {
+            "connection": {
+                "host": self.config.get("host", "${REDIS_HOST:localhost}"),
+                "port": self.config.get("port", "${REDIS_PORT:6379}"),
+                "db": self.config.get("db", "${REDIS_DB:0}"),
+                "password": self.config.get("password", "${REDIS_PASSWORD:}"),
+                "decode_responses": self.config.get("decode_responses", True),
+                "socket_timeout": self.config.get("socket_timeout", 5),
+                "socket_connect_timeout": self.config.get("socket_connect_timeout", 5),
+                "socket_keepalive": self.config.get("socket_keepalive", True),
+                "retry_on_timeout": self.config.get("retry_on_timeout", True)
+            }
+        }
+        
         self.logger.info("Configuration loaded", config_path=self.config_path)
             
         # Set up config file monitoring
@@ -131,44 +147,220 @@ class RedisMCP(BaseMCPServer):
 
     def _initialize_client(self):
         """
-        Initialize the Redis client to connect to the local Redis server.
+        Initialize the Redis client by getting it from the local Redis server instance.
+        In synthetic data mode, returns a mock client to avoid actual Redis connections.
 
         Returns:
-            Redis client
+            Redis client instance from the local Redis server, or a mock client if in synthetic mode,
+            or None if unavailable and not in synthetic mode.
         """
+        # Check if we're in synthetic data mode
+        data_source = os.getenv('E2E_DATA_SOURCE')
+        if data_source == 'synthetic':
+            self.logger.info("Using synthetic data mode - returning mock Redis client")
+            return self._create_mock_redis_client()
+            
+        self.logger.info("Attempting to get Redis client from local Redis server")
         try:
-            # Get Redis configuration from environment variables or config
-            host = self.config.get("host", os.getenv("REDIS_HOST", "localhost"))
-            port = int(self.config.get("port", os.getenv("REDIS_PORT", "6379")))
-            db = int(self.config.get("db", os.getenv("REDIS_DB", "0")))
-            password = self.config.get("password", os.getenv("REDIS_PASSWORD", None))
-            decode_responses = self.config.get("decode_responses", True)
+            # Get the singleton instance of the local Redis server
+            # Pass the config to the RedisServer if needed, though it might load its own
+            # based on its __init__ logic. Assuming RedisServer handles its own config loading.
+            redis_server_instance = RedisServer.get_instance(config=self.redis_server_config)
 
-            self.logger.info(f"Attempting Redis connection with config: host={host}, port={port}, db={db}, password_provided={password is not None}")
+            # Attempt to get the connected Redis client from the server instance with retries
+            client = None
+            retries = 0
+            max_retries = 5  # Configure the number of retries
+            retry_delay = 1  # Configure the delay between retries in seconds
 
-            # Create Redis client
-            client = redis.Redis(
-                host=host,
-                port=port,
-                db=db,
-                password=password,
-                decode_responses=decode_responses,
-                socket_timeout=self.config.get("socket_timeout", 5),
-                socket_connect_timeout=self.config.get("socket_connect_timeout", 5),
-                socket_keepalive=self.config.get("socket_keepalive", True),
-                retry_on_timeout=self.config.get("retry_on_timeout", True),
-            )
+            while retries < max_retries:
+                try:
+                    client = redis_server_instance.get_client()
+                    if client:
+                        self.logger.info("Successfully obtained Redis client from local Redis server")
+                        return client
+                except Exception as e:
+                    self.logger.warning(f"Attempt {retries + 1} to get Redis client failed: {e}. Retrying in {retry_delay} seconds.")
+                    time.sleep(retry_delay)
+                    retries += 1
 
-            # Test connection
-            client.ping()
-            self.logger.info(f"Connected to Redis at {host}:{port}/{db}",
-                            host=host, port=port, db=db)
-            return client
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Redis client: {e}",
-                            error=str(e))
-            self.logger.warning("Using dummy client for testing/development")
+            # If loop finishes without getting a client
+            self.logger.error(f"Failed to obtain Redis client from local Redis server after {max_retries} retries.")
+            # Check if we should fallback to mock client
+            if os.getenv('FALLBACK_TO_MOCK_REDIS', '').lower() in ('true', '1', 'yes'):
+                self.logger.warning("Falling back to mock Redis client as fallback is enabled")
+                return self._create_mock_redis_client()
+            # Otherwise return None
             return None
+
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred while trying to get Redis client from local Redis server: {e}",
+                            error=str(e))
+            # Check if we should fallback to mock client
+            if os.getenv('FALLBACK_TO_MOCK_REDIS', '').lower() in ('true', '1', 'yes'):
+                self.logger.warning("Falling back to mock Redis client due to exception")
+                return self._create_mock_redis_client()
+            # Otherwise return None
+            return None
+            
+    def _create_mock_redis_client(self):
+        """
+        Create a mock Redis client for synthetic data testing.
+        This mock client implements a basic in-memory key-value store to simulate Redis.
+        
+        Returns:
+            Mock Redis client object
+        """
+        self.logger.info("Creating mock Redis client for synthetic testing")
+        
+        # Create a simple in-memory mock Redis client
+        class MockRedisClient:
+            def __init__(self):
+                self.data = {}  # Simple key-value store
+                self.hashes = {}  # For hash operations
+                self.lists = {}  # For list operations
+                self.sets = {}  # For set operations
+                self.sorted_sets = {}  # For sorted set operations
+                
+            def ping(self):
+                return True
+                
+            def get(self, key):
+                return self.data.get(key)
+                
+            def set(self, key, value, ex=None):
+                self.data[key] = value
+                return True
+                
+            def delete(self, *keys):
+                count = 0
+                for key in keys:
+                    if key in self.data:
+                        del self.data[key]
+                        count += 1
+                return count
+                
+            def hget(self, name, key):
+                if name not in self.hashes:
+                    return None
+                return self.hashes[name].get(key)
+                
+            def hset(self, name, key, value):
+                if name not in self.hashes:
+                    self.hashes[name] = {}
+                self.hashes[name][key] = value
+                return 1
+                
+            def hgetall(self, name):
+                return self.hashes.get(name, {})
+                
+            def hincrby(self, name, key, amount=1):
+                if name not in self.hashes:
+                    self.hashes[name] = {}
+                if key not in self.hashes[name]:
+                    self.hashes[name][key] = 0
+                self.hashes[name][key] += amount
+                return self.hashes[name][key]
+                
+            def lpush(self, name, *values):
+                if name not in self.lists:
+                    self.lists[name] = []
+                for value in values:
+                    self.lists[name].insert(0, value)
+                return len(self.lists[name])
+                
+            def rpush(self, name, *values):
+                if name not in self.lists:
+                    self.lists[name] = []
+                for value in values:
+                    self.lists[name].append(value)
+                return len(self.lists[name])
+                
+            def lrange(self, name, start, end):
+                if name not in self.lists:
+                    return []
+                # Handle negative indices
+                if end == -1:
+                    end = len(self.lists[name])
+                return self.lists[name][start:end+1]
+                
+            def sadd(self, name, *values):
+                if name not in self.sets:
+                    self.sets[name] = set()
+                old_len = len(self.sets[name])
+                for value in values:
+                    self.sets[name].add(value)
+                return len(self.sets[name]) - old_len
+                
+            def smembers(self, name):
+                return self.sets.get(name, set())
+                
+            def zadd(self, name, mapping):
+                if name not in self.sorted_sets:
+                    self.sorted_sets[name] = {}
+                old_len = len(self.sorted_sets[name])
+                for member, score in mapping.items():
+                    self.sorted_sets[name][member] = score
+                return len(self.sorted_sets[name]) - old_len
+                
+            def zrange(self, name, start, end, withscores=False):
+                if name not in self.sorted_sets:
+                    return []
+                # Convert to list and sort by score
+                items = list(self.sorted_sets[name].items())
+                items.sort(key=lambda x: x[1])
+                
+                # Handle negative indices
+                if end == -1:
+                    end = len(items)
+                    
+                items = items[start:end+1]
+                
+                if withscores:
+                    return items
+                else:
+                    return [item[0] for item in items]
+                
+            def zrevrange(self, name, start, end, withscores=False):
+                if name not in self.sorted_sets:
+                    return []
+                # Convert to list and sort by score (reversed)
+                items = list(self.sorted_sets[name].items())
+                items.sort(key=lambda x: x[1], reverse=True)
+                
+                # Handle negative indices
+                if end == -1:
+                    end = len(items)
+                    
+                items = items[start:end+1]
+                
+                if withscores:
+                    return items
+                else:
+                    return [item[0] for item in items]
+                    
+            def publish(self, channel, message):
+                # Mock publish always returns 0 receivers in synthetic mode
+                return 0
+                
+            def expire(self, key, seconds):
+                # This is a mock, so we don't actually implement expiration
+                # Always return true if the key exists
+                return key in self.data
+                
+            def info(self):
+                # Return synthetic info for monitoring purposes
+                return {
+                    "connected_clients": 1,
+                    "used_memory": 1000,
+                    "used_memory_human": "1K",
+                    "total_commands_processed": 100,
+                    "keyspace_hits": 50,
+                    "keyspace_misses": 10
+                }
+                
+        self.logger.info("Mock Redis client created successfully")
+        return MockRedisClient()
 
     def _initialize_endpoints(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -336,7 +528,7 @@ class RedisMCP(BaseMCPServer):
         self.register_tool(self.set_json)
         self.register_tool(self.get_json)
         self.register_tool(self.increment_hash_value)
-
+        self.register_tool(self.ping)
     def _record_metrics(self, operation: str, duration: float, status: str = "success"):
         """Record metrics for Redis operations."""
         # Record operation timing
@@ -1115,18 +1307,12 @@ class RedisMCP(BaseMCPServer):
             self.logger.error(f"Error getting value for key {key}: {e}")
             return None
 
-    def get_connection_status(self) -> dict:
+    def ping(self) -> dict:
         """
-        Check the connection status to the Redis server.
+        Ping the Redis server to check connectivity.
 
         Returns:
-            Dictionary with connection status and error (if any).
+            Dictionary with status and message.
         """
-        try:
-            if self.redis_client:
-                self.redis_client.ping()
-                return {"connected": True, "error": None}
-            else:
-                return {"connected": False, "error": "No Redis client available"}
-        except Exception as e:
-            return {"connected": False, "error": str(e)}
+        return self.fetch_data("ping", {})
+

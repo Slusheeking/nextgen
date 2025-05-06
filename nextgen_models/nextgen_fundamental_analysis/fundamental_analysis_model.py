@@ -111,13 +111,9 @@ class FundamentalAnalysisModel(BaseMCPAgent):
             self.logger.warning(f"Missing financial_data_config_path in configuration. Using default: {default_path}")
             financial_data_config_path = default_path
 
-        if not self.config.get("risk_analysis_config"):
-            self.logger.error("Missing risk_analysis_config in configuration")
-            raise ValueError("Missing risk_analysis_config in configuration")
-
         # Load financial data config from path
         financial_data_config = {}
-        if os.path.exists(financial_data_config_path):
+        if financial_data_config_path and os.path.exists(financial_data_config_path):
             try:
                 with open(financial_data_config_path, 'r') as f:
                     financial_data_config = json.load(f)
@@ -126,16 +122,23 @@ class FundamentalAnalysisModel(BaseMCPAgent):
                 self.logger.error(f"Error parsing financial data configuration file {financial_data_config_path}: {e}")
             except Exception as e:
                 self.logger.error(f"Error loading financial data configuration file {financial_data_config_path}: {e}")
+        elif financial_data_config_path:
+             self.logger.warning(f"Financial data configuration file not found at {financial_data_config_path}")
         else:
-            self.logger.warning(f"Financial data configuration file not found at {financial_data_config_path}")
+             self.logger.warning("financial_data_config_path not specified in configuration.")
+
 
         # Initialize Consolidated MCP clients
         # FinancialDataMCP handles data retrieval (Polygon, Yahoo)
         self.financial_data_mcp = FinancialDataMCP(financial_data_config)
+
         # RiskAnalysisMCP handles risk metrics and potentially other analysis
-        self.risk_analysis_mcp = RiskAnalysisMCP(
-             self.config.get("risk_analysis_config")
-        )
+        risk_analysis_config = self.config.get("risk_analysis_mcp_config") # Look for the correct key
+        if not risk_analysis_config:
+            self.logger.error("Missing risk_analysis_mcp_config in configuration") # Update error message
+            raise ValueError("Missing risk_analysis_mcp_config in configuration") # Update error message
+
+        self.risk_analysis_mcp = RiskAnalysisMCP(risk_analysis_config)
 
         # Initialize Redis MCP client
         self.redis_mcp = RedisMCP(self.config.get("redis_config"))

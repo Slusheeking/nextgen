@@ -17,8 +17,10 @@ import os
 import time
 
 from dotenv import load_dotenv
+# Load environment variables
 load_dotenv(dotenv_path='/home/ubuntu/nextgen/.env')
 import hashlib
+import re
 import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -57,6 +59,8 @@ class VectorStoreMCP(BaseMCPServer):
                 - health_check_interval: Interval in seconds for health checks (default: 60)
                 - performance_logging: Whether to enable detailed performance logging (default: True)
                 - cache_embeddings: Whether to cache embeddings and results (default: False)
+                - chromadb_host: Hostname or IP address of the ChromaDB server (default: 'localhost')
+                - chromadb_port: Port of the ChromaDB server (default: 8000)
         """
         # Record initialization start time
         init_start_time = time.time()
@@ -72,6 +76,10 @@ class VectorStoreMCP(BaseMCPServer):
         self.performance_logging = self.config.get("performance_logging", True)
         self.enable_cache = self.config.get("cache_embeddings", False)
         
+        # Load ChromaDB connection parameters from config, with environment variable support
+        self.chromadb_host = self._get_config_value(self.config.get("chromadb_host", "${CHROMADB_HOST:localhost}"))
+        self.chromadb_port = int(self._get_config_value(self.config.get("chromadb_port", "${CHROMADB_PORT:8005}")))
+
         # Initialize detailed performance counters
         self.add_documents_count = 0
         self.search_collection_count = 0
@@ -120,10 +128,10 @@ class VectorStoreMCP(BaseMCPServer):
                 client_init_start = time.time()
                 
                 # Initialize ChromaDB client with HTTP client
-                # Assuming the ChromaDB server is running on localhost:8000
+                # Initialize ChromaDB client with HTTP client
                 self.client = chromadb.HttpClient(
-                    host="localhost",
-                    port=8000,
+                    host=self.chromadb_host,
+                    port=self.chromadb_port,
                     settings=Settings(anonymized_telemetry=False) # Disable telemetry
                 )
                 
@@ -376,3 +384,29 @@ class VectorStoreMCP(BaseMCPServer):
         self.logger.debug("Placeholder: _generate_performance_charts executed")
         # In a real implementation, this would use self.chart_generator to create charts
         pass
+        
+    def _get_config_value(self, value: str) -> str:
+        """
+        Parse a configuration value that may contain environment variable references.
+        Supports the format ${ENV_VAR:default_value} where default_value is used
+        if ENV_VAR is not set.
+        
+        Args:
+            value: The configuration value to parse
+            
+        Returns:
+            The parsed value with environment variables replaced
+        """
+        if not isinstance(value, str):
+            return value
+            
+        # Match ${ENV_VAR:default} pattern
+        pattern = r'\${([^:{}]+)(?::([^{}]*))?}'
+        
+        def replace_env_var(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) is not None else ""
+            return os.getenv(env_var, default)
+            
+        # Replace all occurrences of the pattern
+        return re.sub(pattern, replace_env_var, value)

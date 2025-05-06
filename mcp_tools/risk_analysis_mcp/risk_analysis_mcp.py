@@ -1787,10 +1787,10 @@ class RiskAnalysisMCP(BaseMCPServer):
             self.total_processing_time_ms += processing_time * 1000
             
             # Log completion and timing
-            self.logger.info(f"Scenario generation completed in {processing_time:.3f}s", 
+            self.logger.info(f"Scenario generation completed in {processing_time:.3f}s",
                            scenario_count=scenario_count,
                            method=results["method"])
-            self.logger.timing("risk_analysis_mcp.scenario_generation_time_s", processing_time)
+            self.logger.timing("risk_analysis_mcp.scenario_generation_time_s", processing_time) # Removed tags
             
             # Add processing time to results
             results["processing_time"] = round(processing_time, 3)
@@ -1798,44 +1798,44 @@ class RiskAnalysisMCP(BaseMCPServer):
             return {"scenario_generation": results}
             
         except Exception as e:
-            # Log the error
+            # Log error
             self.execution_errors += 1
             self.logger.error(f"Error generating scenarios: {e}", exc_info=True)
-            
+
             # Return error information
             return {
                 "error": str(e),
                 "error_details": traceback.format_exc()
             }
-    
+
     def _generate_monte_carlo_scenarios(self, df_hist: pd.DataFrame, scenario_count: int, scenario_horizon: int) -> List[Any]:
         """Generate scenarios using Monte Carlo simulation based on historical returns statistics."""
         monte_carlo_start = time.time()
         self.logger.info("Generating Monte Carlo scenarios from historical statistics")
-        
+
         # Calculate return statistics
         mean_returns = df_hist.mean()
         cov_matrix = df_hist.cov()
-        
+
         # Generate scenarios
         scenarios = []
         for i in range(scenario_count):
             # Generate random multivariate normal returns
             random_returns = np.random.multivariate_normal(
-                mean_returns, 
-                cov_matrix, 
+                mean_returns,
+                cov_matrix,
                 size=scenario_horizon
             )
-            
+
             # Convert to dataframe with consistent column names
             scenario_df = pd.DataFrame(random_returns, columns=df_hist.columns)
-            
+
             # Convert to records format for consistent output
             scenarios.append(scenario_df.to_dict('records'))
-        
+
         # Log timing statistics
         monte_carlo_time = (time.time() - monte_carlo_start) * 1000  # ms
-        self.logger.timing("risk_analysis_mcp.monte_carlo_generation_time_ms", monte_carlo_time)
+        self.logger.timing("risk_analysis_mcp.monte_carlo_generation_time_ms", monte_carlo_time) # Removed tags
         self.logger.info(f"Monte Carlo simulation completed in {monte_carlo_time:.2f}ms for {scenario_count} scenarios")
-        
+
         return scenarios

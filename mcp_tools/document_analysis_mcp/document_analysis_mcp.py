@@ -669,7 +669,7 @@ class DocumentAnalysisMCP(BaseMCPServer):
             answer = self.layout_processor.tokenizer.decode(answer_tokens)
 
             processing_time = time.time() - start_time
-            self.logger.timing("doc_qa_time_ms", processing_time * 1000)
+            self.logger.timing("doc_qa_time_ms", processing_time * 1000) # Removed tags
 
             return {
                 "answer": answer.strip(),

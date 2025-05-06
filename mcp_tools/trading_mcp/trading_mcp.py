@@ -60,7 +60,7 @@ class TradingMCP(BaseMCPServer):
         """
         # Load config from standard path if not provided
         if config is None:
-            config_path = os.path.join("config", "trading_mcp", "trading_mcp_config.json")
+            config_path = os.path.join("config", "mcp_tools", "trading_mcp_config.json")
             if os.path.exists(config_path):
                 try:
                     with open(config_path, 'r') as f:
